@@ -54,26 +54,11 @@
           <div class="f-row check-row">
             <el-checkbox v-model="form.scriptMode.autoBumpVersion">打包前自动同步项目版本号</el-checkbox>
           </div>
-          <div class="f-hint">
-            产物目录中没有匹配当前版本的发布包时，自动在项目根执行打包命令（构建日志流入发布日志，超时终止进程树）。
-            打包脚本通常读项目内版本号（如 VERSION），因此手动指定的发布版本与项目版本文件不一致时，
-            打包前会自动把项目内等于旧版本的版本声明（VERSION / package.json / pom.xml / build.gradle / pubspec.yaml）
-            升级为发布版本，产物文件名需包含发布版本号。
-          </div>
-          <div class="f-row check-row">
+                    <div class="f-row check-row">
             <el-checkbox v-model="form.scriptMode.bootstrapJava">缺 Java 17 时自动安装</el-checkbox>
             <el-checkbox v-model="form.scriptMode.bootstrapPgdump">缺 pg_dump 时自动安装</el-checkbox>
           </div>
-          <div class="f-hint">
-            自动安装为用户态，不改系统：Java 从清华镜像下载 JRE 17 解压到部署目录 shared/toolbox/jdk；
-            pg_dump 借服务器的 postgres:16-alpine 镜像生成 docker 包装（需 docker 权限）。装一次后跨版本复用。
-          </div>
-          <div class="f-hint">
-            脚本部署适合非 Docker 项目（如单 jar + 运维脚本）：发布时从产物目录选「文件名含当前版本」的最新发布包上传，
-            服务器端解压到 releases/ 后以 INSTALL_ROOT 执行包内升级脚本（需自带备份 / 停旧 / 切 CURRENT 指针 / 启动 / 健康检查 / 失败回滚，
-            并附带 start.sh、stop.sh 供回滚使用）。
-          </div>
-        </template>
+                            </template>
         <div class="f-row">
           <span class="f-label">版本号</span>
           <el-radio-group v-model="form.version.strategy" size="small">
@@ -91,8 +76,7 @@
           </el-tag>
           <el-tag v-else type="info" effect="plain" size="small">未识别到版本号</el-tag>
         </div>
-        <div class="f-hint">自动识别优先级：VERSION → package.json → pom.xml → build.gradle → pubspec.yaml → *.csproj</div>
-      </el-card>
+              </el-card>
 
       <!-- 部署目标（多环境） -->
       <el-card shadow="never" class="card">
@@ -114,11 +98,7 @@
             {{ activeTarget.server.host || '未配置主机' }} → {{ activeTarget.remotePath || '未配置部署目录' }}
           </span>
         </div>
-        <div class="f-hint">
-          同一项目可配置多个部署目标（测试 / 生产 / 多台服务器），各自独立保存服务器地址、部署目录、
-          健康检查与凭据；发布、测试连接、回滚均作用于当前选中的目标。
-        </div>
-      </el-card>
+              </el-card>
 
       <el-card shadow="never" class="card">
         <template #header>
@@ -177,11 +157,7 @@
             <el-input v-model="activeTarget.remotePath" placeholder="/opt/apps/myapp" style="flex: 1" />
           </div>
         </template>
-        <div class="f-hint">
-          远程部署根目录，可自定义；其下自动创建 releases / uploads / backups / shared / deployer，
-          current 软链接指向运行版本。密码经系统加密存储，明文不落盘。
-        </div>
-      </el-card>
+              </el-card>
 
       <el-card shadow="never" class="card">
         <template #header>
@@ -201,11 +177,7 @@
             <el-input v-model="activeTarget.db.user" placeholder="用户(可选)" style="width: 130px" :disabled="!activeTarget.db.enabled" />
           </div>
         </template>
-        <div class="f-hint">
-          按环境独立配置：测试与生产是不同实例，容器名与库名各填各的。发布时用当前目标的配置执行备份，
-          「数据库备份」列表与一键恢复也作用于当前目标。仅 PostgreSQL 支持一键恢复。
-        </div>
-      </el-card>
+              </el-card>
 
       <el-card shadow="never" class="card">
         <template #header><div class="card-header"><span>部署选项</span></div></template>
@@ -222,10 +194,7 @@
           <el-input-number v-model="form.deploy.keepBackups" :min="1" :max="50" controls-position="right" style="width: 90px" />
           <span class="f-mini">份备份</span>
         </div>
-        <div class="f-hint">
-          本卡片为跨环境统一的发布策略；数据库备份因各环境实例不同，已移到「数据库备份（当前目标）」按环境单独配置。
-        </div>
-      </el-card>
+              </el-card>
 
       <el-card shadow="never" class="card">
         <template #header>
@@ -252,8 +221,7 @@
             <span class="f-mini">秒探测一次</span>
           </div>
         </template>
-        <div class="f-hint">未启用时仅检查 Docker 容器运行状态。健康检查地址在服务器本机访问，请使用 127.0.0.1。</div>
-      </el-card>
+              </el-card>
 
       <el-card shadow="never" class="card">
         <template #header>
@@ -314,12 +282,7 @@
             </div>
           </template>
         </template>
-        <div class="f-hint">
-          发布成功后把本地数据目录打包覆盖到服务器目标目录（解压覆盖，不清除服务器已有其他文件）。
-          建议放在 shared/ 下，跨版本共享，发布与回滚不影响数据。导入命令在服务器上执行，占位符：
-          <code>{dataDir}</code> 远端数据目录、<code>{user}</code>/<code>{secret}</code> 应用账号凭据（密码加密存储，不出主进程）。
-        </div>
-      </el-card>
+              </el-card>
     </div>
     <template #footer>
       <div class="drawer-footer">

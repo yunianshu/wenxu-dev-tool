@@ -2,7 +2,6 @@
   <div class="page harness-page" :class="{ 'is-immersive': immersive }">
     <PageHeader
       v-if="!immersive"
-      eyebrow="DEEPSEEK HARNESS"
       title="DeepSeek Harness"
       description="内置的 DeepSeek 智能体工作台：打开软件自动开启本地服务，关闭软件时一并关闭。"
     >

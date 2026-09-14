@@ -1,6 +1,6 @@
 <template>
   <div class="settings-page">
-    <PageHeader eyebrow="PREFERENCES" title="设置" description="管理 AI 服务、Git 活动采集和个人身份。" />
+    <PageHeader title="设置" description="管理 AI 服务、Git 活动采集和个人身份。" />
     <el-segmented v-model="activeSection" :options="SETTING_SECTIONS" class="settings-sections" />
 
     <!-- Git 活动源：作为工作台入口的直接落点，优先于扫描配置展示 -->
@@ -21,7 +21,7 @@
           <template #empty>
             <div class="table-empty">
               <el-icon><FolderOpened /></el-icon>
-              <p>暂无活动源，添加扫描根目录后会自动发现 Git 仓库</p>
+              <p>暂无活动源</p>
             </div>
           </template>
           <el-table-column label="活动源" min-width="200" show-overflow-tooltip>
@@ -112,7 +112,6 @@
             >{{ x }}</el-checkbox>
           </div>
         </div>
-        <div class="exclude-hint">勾选的目录在扫描时会自动跳过，减少扫描时间</div>
       </div>
     </el-card>
 
@@ -136,7 +135,6 @@
         <el-input v-model="newIdName" placeholder="账号名" style="width: 130px" />
         <el-input v-model="newIdEmail" placeholder="账号邮箱" style="width: 220px" @keyup.enter="addIdentity" />
         <el-button @click="addIdentity">添加账号</el-button>
-        <div class="exclude-hint" style="width: 100%">「只看本人」会匹配上面所有账号的提交</div>
       </div>
     </el-card>
 
@@ -152,12 +150,10 @@
             <el-select v-model="provider" style="width: 240px" @change="applyPreset">
               <el-option v-for="(p, key) in AI_PRESETS" :key="key" :value="key" :label="p.label" />
             </el-select>
-            <span class="ai-hint">默认「自定义」（公司内网网关）；选择预设可自动填充接口地址与模型</span>
           </div>
           <div class="ai-row">
             <span class="ai-label">接口地址</span>
             <el-input v-model="state.config.ai.baseUrl" placeholder="http://ai.sysapp.prttech.com:18080/v1" style="width: 400px" />
-            <span class="ai-hint">已默认填公司 AI 网关地址，可改</span>
           </div>
           <div class="ai-row">
             <span class="ai-label">API Key</span>
@@ -193,7 +189,7 @@
           <div class="ai-row">
             <span class="ai-label">温度</span>
             <el-slider v-model="state.config.ai.temperature" :min="0" :max="1" :step="0.1" style="width: 240px" />
-            <span class="ai-hint">{{ state.config.ai.temperature }}（越高越有创造性）</span>
+            <span class="ai-hint">{{ state.config.ai.temperature }}</span>
           </div>
         </div>
         <div class="ai-actions">
@@ -206,9 +202,6 @@
           <span v-if="testResult" :class="['ai-result', testResult.ok ? 'ok' : 'err']">
             {{ testResult.ok ? `连接成功：${testResult.reply}` : `连接失败：${testResult.error}` }}
           </span>
-        </div>
-        <div class="ai-hint ai-note">
-          API Key 使用系统安全存储加密后保存在本地，仅本机用于调用模型接口；支持 OpenAI / DeepSeek / Kimi / 通义千问 / Ollama 等兼容接口。配置后，AI 助手可按需读取当前项目资料与活动上下文。
         </div>
       </div>
     </el-card>
@@ -223,7 +216,6 @@
           <div class="ai-row">
             <span class="ai-label">禅道地址</span>
             <el-input v-model="state.config.zentao.baseUrl" placeholder="如 http://10.11.34.2" style="width: 320px" />
-            <span class="ai-hint">内网禅道地址（已默认填公司地址，可改）；登录与工时写入均在本机完成</span>
           </div>
           <div class="ai-row">
             <span class="ai-label">账号</span>
@@ -267,7 +259,6 @@
           <div class="ai-row">
             <span class="ai-label">平台地址</span>
             <el-input v-model="state.config.hanprint.baseUrl" placeholder="如 http://10.10.21.2:5293" style="width: 320px" />
-            <span class="ai-hint">汉印工时填报平台（已默认填公司地址，可改；与禅道为两个独立账号）</span>
           </div>
           <div class="ai-row">
             <span class="ai-label">所属公司</span>
@@ -305,9 +296,6 @@
             {{ hpTestResult.ok ? '登录成功' : `登录失败：${hpTestResult.error}` }}
           </span>
         </div>
-        <div class="ai-hint ai-note">
-          汉印平台按工时占比填报（当日全部条目合计须为 100%）；「软件项目」任务与禅道任务同源，绑定禅道任务后自动匹配汉印任务。不配置汉印则只填报禅道工时。
-        </div>
       </div>
     </el-card>
 
@@ -321,14 +309,12 @@
           <div class="ai-row">
             <span class="ai-label">上班时间</span>
             <el-time-select v-model="state.config.zentao.workStart" start="06:00" end="21:00" step="00:15" style="width: 120px" />
-            <span class="ai-hint">实际上班时间的默认值；一键填报页可按天临时调整</span>
           </div>
           <div class="ai-row">
             <span class="ai-label">午休时间</span>
             <el-time-select v-model="state.config.zentao.lunchStart" start="11:00" end="14:00" step="00:30" style="width: 130px" />
             <span class="ai-hint">至</span>
             <el-time-select v-model="state.config.zentao.lunchEnd" start="11:30" end="14:30" step="00:30" style="width: 130px" />
-            <span class="ai-hint">与午休重叠的分钟数自动从工时中扣除</span>
           </div>
         </div>
         <div class="ai-actions">
@@ -336,14 +322,11 @@
             <el-icon style="margin-right: 4px"><Check /></el-icon>保存配置
           </el-button>
         </div>
-        <div class="ai-hint ai-note">
-          总工时 = 实际上班时间（页面填写）→ 点击「生成报告」的时刻（与填报日期无关；可在填报页手动指定收工时间，早于上班时间按次日跨夜，如 00:30），扣午休后按 0.5 小时向下取整；git 提交时刻不参与工时，各项目按当天提交条数占比分配总工时，合计恒等于总工时。
-        </div>
       </div>
     </el-card>
 
     <section v-show="activeSection === 'about'" class="workspace-panel settings-about">
-      <span class="section-kicker">LOCAL FIRST</span>
+      
       <h2>个人项目管理</h2>
       <p>项目资料、报告记录和部署配置默认保存在本机。Git、AI 与部署都是按需启用的项目能力。</p>
       <dl class="project-facts">
@@ -361,9 +344,6 @@
           :options="CLOSE_ACTION_OPTIONS"
           @update:model-value="saveCloseAction"
         />
-        <p class="field-hint">
-          最小化后程序会继续在后台运行（含内置 Harness 服务），可从系统托盘图标重新打开窗口或彻底退出；此状态下再次启动程序会直接唤起已有窗口。关闭时的询问框里勾选「记住我的选择」也会更新此处设置。
-        </p>
       </div>
     </section>
   </div>

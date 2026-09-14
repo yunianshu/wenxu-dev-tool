@@ -1,7 +1,6 @@
 <template>
   <div class="page dashboard-page">
     <PageHeader
-      eyebrow="WORKSPACE"
       :title="currentProject ? currentProject.name : '工作台'"
       :description="currentProject ? (currentProject.description || '集中查看这个项目的资料、活动和交付状态。') : '从项目出发，管理资料、活动、AI 协作与部署。'"
     >
@@ -33,25 +32,24 @@
       <div class="dashboard-grid">
         <section class="workspace-panel capability-panel">
           <div class="section-heading">
-            <div><span class="section-kicker">PROJECT CAPABILITIES</span><h2>项目能力</h2></div>
-            <span class="section-note">围绕{{ currentProject ? '当前项目' : '项目集合' }}</span>
+            <div><h2>项目能力</h2></div>
           </div>
           <div class="capability-list">
             <button class="capability-row" type="button" @click="$emit('navigate', 'chat')">
               <span class="capability-index">01</span>
-              <span class="capability-copy"><strong>AI 助手</strong><small>基于项目资料、活动和交付状态协作</small></span>
+              <span class="capability-copy"><strong>AI 助手</strong></span>
               <span class="capability-status">{{ aiConfigured ? state.config.ai.model : '待配置模型' }}</span>
               <el-icon><ArrowRight /></el-icon>
             </button>
             <button class="capability-row" type="button" @click="$emit('navigate', 'report')">
               <span class="capability-index">02</span>
-              <span class="capability-copy"><strong>活动报告</strong><small>从 Git 活动生成可回顾、可导出的报告</small></span>
+              <span class="capability-copy"><strong>活动报告</strong></span>
               <span class="capability-status">{{ projectRepoCount }} 个关联仓库</span>
               <el-icon><ArrowRight /></el-icon>
             </button>
             <button class="capability-row" type="button" @click="$emit('navigate', 'deploy')">
               <span class="capability-index">03</span>
-              <span class="capability-copy"><strong>部署</strong><small>管理环境、发布进度、历史与回滚</small></span>
+              <span class="capability-copy"><strong>部署</strong></span>
               <span class="capability-status">{{ currentProject && deploymentConfigured(currentProject) ? '已就绪' : '按需配置' }}</span>
               <el-icon><ArrowRight /></el-icon>
             </button>
@@ -59,10 +57,10 @@
         </section>
 
         <aside class="workspace-panel focus-panel">
-          <div class="section-heading"><div><span class="section-kicker">FOCUS</span><h2>{{ currentProject ? '当前项目' : '项目概览' }}</h2></div></div>
+          <div class="section-heading"><div><h2>{{ currentProject ? '当前项目' : '项目概览' }}</h2></div></div>
           <template v-if="currentProject">
             <div class="focus-project-title">{{ currentProject.name }}</div>
-            <p class="focus-description">{{ currentProject.description || '尚未填写项目说明。补充目标和范围后，AI 能提供更准确的协助。' }}</p>
+            
             <dl class="focus-facts">
               <div><dt>状态</dt><dd>{{ projectStatusLabel(currentProject.status) }}</dd></div>
               <div><dt>本地目录</dt><dd :title="currentProject.localPath">{{ currentProject.localPath || '未关联' }}</dd></div>
@@ -71,7 +69,6 @@
             <el-button class="full-button" @click="$emit('navigate', 'projects')">完善项目资料</el-button>
           </template>
           <template v-else>
-            <p class="focus-description">顶部选择一个项目，可以集中查看它的资料、AI 上下文、活动报告和部署状态。</p>
             <div class="project-mini-list">
               <button v-for="project in state.projects.items.slice(0, 5)" :key="project.id" type="button" @click="selectProject(project.id)">
                 <span>{{ project.name }}</span><small>{{ projectStatusLabel(project.status) }}</small>
@@ -82,13 +79,13 @@
       </div>
 
       <section class="workspace-panel recent-panel">
-        <div class="section-heading"><div><span class="section-kicker">RECENT</span><h2>最近记录</h2></div></div>
+        <div class="section-heading"><div><h2>最近记录</h2></div></div>
         <div v-if="recentItems.length" class="recent-list">
           <div v-for="item in recentItems" :key="item.key" class="recent-row">
             <span class="recent-type">{{ item.type }}</span><strong>{{ item.title }}</strong><span>{{ formatRecordTime(item.time) }}</span>
           </div>
         </div>
-        <p v-else class="quiet-empty">生成活动报告或执行部署后，最近记录会显示在这里。</p>
+        <p v-else class="quiet-empty">暂无记录</p>
       </section>
     </template>
 

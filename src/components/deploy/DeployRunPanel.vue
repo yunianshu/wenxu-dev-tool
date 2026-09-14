@@ -53,10 +53,7 @@
         @click="openDbBackups"
       ><el-icon style="margin-right: 4px"><DataBase /></el-icon>数据库备份</el-button>
     </div>
-    <div v-if="!canPublish && !state.deploy.running" class="f-hint">
-      发布前需：项目已保存、本地目录与 Compose 文件存在、已识别版本号、当前目标已配置服务器与部署目录
-    </div>
-    <div v-if="hasRun" class="run-meta">
+        <div v-if="hasRun" class="run-meta">
       <div class="run-track" :class="runTrackClass">
         <div class="run-fill" :style="{ width: runPercent + '%' }" />
       </div>

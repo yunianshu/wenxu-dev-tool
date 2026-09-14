@@ -12,8 +12,7 @@
           <el-input v-model="form.localPath" placeholder="无需是 Git 仓库" />
           <el-button @click="browse"><el-icon><Folder /></el-icon>选择</el-button>
         </div>
-        <div class="field-hint">关联目录后可发现其中的 Git 活动；不关联也能使用项目和 AI 功能。</div>
-      </el-form-item>
+              </el-form-item>
       <el-form-item label="状态">
         <el-segmented v-model="form.status" :options="STATUS_OPTIONS" />
       </el-form-item>

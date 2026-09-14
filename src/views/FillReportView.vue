@@ -1,7 +1,6 @@
 <template>
   <div class="fill-page">
     <PageHeader
-      eyebrow="FILL REPORT"
       title="一键填报"
       description="按填写的上班/下班时间计算工时（扣午休、0.5h 向下取整），下班时间早于上班时间按次日跨夜；确认后一键写入禅道任务。"
     />
@@ -31,7 +30,7 @@
           clearable
           class="end-time-select"
           :placeholder="endPlaceholder"
-          style="width: 126px"
+          style="width: 138px"
         />
         <span class="fill-range-tip">{{ rangePreview }}</span>
         <el-select

@@ -1,7 +1,6 @@
 <template>
   <div class="settings-page extensions-page">
     <PageHeader
-      eyebrow="EXTENSIONS"
       title="扩展管理"
       description="统一管理 Claude Code、Codex、Kimi CLI、Zcode 四个平台的技能与插件。"
     />
@@ -327,10 +326,10 @@ onMounted(loadExtensions)
 /* 一级/二级共用卡片网格 */
 .ext-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 14px;
 }
-.ext-items { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+.ext-items { grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); }
 
 /* 一级分区 */
 .ext-section { margin-bottom: 6px; }

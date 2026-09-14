@@ -1,6 +1,6 @@
 <template>
   <div class="page ai-page">
-    <PageHeader eyebrow="AI WORKSPACE" title="AI 助手" description="让 AI 理解整个项目，再协助分析、规划和输出。">
+    <PageHeader title="AI 助手" description="让 AI 理解整个项目，再协助分析、规划和输出。">
       <template #actions>
         <el-button v-if="!configured" @click="$emit('navigate', 'settings')">配置 AI 服务</el-button>
         <el-button v-else :loading="collecting" :disabled="!currentProject || !matchedRepos.length" @click="refreshActivity">
@@ -12,7 +12,7 @@
     <div v-if="currentProject" class="ai-workspace">
       <aside class="context-rail">
         <div class="context-project">
-          <span class="section-kicker">CURRENT PROJECT</span>
+          
           <h2>{{ currentProject.name }}</h2>
           <p>{{ currentProject.description || '未填写项目说明' }}</p>
         </div>
@@ -35,10 +35,6 @@
           <span><strong>部署状态</strong><small>{{ deployLabel }}</small></span>
         </label>
 
-        <div class="context-note">
-          <el-icon><Lock /></el-icon>
-          <span>只发送已选择的上下文；密钥和 SSH 凭据不会进入对话。</span>
-        </div>
       </aside>
 
       <ChatPanel :context-text="contextText" :context-label="contextLabel" :quick-prompts="quickPrompts" />

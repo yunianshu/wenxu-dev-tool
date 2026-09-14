@@ -1,6 +1,6 @@
 <template>
   <div class="deploy-page">
-    <PageHeader eyebrow="DELIVERY" title="部署" :description="currentProject ? `管理“${currentProject.name}”的环境、发布与回滚。` : '选择一个项目后进入部署工作区。'">
+    <PageHeader title="部署" :description="currentProject ? `管理“${currentProject.name}”的环境、发布与回滚。` : '选择一个项目后进入部署工作区。'">
       <template #actions>
         <el-button v-if="currentProject" @click="aiOpen = true"><el-icon><MagicStick /></el-icon>AI 部署助手</el-button>
         <el-button v-if="currentProject" @click="configOpen = true"><el-icon><Setting /></el-icon>部署设置</el-button>

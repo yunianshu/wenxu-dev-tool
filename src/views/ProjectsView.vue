@@ -1,6 +1,6 @@
 <template>
   <div class="page projects-page">
-    <PageHeader eyebrow="PROJECTS" title="项目" description="项目是资料、AI、活动报告与部署的统一入口。">
+    <PageHeader title="项目" description="项目是资料、AI、活动报告与部署的统一入口。">
       <template #actions>
         <el-button type="primary" @click="$emit('create-project')"><el-icon><Plus /></el-icon>新建项目</el-button>
       </template>
@@ -10,7 +10,7 @@
       <aside class="project-list-panel">
         <div class="project-list-tools">
           <el-input v-model="query" clearable placeholder="搜索项目" :prefix-icon="Search" />
-          <el-select v-model="status" aria-label="筛选状态" style="width: 124px">
+          <el-select v-model="status" aria-label="筛选状态" style="width: 132px; flex-shrink: 0">
             <el-option label="全部状态" value="" />
             <el-option label="进行中" value="active" />
             <el-option label="已暂停" value="paused" />
@@ -26,7 +26,7 @@
             <span class="project-list-main"><strong>{{ project.name }}</strong><small>{{ project.description || '暂无项目说明' }}</small></span>
             <span class="project-list-meta">{{ projectStatusLabel(project.status) }}</span>
           </button>
-          <p v-if="!filteredProjects.length" class="quiet-empty">没有符合筛选条件的项目。</p>
+          
         </div>
       </aside>
 
@@ -59,13 +59,13 @@
         </dl>
 
         <div class="project-section">
-          <div class="section-heading"><div><span class="section-kicker">NOTES</span><h3>项目备注</h3></div></div>
+          <div class="section-heading"><div><h3>项目备注</h3></div></div>
           <div v-if="selected.notes" class="project-notes">{{ selected.notes }}</div>
           <button v-else class="inline-empty" type="button" @click="$emit('edit-project', selected)">补充目标、约束与下一步，让 AI 更理解这个项目</button>
         </div>
 
         <div class="project-section">
-          <div class="section-heading"><div><span class="section-kicker">CAPABILITIES</span><h3>项目能力</h3></div></div>
+          <div class="section-heading"><div><h3>项目能力</h3></div></div>
           <div class="project-capabilities">
             <button type="button" @click="$emit('navigate', 'chat')"><span><strong>AI 助手</strong><small>使用项目资料开展分析与规划</small></span><el-icon><ArrowRight /></el-icon></button>
             <button type="button" @click="$emit('navigate', 'report')"><span><strong>活动报告</strong><small>{{ matchedRepos.length ? '查看关联 Git 活动' : '关联目录后可采集 Git 活动' }}</small></span><el-icon><ArrowRight /></el-icon></button>

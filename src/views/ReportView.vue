@@ -1,7 +1,6 @@
 <template>
   <div class="report-page">
     <PageHeader
-      eyebrow="ACTIVITY REPORT"
       title="活动报告"
       :description="currentProject ? `查看“${currentProject.name}”的 Git 活动，并整理为可回顾的项目报告。` : '汇总全部项目的 Git 活动；Git 是项目报告的可选数据源。'"
     />
@@ -106,7 +105,7 @@
     </div>
 
     <!-- 结果 tabs：始终显示，明细/统计仅生成后可见 -->
-    <el-tabs v-model="resultTab" class="result-tabs report-tabs">
+    <el-tabs v-model="resultTab" :class="['result-tabs', 'report-tabs', { 'tabs-lone': state.report.phase !== 'done' }]">
       <el-tab-pane v-if="state.report.phase === 'done'" label="报告明细" name="detail">
             <el-alert
               v-if="periodMismatch"
@@ -222,17 +221,12 @@
           <template #empty>
             <div class="table-empty">
               <el-icon><Document /></el-icon>
-              <p>暂无历史记录，生成报告后会自动保存</p>
+              <p>暂无记录</p>
             </div>
           </template>
         </el-table>
       </el-tab-pane>
     </el-tabs>
-
-    <!-- 空状态引导（未生成时） -->
-    <div v-if="state.report.phase === 'idle'" class="report-hint">
-      <el-alert type="info" :closable="false" show-icon title="选择周期后点击「生成报告」，自动扫描仓库并汇总提交" />
-    </div>
 
     <!-- 历史报告查看 -->
     <el-dialog v-model="historyDialog.visible" :title="historyDialog.title" width="760" top="6vh">
