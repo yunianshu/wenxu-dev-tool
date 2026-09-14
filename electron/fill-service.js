@@ -560,7 +560,8 @@ function buildPlanResult({ raw, projects, selectedInput }) {
  *   { date, startTime, endTime,
  *     projects: [{ id, name, repos }],  // 全部可填报项目（渲染层已剔除无仓库的）
  *     selectedIds: string[] | null,     // null=未手动选择过 → 默认勾选当天有提交的全部项目
- *     reuse: boolean }                  // true=复用上次采集（勾选项目子集时用，不重复跑 git/网络）
+ *     reuse: boolean,                   // true=复用上次采集（勾选项目子集时用，不重复跑 git/网络）
+ *     crossDay: boolean }               // 可选：跨夜判定（复用采集且终点留空时沿用上次判定）
  */
 async function plan(payload) {
   const { date, projects } = payload || {}
@@ -577,25 +578,32 @@ async function plan(payload) {
   const signature = `${date}||${projectsSignature(projects)}||${identities.map((i) => `${i.name || ''}<${i.email || ''}>`).join(',')}`
   const reused = !!payload.reuse && !!rawCache && rawCache.signature === signature
 
+  // 总工时区间 = 页面填写的实际上班时间 → 终点（显式填写优先，否则取点击生成报告的
+  // 当前时刻）；git 提交时刻只用于收集内容与计数，故区间不影响采集，复用采集时也按本次
+  // 入参重算——页面改上班时间只重算工时，不必重跑 git。
+  const workStart = String(payload.startTime || (cfg.zentao && cfg.zentao.workStart) || '08:30')
+  if (!validHM(workStart)) throw new Error('实际上班时间格式不正确（应为 HH:MM）')
+  const explicitEnd = String(payload.endTime || '').trim()
+  if (explicitEnd && !validHM(explicitEnd)) throw new Error('下班时间格式不正确（应为 HH:MM）')
+  const endTime = resolveEndTime(undefined, explicitEnd)
+  // 终点早于上班时间即按次日跨夜——这是「显式填写的终点」表达的加班语义。终点留空（终点取
+  // 生成那一刻）时跨夜与否由调用方传入：否则把上班时间改到晚于上次终点，同一时刻的终点会
+  // 凭空变成「次日」而算出 20 多小时。
+  const crossDay = typeof payload.crossDay === 'boolean' ? payload.crossDay : isCrossDay(workStart, endTime)
+  const win = {
+    startTime: workStart,
+    endTime,
+    crossDay,
+    endTimeManual: !!explicitEnd,
+    lunchStart: (cfg.zentao && cfg.zentao.lunchStart) || '12:00',
+    lunchEnd: (cfg.zentao && cfg.zentao.lunchEnd) || '13:00',
+  }
+
   let raw
   if (reused) {
-    raw = rawCache
+    // 复用采集结果，但区间按本次入参覆盖（缓存里的 win 只记录首次生成时的区间）
+    raw = { ...rawCache, win }
   } else {
-    // 总工时区间 = 页面填写的实际上班时间 → 终点（显式填写优先，否则取点击生成报告的
-    // 当前时刻；终点早于上班时间即按次日跨夜）；git 提交时刻只用于收集内容与计数
-    const workStart = String(payload.startTime || (cfg.zentao && cfg.zentao.workStart) || '08:30')
-    if (!validHM(workStart)) throw new Error('实际上班时间格式不正确（应为 HH:MM）')
-    const explicitEnd = String(payload.endTime || '').trim()
-    if (explicitEnd && !validHM(explicitEnd)) throw new Error('下班时间格式不正确（应为 HH:MM）')
-    const endTime = resolveEndTime(undefined, explicitEnd)
-    const win = {
-      startTime: workStart,
-      endTime,
-      crossDay: isCrossDay(workStart, endTime),
-      endTimeManual: !!explicitEnd,
-      lunchStart: (cfg.zentao && cfg.zentao.lunchStart) || '12:00',
-      lunchEnd: (cfg.zentao && cfg.zentao.lunchEnd) || '13:00',
-    }
     raw = await collectRaw({ date, projects, cfg, identities, win, signature })
     rawCache = raw
   }

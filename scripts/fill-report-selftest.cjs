@@ -1273,6 +1273,87 @@ if (gitOk()) {
     assert.strictEqual(fresh.reused, false)
     assert.strictEqual(fresh.commitCount, first.commitCount + 1)
   })
+
+  const totalOf = (r) => round2of(r.planned.reduce((s, p) => s + p.hours, 0))
+  const hoursOf = (r, id) => (r.planned.find((p) => String(p.projectId) === id) || {}).hours
+
+  await test('生成后改上班时间：按新起点重算工时（含禅道行），且不重跑 git', async () => {
+    const projects = [
+      { id: 'hpA', name: 'P-A', repos: [repoA] },
+      { id: 'hpB', name: 'P-B', repos: [repoB] },
+    ]
+    const sel = ['hpA', 'hpB']
+    const first = await fill.plan({ date: pastDayStr, startTime: '09:00', endTime: '10:00', projects, selectedIds: sel })
+    assert.strictEqual(totalOf(first), 1) // 09:00→10:00 = 1h
+    const before = first.commitCount
+    // 采集后仓库又多一条当天提交：重算必须看不到它（证明是复用采集，而不是重跑 git）
+    execFileSync('git', ['commit', '--allow-empty', '-m', 'feat: A5'], {
+      cwd: repoA,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'Me', GIT_AUTHOR_EMAIL: 'me@corp.com',
+        GIT_COMMITTER_NAME: 'Me', GIT_COMMITTER_EMAIL: 'me@corp.com',
+        GIT_AUTHOR_DATE: `${pastDayStr} 09:50:00 +0800`,
+        GIT_COMMITTER_DATE: `${pastDayStr} 09:50:00 +0800`,
+      },
+    })
+    // 上班时间提前 30 分钟 → 总工时 1.5h
+    const moved = await fill.plan({ date: pastDayStr, startTime: '08:30', endTime: '10:00', projects, selectedIds: sel, reuse: true })
+    assert.strictEqual(moved.reused, true)
+    assert.strictEqual(moved.rangeStart, '08:30')
+    assert.strictEqual(totalOf(moved), 1.5)
+    assert.strictEqual(moved.commitCount, before) // 仍是上次采集的提交数
+    // 提交内容（禅道行 / 汉印占比）必须跟着新工时走，否则页面显示与写入不一致
+    const ztA = moved.tasks.find((t) => String(t.taskId) === '66')
+    assert.ok(ztA, 'hpA 已绑定 #66，应有禅道汇总行')
+    assert.strictEqual(ztA.consumed, hoursOf(moved, 'hpA'))
+    assert.strictEqual(round2of(moved.hpItems.reduce((s, it) => s + it.Percent, 0)), 100)
+    // 改完时间再改勾选：两次口径必须一致，不能退回改前的 09:00（旧实现按计划里的旧起点重算）
+    const only = await fill.plan({ date: pastDayStr, startTime: '08:30', endTime: '10:00', projects, selectedIds: ['hpA'], reuse: true })
+    assert.strictEqual(totalOf(only), 1.5) // 单项目独得总工时
+  })
+
+  await test('终点留空时改上班时间：沿用上次跨夜判定，不凭空变成次日', async () => {
+    const projects = [
+      { id: 'hpA', name: 'P-A', repos: [repoA] },
+      { id: 'hpB', name: 'P-B', repos: [repoB] },
+    ]
+    const sel = ['hpA', 'hpB']
+    // 终点留空 = 生成那一刻；页面把该终点固定下来用于重算（否则工时随挂机时间漂移）
+    const auto = await fill.plan({ date: pastDayStr, startTime: '00:00', endTime: '', projects, selectedIds: sel })
+    assert.strictEqual(auto.crossDay, false)
+    assert.ok(/^\d{2}:\d{2}$/.test(auto.rangeEnd))
+    if (auto.rangeEnd === '23:59') { console.log('  （当前时刻 23:59，跳过跨夜对比）'); return }
+    // 把上班时间改到晚于该终点（最坏情形：只晚 1 分钟）
+    const mins = Number(auto.rangeEnd.slice(0, 2)) * 60 + Number(auto.rangeEnd.slice(3, 5)) + 1
+    const afterEnd = `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`
+    // 不传判定（旧行为）→ 同一组入参被当成「次日」，算出近一整天（22.5h或23.5h，取决于是否跨过午休）
+    const legacy = await fill.plan({ date: pastDayStr, startTime: afterEnd, endTime: auto.rangeEnd, projects, selectedIds: sel, reuse: true })
+    assert.strictEqual(legacy.crossDay, true)
+    assert.strictEqual(legacy.commitCount, auto.commitCount)
+    assert.ok(totalOf(legacy) >= 22.5, `旧行为应算出近一整天，实得 ${totalOf(legacy)}h`)
+    // 沿用上次判定 → 区间为空（每个有提交的项目保底 0.5h），不是按次日补算
+    const carried = await fill.plan({ date: pastDayStr, startTime: afterEnd, endTime: auto.rangeEnd, crossDay: false, projects, selectedIds: sel, reuse: true })
+    assert.strictEqual(carried.crossDay, false)
+    assert.strictEqual(totalOf(carried), 1) // 2 个项目 × 保底 0.5h
+    assert.strictEqual(hoursOf(carried, 'hpA'), 0.5)
+  })
+
+  await test('显式填写的跨夜终点：改上班时间照常按跨夜重算', async () => {
+    const projects = [
+      { id: 'hpA', name: 'P-A', repos: [repoA] },
+      { id: 'hpB', name: 'P-B', repos: [repoB] },
+    ]
+    const sel = ['hpA', 'hpB']
+    // 昨天 22:00 上班、今天 02:00 收工：显式终点早于上班时间 = 次日，语义不变
+    const first = await fill.plan({ date: pastDayStr, startTime: '22:00', endTime: '02:00', projects, selectedIds: sel })
+    assert.strictEqual(first.crossDay, true)
+    assert.strictEqual(totalOf(first), 4)
+    // 上班时间改成 23:00 → 仍按次日 02:00 算 3h（不回退成同日 0h，也不变成 25h）
+    const moved = await fill.plan({ date: pastDayStr, startTime: '23:00', endTime: '02:00', projects, selectedIds: sel, reuse: true })
+    assert.strictEqual(moved.crossDay, true)
+    assert.strictEqual(totalOf(moved), 3)
+  })
 } else {
   console.log('  （git 不可用，跳过真实仓库集成用例）')
 }

@@ -293,7 +293,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { state } from '../store'
 import { todayStr } from '../utils/date'
@@ -313,6 +313,8 @@ const selectedProjectIds = computed({
 const bindings = ref({})
 const bindDialog = ref({ visible: false, projectId: '', projectName: '', taskId: null, boundTaskId: null, options: [], loading: false })
 const previewDialog = ref({ visible: false, content: '' })
+/** 生成/重算进行中收到的重算请求：结束后补跑一次 */
+let pendingRecompute = false
 
 const dateShortcuts = [
   { text: '今天', value: new Date() },
@@ -361,13 +363,27 @@ function previewMinutes(start, end, crossDay) {
 /** 工具条实时预览：区间与预计工时，让跨夜/误填立刻可见 */
 const rangePreview = computed(() => {
   const start = startTime.value || '08:30'
-  const end = endTime.value || nowHM()
-  const crossDay = hmOf(end) < hmOf(start)
+  const end = effectiveEnd()
+  const crossDay = effectiveCrossDay()
   const min = previewMinutes(start, end, crossDay)
   const hours = (Math.floor(min / 30) * 30 / 60).toFixed(1)
   return `${start}–${crossDay ? '次日 ' : ''}${end} · 预计 ${hours}h`
 })
 const plan = computed(() => state.fillReport.plan)
+
+/**
+ * 重算用的终点：显式填写优先，留空时沿用计划里已解析的终点。
+ * 留空语义是「生成那一刻」，只解析一次——否则每次重算都取当前时刻，工时随挂机时间悄悄变多。
+ */
+function effectiveEnd() {
+  return endTime.value || (plan.value && plan.value.rangeEnd) || nowHM()
+}
+/** 跨夜判定：显式填写的终点早于上班时间才是用户表达的「次日」；终点留空时沿用上次判定 */
+function effectiveCrossDay() {
+  const start = startTime.value || '08:30'
+  if (endTime.value) return hmOf(endTime.value) < hmOf(start)
+  return plan.value ? !!plan.value.crossDay : hmOf(effectiveEnd()) < hmOf(start)
+}
 
 const zentaoConfigured = computed(() => {
   const zt = state.config.zentao || {}
@@ -428,9 +444,18 @@ const stopSelectionWatch = watch(
   (v) => {
     if (!plan.value || !Array.isArray(v)) return
     if (JSON.stringify(v) === JSON.stringify(plan.value.selectedIds || [])) return
-    refreshSubset()
+    recomputePlan()
   },
 )
+
+/** 上班/下班时间改动 → 按同一份采集数据重算工时（生成的合计、禅道备注、汉印占比一并跟着变） */
+let timeWatchTimer = null
+watch([startTime, endTime], () => {
+  if (!plan.value) return
+  clearTimeout(timeWatchTimer)
+  timeWatchTimer = setTimeout(recomputePlan, 300)
+})
+onBeforeUnmount(() => clearTimeout(timeWatchTimer))
 
 onMounted(async () => {
   loadProjects()
@@ -461,27 +486,37 @@ function toggleProject(projectId, checked) {
     : cur.filter((id) => id !== projectId)
 }
 
-async function refreshSubset() {
+/**
+ * 用「当前工具条时间 + 上次采集的数据」重算工时与汉印占比（不重跑 git 与平台接口）。
+ * 勾选项目与上下班时间的改动都走这里：两处口径必须一致，否则改完时间再勾项目会退回旧工时。
+ */
+async function recomputePlan() {
   const p = plan.value
-  if (!p || state.fillReport.running) return
+  if (!p) return
+  // 生成/重算进行中：记下待跑标记，结束后补跑，避免调整被静默吞掉
+  if (state.fillReport.running) { pendingRecompute = true; return }
   state.fillReport.running = true
   try {
-    const r = await window.gitReport.fillPlan(toPlain({
+    const payload = {
       date: p.date,
-      startTime: p.rangeStart,
-      endTime: p.rangeEnd, // 复用缓存时以计划里的窗口为准；缓存缺失时也能按同一区间重算
+      startTime: startTime.value,
+      endTime: effectiveEnd(), // 终点留空时沿用计划里的终点，不随重算时刻漂移
       projects: allProjectsPayload(),
       selectedIds: state.fillReport.selectedIds,
-      reuse: true, // 复用上次采集：勾选项目不重跑 git / 禅道 / 汉印
-    }))
+      reuse: true, // 复用上次采集：改时间 / 改勾选都不重跑 git / 禅道 / 汉印
+    }
+    if (!endTime.value) payload.crossDay = effectiveCrossDay()
+    const r = await window.gitReport.fillPlan(toPlain(payload))
     if (r.ok) applyPlan(r)
   } catch { /* 重算失败保留原计划 */ } finally {
     state.fillReport.running = false
+    if (pendingRecompute) { pendingRecompute = false; recomputePlan() }
   }
 }
 
 async function generate() {
   if (state.fillReport.running) return
+  pendingRecompute = false
   state.fillReport.running = true
   try {
     const payload = {
@@ -507,6 +542,8 @@ async function generate() {
     ElMessage.error(`生成失败：${e?.message || e}`)
   } finally {
     state.fillReport.running = false
+    // 生成期间改过时间/勾选：按当前的工具条取值补算一次
+    if (pendingRecompute) { pendingRecompute = false; recomputePlan() }
   }
 }
 
