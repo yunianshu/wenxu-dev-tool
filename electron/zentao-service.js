@@ -2,7 +2,8 @@
  * 禅道客户端 —— 魔改版禅道（t=json 传统路由 + session cookie）
  * 协议与 wenxu/KnowMore worktime-sync/server.py 的 ZenTao 类保持一致：
  * - 登录：GET refreshRandom 取随机数 → md5(md5(pwd)+rand) 加密 → POST 登录（keepLogin）
- * - 我的任务：GET /index.php?m=my&f=work&mode=task&t=json
+ * - 我的任务（进行中）：GET /index.php?m=my&f=work&mode=task&t=json
+ * - 我的任务（含已完成/已关闭，供绑定任务选择）：GET /index.php?m=my&f=task&t=json
  * - 工时填报：POST /index.php?m=task&f=recordEstimate&taskID=<id>&onlybody=yes（表单数组 dates[i]/work[i]/consumed[i]/left[i]）
  * 凭据：地址/账号在 config.json 的 zentao 节，密码经 safeStorage 加密落盘，明文只存在于主进程内存。
  * fetch 可注入（fetchImpl）以便自测；cookie 手工管理（全局 fetch 无 cookie jar）。
@@ -12,6 +13,24 @@ const store = require('./store')
 
 function md5(text) {
   return crypto.createHash('md5').update(String(text), 'utf8').digest('hex')
+}
+
+/** 已完成/已关闭的任务状态（完成任务后仍可能补填工时） */
+const FINISHED_STATUS = new Set(['done', 'closed'])
+/** 已取消：既不是进行中也没完成，不列入选择列表 */
+const CANCELED_STATUS = 'cancel'
+
+/**
+ * 已完成任务的时间（YYYY-MM-DD）：优先 finishedDate（点完成时写），回落到 closedDate（关闭时写）。
+ * 禅道未设置这些字段时是 0000-00-00 00:00:00，返回空串表示「拿不到完成时间」。
+ */
+function finishedAt(status, finishedDate, closedDate) {
+  if (!FINISHED_STATUS.has(String(status || ''))) return ''
+  for (const raw of [finishedDate, closedDate]) {
+    const s = String(raw || '')
+    if (/^\d{4}-\d{2}-\d{2}/.test(s) && !s.startsWith('0000')) return s.slice(0, 10)
+  }
+  return ''
 }
 
 /** 解析响应文本中的首个合法 JSON（等价 Python raw_decode：禅道响应尾部可能带脏数据） */
@@ -145,22 +164,67 @@ class ZentaoClient {
     return parseJsonPrefix(text)
   }
 
-  /** 我的地盘-任务（含 doing）；兼容 data 为 JSON 字符串、tasks 为 dict 的魔改返回 */
-  async myTasks() {
-    const d = await this.getJson('/index.php?m=my&f=work&mode=task&t=json')
+  /**
+   * 我的地盘-任务列表归一化，附完成状态（完成的判定见 finishedAt）。
+   * 兼容 data 为 JSON 字符串、tasks 为 dict 的魔改返回。
+   */
+  async fetchTaskList(path) {
+    const d = await this.getJson(path)
     let inner = d && d.data
     if (typeof inner === 'string') inner = parseJsonPrefix(inner)
     let tasks = (inner && inner.tasks) || []
     if (!Array.isArray(tasks)) tasks = Object.values(tasks)
     return tasks
       .filter((t) => t && t.id !== undefined)
-      .map((t) => ({
-        id: Number(t.id),
-        name: String(t.name || ''),
-        status: t.status || '',
-        consumed: Number(t.consumed || 0),
-        left: Number(t.left || 0),
-      }))
+      .map((t) => {
+        const status = t.status || ''
+        return {
+          id: Number(t.id),
+          name: String(t.name || ''),
+          status,
+          consumed: Number(t.consumed || 0),
+          left: Number(t.left || 0),
+          finished: FINISHED_STATUS.has(status),
+          finishedAt: finishedAt(status, t.finishedDate, t.closedDate),
+        }
+      })
+  }
+
+  /** 我的地盘-任务（只列未完成任务）。提交链路取「最新剩余工时」用，语义不要改 */
+  async myTasks() {
+    const list = await this.fetchTaskList('/index.php?m=my&f=work&mode=task&t=json')
+    return list.map((t) => ({ id: t.id, name: t.name, status: t.status, consumed: t.consumed, left: t.left }))
+  }
+
+  /**
+   * 绑定任务用的选择列表：进行中在前，近 days 天内完成/关闭的在后——任务完成后仍可能要
+   * 补填工时，只列进行中会让这些任务选不到。
+   *
+   * 入口差异（已对真实魔改版实测）：my-task（m=my&f=task）返回含 done/closed 的任务、
+   * 按 id 倒序单页返回；而 my-work（现有 myTasks 用的入口）只列进行中。该实例上给 my-task
+   * 传 type / recPerPage / pageID 都会返回空列表，故一律不传。
+   *
+   * 已知完成时间超出窗口的才剔除；禅道没记时间的已完成任务无法判定，照列（排在最后）——
+   * 宁多勿漏，否则刚完成的任务可能因为没写 finishedDate 而选不到。已取消的任务不列。
+   */
+  async myTaskOptions({ days = 30 } = {}) {
+    const list = await this.fetchTaskList('/index.php?m=my&f=task&t=json')
+    const since = new Date(Date.now() - days * 86400000)
+    const p = (n) => String(n).padStart(2, '0')
+    const sinceStr = `${since.getFullYear()}-${p(since.getMonth() + 1)}-${p(since.getDate())}`
+    const active = []
+    const finished = []
+    for (const t of list) {
+      if (t.status === CANCELED_STATUS) continue // eslint-disable-line no-continue
+      if (!t.finished) active.push(t)
+      else if (!t.finishedAt || t.finishedAt >= sinceStr) finished.push(t)
+    }
+    finished.sort((a, b) => {
+      if (!a.finishedAt) return 1 // 完成时间未知的排最后
+      if (!b.finishedAt) return -1
+      return a.finishedAt < b.finishedAt ? 1 : a.finishedAt > b.finishedAt ? -1 : b.id - a.id
+    })
+    return [...active, ...finished]
   }
 
   /**

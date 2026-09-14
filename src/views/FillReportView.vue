@@ -263,15 +263,25 @@
         v-model="bindDialog.taskId"
         filterable
         :loading="bindDialog.loading"
-        placeholder="搜索选择禅道任务（我的任务列表）"
+        placeholder="搜索选择禅道任务"
         style="width: 100%"
       >
-        <el-option v-for="t in bindDialog.options" :key="t.id" :value="t.id" :label="`#${t.id} ${t.name}`">
-          <div class="task-option">
-            <span class="task-option-name">#{{ t.id }} {{ t.name }}</span>
-            <span class="task-option-meta">{{ t.status || '-' }} · 剩余 {{ t.left }}h</span>
-          </div>
-        </el-option>
+        <el-option-group v-if="doingTasks.length" label="进行中">
+          <el-option v-for="t in doingTasks" :key="t.id" :value="t.id" :label="`#${t.id} ${t.name}`">
+            <div class="task-option">
+              <span class="task-option-name">#{{ t.id }} {{ t.name }}</span>
+              <span class="task-option-meta">{{ taskMeta(t) }}</span>
+            </div>
+          </el-option>
+        </el-option-group>
+        <el-option-group v-if="finishedTasks.length" label="已完成（近一个月）">
+          <el-option v-for="t in finishedTasks" :key="t.id" :value="t.id" :label="`#${t.id} ${t.name}`">
+            <div class="task-option">
+              <span class="task-option-name">#{{ t.id }} {{ t.name }}</span>
+              <span class="task-option-meta">{{ taskMeta(t) }}</span>
+            </div>
+          </el-option>
+        </el-option-group>
       </el-select>
       <div class="bind-hint">
         {{ bindDialog.boundTaskId
@@ -315,6 +325,17 @@ const bindDialog = ref({ visible: false, projectId: '', projectName: '', taskId:
 const previewDialog = ref({ visible: false, content: '' })
 /** 生成/重算进行中收到的重算请求：结束后补跑一次 */
 let pendingRecompute = false
+
+/** 绑定弹窗分组：进行中在前、已完成在后（主进程已按此顺序返回，这里只做分组） */
+const doingTasks = computed(() => (bindDialog.value.options || []).filter((t) => !t.finished))
+const finishedTasks = computed(() => (bindDialog.value.options || []).filter((t) => t.finished))
+const ZT_STATUS_TEXT = { wait: '未开始', doing: '进行中', done: '已完成', pause: '已暂停', cancel: '已取消', closed: '已关闭' }
+function statusText(s) { return ZT_STATUS_TEXT[s] || s || '-' }
+/** 选项右侧说明：进行中给剩余工时，已完成给完成时间（禅道没记时间时只留状态） */
+function taskMeta(t) {
+  if (t.finished) return t.finishedAt ? `${statusText(t.status)} · ${t.finishedAt}` : statusText(t.status)
+  return `${statusText(t.status)} · 剩余 ${t.left}h`
+}
 
 const dateShortcuts = [
   { text: '今天', value: new Date() },
@@ -557,7 +578,8 @@ async function openBind(projectId) {
     projectName: project?.name || projectId,
     taskId: bound ? bound.taskId : (plan.value?.suggested?.[projectId] || null),
     boundTaskId: bound ? bound.taskId : null,
-    options: plan.value?.ztTasks || [],
+    // 任务选择列表：进行中 + 近一个月完成的（完成后仍可能要补填工时）
+    options: plan.value?.ztTaskOptions || plan.value?.ztTasks || [],
     loading: false,
   }
   if (!bindDialog.value.options.length) {

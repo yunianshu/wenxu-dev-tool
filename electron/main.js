@@ -727,7 +727,8 @@ function registerIpc() {
   })
   ipcMain.handle('fill:ztTasks', async () => {
     try {
-      const tasks = await zentaoService.ensureClient().then((c) => c.myTasks())
+      // 绑定任务用：进行中 + 近一个月完成的（完成后仍可能要补填工时）
+      const tasks = await zentaoService.ensureClient().then((c) => c.myTaskOptions())
       return { ok: true, tasks }
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) }

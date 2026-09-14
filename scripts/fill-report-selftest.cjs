@@ -293,6 +293,43 @@ await test('myTasks：data 为字符串 + tasks 为 dict 时归一化', async ()
   assert.deepStrictEqual(tasks[0], { id: 101, name: '任务A', status: 'doing', consumed: 3, left: 5.5 })
 })
 
+await test('myTaskOptions：进行中在前、近一个月完成的在后，超期与取消的不列', async () => {
+  const daysAgo = (n) => {
+    const d = new Date(Date.now() - n * 86400000)
+    const p = (x) => String(x).padStart(2, '0')
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} 10:00:00`
+  }
+  // 真实实例返回的是数组（顺序即 id 倒序；若为 dict 会被 JS 按数字键升序重排，故用数组）
+  const list = {
+    tasks: [
+      { id: '7007', name: '进行中B', status: 'doing', consumed: '0', left: '16' },
+      { id: '7006', name: '已完成-无时间', status: 'done', consumed: '3', left: '0', finishedDate: '0000-00-00 00:00:00' },
+      { id: '7005', name: '已取消', status: 'cancel', consumed: '1', left: '3' },
+      { id: '7004', name: '已关闭-两月前', status: 'closed', consumed: '4', left: '0', closedDate: daysAgo(60) },
+      { id: '7003', name: '已关闭-近', status: 'closed', consumed: '4', left: '2', closedDate: daysAgo(9) },
+      { id: '7002', name: '已完成-近', status: 'done', consumed: '8', left: '0', finishedDate: daysAgo(3) },
+      { id: '7001', name: '进行中A', status: 'doing', consumed: '2', left: '6' },
+    ],
+  }
+  const { client, ff } = makeClient((url) => {
+    if (url.includes('m=my&f=task')) return { body: `{"status":"200","data":${JSON.stringify(JSON.stringify(list))}}` }
+    return { body: '' }
+  })
+  const opts = await client.myTaskOptions()
+  assert.ok(ff.calls.some((c) => c.url.includes('m=my&f=task')), '应请求含已完成的入口')
+  assert.ok(!ff.calls.some((c) => /recPerPage|pageID|type=/.test(c.url)), '该魔改版上传分页/type 参数会返回空列表，不能传')
+  // 进行中（保持禅道顺序）在前，已完成在后（完成时间倒序、无时间的最后）
+  assert.deepStrictEqual(opts.map((t) => t.id), [7007, 7001, 7002, 7003, 7006])
+  assert.deepStrictEqual(opts.map((t) => t.finished), [false, false, true, true, true])
+  assert.strictEqual(opts[2].finishedAt, daysAgo(3).slice(0, 10))
+  assert.strictEqual(opts[3].finishedAt, daysAgo(9).slice(0, 10)) // closed 回落 closedDate
+  assert.strictEqual(opts[4].finishedAt, '')
+  assert.ok(!opts.some((t) => t.id === 7004), '两个月前关闭的不列')
+  assert.ok(!opts.some((t) => t.id === 7005), '已取消的不列')
+  // 列表字段：选择列表带完成标记，myTasks 仍是 5 字段（提交链路依赖，保持不变）
+  assert.deepStrictEqual(Object.keys(opts[0]).sort(), ['consumed', 'finished', 'finishedAt', 'id', 'left', 'name', 'status'])
+})
+
 await test('myTasks 会话失效自动重登一次', async () => {
   let myHit = 0
   let logins = 0
@@ -1353,6 +1390,41 @@ if (gitOk()) {
     const moved = await fill.plan({ date: pastDayStr, startTime: '23:00', endTime: '02:00', projects, selectedIds: sel, reuse: true })
     assert.strictEqual(moved.crossDay, true)
     assert.strictEqual(totalOf(moved), 3)
+  })
+
+  await test('plan 带回绑定任务选择列表（含已完成），提交汇总仍按未完成列表', async () => {
+    const projects = [{ id: 'hpA', name: 'P-A', repos: [repoA] }]
+    store.save({
+      roots: [],
+      identities: [{ name: 'Me', email: 'me@corp.com' }],
+      hanprint: { baseUrl: 'http://hp.example', clientId: '1', account: '21290', password: 'secret' },
+      zentao: { baseUrl: 'http://zt.example', account: 'me', password: 'p@ss' },
+    })
+    const origZt = ztSvc.ensureClient
+    ztSvc.ensureClient = async () => ({
+      myTasks: async () => [{ id: 66, name: '进行中任务', status: 'doing', consumed: 1, left: 3 }],
+      myTaskOptions: async () => ([
+        { id: 66, name: '进行中任务', status: 'doing', consumed: 1, left: 3, finished: false, finishedAt: '' },
+        { id: 429, name: '已完成任务', status: 'done', consumed: 8, left: 0, finished: true, finishedAt: pastDayStr },
+      ]),
+      getTaskEfforts: async () => [],
+    })
+    try {
+      fill.bindProject('hpA', 429, '已完成任务') // 绑定到一个已完成的任务（完成后仍可能要补填工时）
+      const r = await fill.plan({ date: pastDayStr, startTime: '09:00', endTime: '10:00', projects, selectedIds: ['hpA'] })
+      // 选择列表：进行中在前、已完成在后
+      assert.deepStrictEqual(r.ztTaskOptions.map((t) => t.id), [66, 429])
+      assert.strictEqual(r.ztTaskOptions[1].finished, true)
+      // 提交链路仍只认未完成列表：已完成任务取不到「最新剩余」，不臆造 left
+      assert.deepStrictEqual(r.ztTasks.map((t) => t.id), [66])
+      const t = r.tasks.find((x) => String(x.taskId) === '429')
+      assert.ok(t, '已完成任务也要能生成禅道汇总行')
+      assert.strictEqual(t.taskLeft, null)
+      assert.strictEqual(t.consumed, 1) // 09:00→10:00 = 1h
+    } finally {
+      ztSvc.ensureClient = origZt
+      fill.bindProject('hpA', 66, '任务A') // 还原该块后续/复用用例依赖的绑定
+    }
   })
 } else {
   console.log('  （git 不可用，跳过真实仓库集成用例）')

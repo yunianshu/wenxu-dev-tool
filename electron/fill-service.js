@@ -405,6 +405,7 @@ async function collectRaw({ date, projects, cfg, identities, win, signature }) {
 
   const zentaoConfigured = !!(cfg.zentao && cfg.zentao.baseUrl && cfg.zentao.account && store.getZentaoPwd())
   let ztTasks = []
+  let ztTaskOptions = []
   let ztError = ''
   const ztEfforts = {}
   if (zentaoConfigured) {
@@ -412,6 +413,13 @@ async function collectRaw({ date, projects, cfg, identities, win, signature }) {
       ztTasks = await zentao.ensureClient().then((c) => c.myTasks())
     } catch (e) {
       ztError = (e && e.message) || String(e)
+    }
+    // 绑定任务的选择列表：进行中 + 近一个月完成的（完成后仍可能要补填工时）；单独取，
+    // 失败只影响选择列表，不阻断计划——提交链路用的仍是上面的未完成列表
+    try {
+      ztTaskOptions = await zentao.ensureClient().then((c) => c.myTaskOptions())
+    } catch {
+      ztTaskOptions = []
     }
     // 当日已有工时挂在任务上，缓存后切换所选项目不必重查；并发查询（内网接口串行延迟线性叠加）
     const taskIds = [...new Set(commits.map((c) => (bindings[String(c.projectId)] || {}).taskId).filter(Boolean))]
@@ -452,6 +460,7 @@ async function collectRaw({ date, projects, cfg, identities, win, signature }) {
     commits,
     identitiesMissing,
     ztTasks,
+    ztTaskOptions,
     ztError,
     ztEfforts,
     hpGroups,
@@ -543,6 +552,8 @@ function buildPlanResult({ raw, projects, selectedInput }) {
     bindings: boundProjects,
     suggested,
     ztTasks: raw.ztTasks,
+    // 绑定弹窗的任务选择列表：进行中 + 近一个月完成的；取不到时退回未完成列表
+    ztTaskOptions: raw.ztTaskOptions && raw.ztTaskOptions.length ? raw.ztTaskOptions : raw.ztTasks,
     ztError: raw.ztError,
     hpItems: built.items,
     hpUnmatched: built.unmatched,
