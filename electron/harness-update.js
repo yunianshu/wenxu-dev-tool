@@ -297,8 +297,36 @@ async function ensureUpdater() {
   return { cli, version: String((expected || {}).npmVersion || '') }
 }
 
-/** 在暂存目录里用随包 npm 安装目标版本（流式进度） */
-async function installTree({ cli, prefix, version, registry }) {
+/** 结束整棵子进程树（Windows 必须 /T：npm 的 node 子进程普通 kill 杀不掉） */
+function killTree(pid) {
+  if (!pid) return
+  if (process.platform === 'win32') {
+    try { require('child_process').spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }) } catch { /* noop */ }
+    return
+  }
+  try { process.kill(-pid, 'SIGKILL') } catch { try { process.kill(pid, 'SIGKILL') } catch { /* noop */ } }
+}
+
+/**
+ * 解析系统代理为 npm 可用的环境变量。
+ * npm 子进程跑在纯 Node 下（undici），不认 Windows 系统代理设置——而这台类机器
+ * 往往正因直连 npmjs 不稳定才配了本地代理（实测直连会间歇性挂死/EIDLETIMEOUT）。
+ * 用 Electron 会话的 resolveProxy（读系统设置）拿到代理地址传给 npm，
+ * 使安装链路与检查链路（net.fetch 走系统代理）一致。
+ */
+async function proxyEnvFor(url) {
+  try {
+    const { session } = require('electron')
+    const rules = String(await session.defaultSession.resolveProxy(url) || '')
+    const matched = rules.match(/PROXY\s+([^;]+)/i)
+    if (!matched) return {}
+    const proxy = matched[1].trim()
+    return { HTTP_PROXY: `http://${proxy}`, HTTPS_PROXY: `http://${proxy}`, NO_PROXY: 'localhost,127.0.0.1' }
+  } catch { return {} }
+}
+
+/** 在暂存目录里用随包 npm 安装目标版本（流式进度 + 看门狗） */
+async function installTree({ cli, prefix, version, registry, proxy = {} }) {
   fs.rmSync(path.dirname(prefix), { recursive: true, force: true }) // 清理上次失败的残留
   fs.mkdirSync(prefix, { recursive: true })
   fs.writeFileSync(path.join(prefix, 'package.json'), JSON.stringify({ name: 'harness-runtime', private: true }, null, 2))
@@ -311,6 +339,12 @@ async function installTree({ cli, prefix, version, registry }) {
     '--ignore-scripts',
     '--loglevel', 'http',
     '--registry', registry,
+    // 显式网络超时与重试：默认配置下 socket 挂死（如本地代理瞬断）不会触发超时，
+    // npm 会无限期卡住，表现为「下载依赖」永远转圈（实测下载 68MB 后卡死 12 分钟）
+    '--fetch-timeout', '60000',
+    '--fetch-retries', '3',
+    '--fetch-retry-mintimeout', '2000',
+    '--fetch-retry-maxtimeout', '30000',
     `${PACKAGE}@${version}`,
   ]
   const env = {
@@ -321,22 +355,44 @@ async function installTree({ cli, prefix, version, registry }) {
     npm_config_fund: 'false',
     npm_config_audit: 'false',
     npm_config_progress: 'false',
+    ...proxy,
   }
   log(`安装 ${PACKAGE}@${version} → ${prefix}`)
   // 先落到「下载依赖」：npm 总是先解析/拉取再落盘，不能只靠轮询（安装可能比轮询间隔还快）
   setInstall({ status: 'downloading', fetched: 0, packages: 0 })
-  const proc = spawn(process.execPath, args, { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  // detached 仅 POSIX：进程组整组可杀；Windows 用 taskkill /T
+  const proc = spawn(process.execPath, args, {
+    env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+    detached: process.platform !== 'win32',
+  })
 
   let tail = ''
   let fetched = 0
+  let lastActivityAt = Date.now()
   const onChunk = (chunk) => {
     const text = String(chunk)
     tail = (tail + text).slice(-4000)
     // npm --loglevel=http 每取一个包打一行；按行数近似「已下载包数」作为下载阶段进度
-    fetched += (text.match(/http fetch GET/g) || []).length
+    fetched += (text.match(/http fetch (?:GET|POST)/g) || []).length
+    lastActivityAt = Date.now()
   }
   proc.stdout.on('data', onChunk)
   proc.stderr.on('data', onChunk)
+
+  // 看门狗：输出与磁盘包数双双静止超过阈值视为挂死（超时参数失守、代理黑洞等），
+  // 主动终止安装并报错——保留旧运行时，用户可重试；否则 UI 会永远停在「下载依赖」
+  const STALL_LIMIT_MS = 5 * 60 * 1000
+  let stalled = false
+  const watchdog = setInterval(() => {
+    const packages = countPackages(prefix)
+    if (packages !== runtime.install.packages) lastActivityAt = Date.now()
+    if (Date.now() - lastActivityAt > STALL_LIMIT_MS) {
+      stalled = true
+      log(`安装 ${STALL_LIMIT_MS / 60000} 分钟无进展，终止（已下载 ${fetched} 行 / ${packages} 包）`)
+      killTree(proc.pid)
+    }
+  }, 10000)
+  if (watchdog.unref) watchdog.unref()
 
   const timer = setInterval(() => {
     const packages = countPackages(prefix)
@@ -346,9 +402,11 @@ async function installTree({ cli, prefix, version, registry }) {
 
   const code = await new Promise((resolve) => {
     proc.once('error', () => resolve(-1))
-    proc.once('exit', (c) => resolve(c === null ? -1 : c))
+    proc.once('exit', (c) => resolve(c === null ? (stalled ? -2 : -1) : c))
   })
   clearInterval(timer)
+  clearInterval(watchdog)
+  if (stalled) throw new Error('安装过程长时间无进展（网络中断？），已终止；原有运行时未受影响，可重试')
   setInstall({ fetched, packages: countPackages(prefix) })
   if (code !== 0) {
     throw new Error(`安装失败（npm 退出码 ${code}）${tail.trim() ? `：${tail.trim().split('\n').slice(-3).join(' ')}` : ''}`)
@@ -456,7 +514,9 @@ async function install(opts = {}) {
   let stopBeforeSwap = false
   try {
     const { cli } = await ensureUpdater()
-    await installTree({ cli, prefix: path.join(stagingDir(), 'dsh'), version, registry })
+    const proxy = await proxyEnvFor(registry)
+    if (proxy.HTTPS_PROXY) log(`npm 走系统代理：${proxy.HTTPS_PROXY}`)
+    await installTree({ cli, prefix: path.join(stagingDir(), 'dsh'), version, registry, proxy })
     verifyTree(stagingDir(), version)
 
     // 交换前必须先停服务：Windows 上正在运行的 dsh 会锁住依赖树里的 .node 文件；

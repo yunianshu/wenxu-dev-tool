@@ -618,19 +618,22 @@ body {
   background: var(--accent-soft);
   font-weight: 650;
 }
-/* 菜单项角标：内置 Harness 有新版本时常驻圆形上箭头图标（一次性通知读过之后仍在） */
+/* 菜单图标角标：内置 Harness 有新版本时，菜单图标右上角的小圆点提示。
+ * 实心圆+箭头一类的「徽章」视觉过重且易误读为按钮；小圆点是通知惯例，
+ * 配一圈与所在行底色一致的隔离环，压住图标线条保证清晰。 */
+.app-menu .el-menu-item .nav-ico { position: relative; }
 .nav-badge {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  background: var(--accent-strong);
-  color: #fff;
+  background: var(--brand-accent);
+  box-shadow: 0 0 0 2px #f9fafb;
 }
-.nav-badge .el-icon { font-size: 12px; }
+.app-menu .el-menu-item:hover .nav-badge { box-shadow: 0 0 0 2px var(--line-soft); }
+.app-menu .el-menu-item.is-active .nav-badge { box-shadow: 0 0 0 2px var(--accent-soft); }
 .sidebar-footer {
   white-space: nowrap;
   min-height: 48px;

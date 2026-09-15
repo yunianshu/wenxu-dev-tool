@@ -16,11 +16,12 @@
       <el-menu-item-group title="项目能力">
         <el-menu-item index="chat"><el-icon><ChatDotRound /></el-icon><span>AI 助手</span></el-menu-item>
         <el-menu-item index="harness">
-          <el-icon><Cpu /></el-icon><span>DeepSeek Harness</span>
-          <!-- 有新版本：圆形上箭头角标（悬停提示「有新版本」），不用文字 -->
-          <span v-if="harnessUpdateAvailable" class="nav-badge" title="有新版本">
-            <el-icon><ArrowUpBold /></el-icon>
-          </span>
+          <el-icon class="nav-ico">
+            <Cpu />
+            <!-- 有新版本：图标右上角的小圆点（通知角标惯例，不占文字区） -->
+            <span v-if="harnessUpdateAvailable" class="nav-badge" title="有新版本" />
+          </el-icon>
+          <span>DeepSeek Harness</span>
         </el-menu-item>
         <el-menu-item index="report"><el-icon><DataAnalysis /></el-icon><span>活动报告</span></el-menu-item>
         <el-menu-item index="fillreport"><el-icon><Timer /></el-icon><span>一键填报</span></el-menu-item>

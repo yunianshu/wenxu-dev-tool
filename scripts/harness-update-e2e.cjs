@@ -2,7 +2,7 @@
  * 端到端验证：内置 DeepSeek Harness 的「更新监听 + 应用内热更新」
  *
  * 验收标准（源自需求：监听 dsh 是否有更新 → 有更新要提示 → 可在应用内热更新）：
- *   E1 自动监听并提示 —— 应用启动后自动查询官方源，发现新版本时侧栏出现新版本角标图标（不用文字）
+ *   E1 自动监听并提示 —— 应用启动后自动查询官方源，发现新版本时侧栏菜单图标出现新版本小圆点
  *   E2 应用内热更新 —— 经界面链路触发后，用随包 npm 在**真实网络**上下载并安装新版本
  *   E3 更新真实生效 —— 服务重启后实际运行的 dsh 版本为新版本，服务仍能就绪、内嵌页可加载
  *   E4 重启不回落 —— 再次重启服务仍使用热更新版本（不被随包归档覆盖回旧版本）
@@ -49,9 +49,9 @@ const EVAL = `(async () => {
       await sleep(1000)
     }
   }
-  // 角标为图标（圆形上箭头），不出现「新版本」文字
+  // 角标为菜单图标右上角的小圆点，不出现「新版本」文字
   r.badge = !!q('.nav-badge')
-  r.badgeIcon = !!q('.nav-badge .el-icon svg')
+  r.badgeDot = r.badge && !q('.nav-badge').querySelector('svg') && q('.nav-badge').textContent.trim() === ''
   r.menuText = [...document.querySelectorAll('.el-menu-item')]
     .find((e) => e.textContent.trim().startsWith('DeepSeek Harness'))?.textContent.replace(/\s+/g, ' ').trim() || ''
 
@@ -203,9 +203,9 @@ assert('E1a 真实源可达并给出最新版本号',
   `registry=${r.registry} latest=${r.latest}`)
 assert('E1b 应用自动发现新版本（updateAvailable）', r.updateAvailable === true,
   `current=${r.current} latest=${r.latest}`)
-assert('E1c 界面出现新版本角标图标（菜单项无「新版本」文字）',
-  r.badge === true && r.badgeIcon === true && !String(r.menuText || '').includes('新版本'),
-  `badge=${r.badge} icon=${r.badgeIcon} menuText="${r.menuText}"`)
+assert('E1c 界面出现新版本小圆点角标（菜单项无「新版本」文字）',
+  r.badge === true && r.badgeDot === true && !String(r.menuText || '').includes('新版本'),
+  `badge=${r.badge} dot=${r.badgeDot} menuText="${r.menuText}"`)
 assert('E1d 允许在当前形态热更新（canUpdate）', r.canUpdate === true)
 assert('E1e 更新入口在界面上可达（设置面板显示版本与更新按钮）',
   /^dsh \d+\.\d+\.\d+/.test(r.versionRow || '') && String(r.updateButton).startsWith('更新到'),
