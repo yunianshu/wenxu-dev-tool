@@ -445,8 +445,8 @@ body {
    细节打磨（统一间距 / 微交互 / 精致化）
    ================================================== */
 
-/* 卡片内边距统一 */
-.card { padding: 4px; }
+/* 卡片内边距统一：根节点不再垫 4px——分区带的左右留白由内部 padding 给出（见文末分区带规则），
+   根节点再垫一层会让正文落到 36px，与其它分区的 32px 对不齐 */
 .card > .el-card__header { padding: 14px 18px; border-bottom: 1px solid #f2f4f7; }
 .card > .el-card__body { padding: 18px; }
 
@@ -1059,9 +1059,6 @@ button:focus-visible, [role='button']:focus-visible, .el-button:focus-visible, .
   border-radius: 0;
   box-shadow: none;
   margin-bottom: 0;
-  /* 清掉圆角卡片时代的 .card{padding:4px}：分区带的左右留白由内部 padding 给，
-     根节点再垫 4px 会让正文落到 36px，与其它分区的 32px 对不齐 */
-  padding: 0;
 }
 .card > .el-card__header { padding: 14px 32px; border-bottom: 1px solid var(--line); }
 .card > .el-card__body { padding: 20px 32px; }
