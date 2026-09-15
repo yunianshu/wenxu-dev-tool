@@ -2,7 +2,7 @@
  * 端到端验证：内置 DeepSeek Harness 的「更新监听 + 应用内热更新」
  *
  * 验收标准（源自需求：监听 dsh 是否有更新 → 有更新要提示 → 可在应用内热更新）：
- *   E1 自动监听并提示 —— 应用启动后自动查询官方源，发现新版本时侧栏出现「新版本」角标
+ *   E1 自动监听并提示 —— 应用启动后自动查询官方源，发现新版本时侧栏出现新版本角标图标（不用文字）
  *   E2 应用内热更新 —— 经界面链路触发后，用随包 npm 在**真实网络**上下载并安装新版本
  *   E3 更新真实生效 —— 服务重启后实际运行的 dsh 版本为新版本，服务仍能就绪、内嵌页可加载
  *   E4 重启不回落 —— 再次重启服务仍使用热更新版本（不被随包归档覆盖回旧版本）
@@ -49,7 +49,11 @@ const EVAL = `(async () => {
       await sleep(1000)
     }
   }
-  r.badge = text('.nav-badge')
+  // 角标为图标（圆形上箭头），不出现「新版本」文字
+  r.badge = !!q('.nav-badge')
+  r.badgeIcon = !!q('.nav-badge .el-icon svg')
+  r.menuText = [...document.querySelectorAll('.el-menu-item')]
+    .find((e) => e.textContent.trim().startsWith('DeepSeek Harness'))?.textContent.replace(/\s+/g, ' ').trim() || ''
 
   const status = await window.gitReport.harnessUpdateStatus()
   r.registry = status.registry
@@ -96,7 +100,7 @@ const EVAL = `(async () => {
   r.serviceStatus = snap ? snap.status : ''
   r.harnessVersionAfter = snap ? snap.dshVersion : ''
   r.footer = text('.harness-footer')
-  r.badgeAfter = text('.nav-badge')
+  r.badgeAfter = !!q('.nav-badge')
   r.updateAvailableAfter = (await window.gitReport.harnessUpdateStatus()).updateAvailable === true
   const t2 = Date.now()
   while (Date.now() - t2 < 90000) {
@@ -199,7 +203,9 @@ assert('E1a 真实源可达并给出最新版本号',
   `registry=${r.registry} latest=${r.latest}`)
 assert('E1b 应用自动发现新版本（updateAvailable）', r.updateAvailable === true,
   `current=${r.current} latest=${r.latest}`)
-assert('E1c 界面出现「新版本」角标（提示用户）', r.badge === '新版本', `badge="${r.badge}"`)
+assert('E1c 界面出现新版本角标图标（菜单项无「新版本」文字）',
+  r.badge === true && r.badgeIcon === true && !String(r.menuText || '').includes('新版本'),
+  `badge=${r.badge} icon=${r.badgeIcon} menuText="${r.menuText}"`)
 assert('E1d 允许在当前形态热更新（canUpdate）', r.canUpdate === true)
 assert('E1e 更新入口在界面上可达（设置面板显示版本与更新按钮）',
   /^dsh \d+\.\d+\.\d+/.test(r.versionRow || '') && String(r.updateButton).startsWith('更新到'),
@@ -217,8 +223,8 @@ assert('E3a 服务重启后运行的是新版本', r.harnessVersionAfter === r.l
   `before=${r.harnessVersionBefore} after=${r.harnessVersionAfter}`)
 assert('E3b 服务仍能就绪（running）', r.serviceStatus === 'running', String(r.serviceStatus))
 assert('E3c 界面信息条显示新版本', String(r.footer).includes(`dsh ${r.latest}`), `footer="${r.footer}"`)
-assert('E3d 更新后不再提示有新版本', r.updateAvailableAfter === false && r.badgeAfter === '',
-  `badge="${r.badgeAfter}" updateAvailable=${r.updateAvailableAfter}`)
+assert('E3d 更新后角标消失、不再提示有新版本', r.updateAvailableAfter === false && r.badgeAfter === false,
+  `badge=${r.badgeAfter} updateAvailable=${r.updateAvailableAfter}`)
 assert('E3e 内嵌页面已完成 token 握手（非 token 地址即已登录）',
   !!r.webviewUrl && !String(r.webviewUrl).includes('token='), String(r.webviewUrl))
 
