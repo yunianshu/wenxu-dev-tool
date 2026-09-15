@@ -7,6 +7,11 @@
     >
       <template #actions>
         <span :class="['harness-pill', `is-${snapshot.status}`]">{{ statusLabel }}</span>
+        <!-- 新版本：常驻入口；安装期间原地变成进度（安装可达分钟级，不能只给个转圈） -->
+        <el-button v-if="updating" :loading="true" disabled>{{ updateProgressText }}</el-button>
+        <el-button v-else-if="updateAvailable && updateCanUpdate" type="primary" plain @click="promptUpdate">
+          <el-icon><Download /></el-icon>更新到 {{ updateLatest }}
+        </el-button>
         <el-button v-if="running" @click="openExternal"><el-icon><TopRight /></el-icon>浏览器打开</el-button>
         <el-button v-if="running" @click="reload"><el-icon><Refresh /></el-icon>刷新</el-button>
         <el-button v-if="running" :loading="busy" @click="restart"><el-icon><RefreshRight /></el-icon>重启服务</el-button>
@@ -84,15 +89,31 @@
         <span class="harness-dot" />
         <span>服务运行中</span>
         <span v-if="runtimeLabel" class="harness-meta">{{ runtimeLabel }}</span>
+        <span v-if="updateCurrent" class="harness-meta">dsh {{ updateCurrent }}</span>
         <span class="harness-meta">{{ snapshot.displayUrl }}</span>
         <span class="harness-meta">PID {{ snapshot.pid }}</span>
         <span v-if="snapshot.startedAt" class="harness-meta">启动于 {{ startedAtText }}</span>
       </footer>
     </div>
 
-    <!-- 服务设置：端口与是否随应用自动启动 -->
+    <!-- 服务设置：端口、自动启动与内置运行时版本 -->
     <el-dialog v-model="settingsVisible" title="Harness 服务设置" width="460px" append-to-body>
       <el-form label-width="110px">
+        <el-form-item label="运行时版本">
+          <div class="harness-version-row">
+            <span class="harness-version">dsh {{ updateCurrent || '未知' }}</span>
+            <el-button size="small" :loading="updateChecking" @click="checkUpdate">检查更新</el-button>
+            <el-button
+              v-if="updateAvailable && updateCanUpdate"
+              size="small"
+              type="primary"
+              :loading="updating"
+              @click="promptUpdate"
+            >更新到 {{ updateLatest }}</el-button>
+          </div>
+          <div v-if="updateReason" class="harness-hint">{{ updateReason }}</div>
+          <div v-else-if="updateError" class="harness-hint">{{ updateError }}</div>
+        </el-form-item>
         <el-form-item label="监听端口">
           <el-input-number v-model="portInput" :min="1024" :max="65535" :step="1" controls-position="right" />
           <div class="harness-hint">端口被占用时会自动改用系统分配的空闲端口。</div>
@@ -113,7 +134,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Close, FullScreen } from '@element-plus/icons-vue'
 import PageHeader from '../components/PageHeader.vue'
 import { state } from '../store'
@@ -131,6 +152,8 @@ const autoStartInput = ref(true)
 /** webview 加载失败浮层（仅 running 状态；非 running 由占位层展示 snapshot.error） */
 const loadFailed = ref(false)
 const loadFailText = ref('')
+/** 本页发起的更新请求在途（全局更新态由主进程广播写入 store） */
+const updateBusy = ref(false)
 
 const running = computed(() => snapshot.value.status === 'running' && !!snapshot.value.url)
 const starting = computed(() => snapshot.value.status === 'starting')
@@ -154,6 +177,32 @@ const statusLabel = computed(() => STATUS_TEXT[snapshot.value.status] || '未运
 /** 运行时来源：内置（随安装包分发，目标机器无需装 dsh/Node）/ 本机安装 / PATH */
 const RUNTIME_TEXT = { bundled: '内置运行时', system: '本机安装', path: 'PATH' }
 const runtimeLabel = computed(() => RUNTIME_TEXT[snapshot.value.runtime] || '')
+
+/** 内置运行时更新（状态由主进程广播写入共享 store，App.vue 已全局订阅） */
+const updateInstall = computed(() => state.harnessUpdate.install || {})
+const updating = computed(() => updateBusy.value || state.harnessUpdate.busy === true)
+const updateChecking = computed(() => state.harnessUpdate.checking === true)
+const updateCurrent = computed(() => state.harnessUpdate.current || snapshot.value.dshVersion || '')
+const updateLatest = computed(() => state.harnessUpdate.latest || '')
+const updateAvailable = computed(() => state.harnessUpdate.updateAvailable === true)
+/** canUpdate=false（开发态/自定义运行时目录）时不提供更新入口 */
+const updateCanUpdate = computed(() => state.harnessUpdate.canUpdate !== false)
+const updateReason = computed(() => state.harnessUpdate.reason || '')
+const updateError = computed(() => state.harnessUpdate.error || '')
+/** 安装阶段文案：只给标签与数值（安装可达分钟级，转圈不够） */
+const UPDATE_STAGE_TEXT = {
+  preparing: '准备组件', downloading: '下载依赖', installing: '安装依赖',
+  verifying: '校验', swapping: '切换运行时', restarting: '重启服务',
+}
+const updateProgressText = computed(() => {
+  const install = updateInstall.value
+  const parts = [UPDATE_STAGE_TEXT[install.status] || '更新中']
+  if (install.version) parts.push(install.version)
+  if (install.packages) parts.push(`${install.packages} 个包`)
+  else if (install.fetched) parts.push(`已下载 ${install.fetched}`)
+  if (install.elapsedMs) parts.push(`${Math.max(1, Math.round(install.elapsedMs / 1000))} 秒`)
+  return parts.join(' · ')
+})
 
 let unsubscribe = null
 
@@ -280,9 +329,56 @@ async function saveSettings() {
   ElMessage.success('已保存，重启服务后生效')
 }
 
+/** 手动检查内置运行时新版本（主进程按 6 小时节流，手动检查不受限） */
+async function checkUpdate() {
+  try {
+    const result = await window.gitReport.harnessUpdateCheck()
+    if (result && result.ok === false) {
+      ElMessage.error(result.error || '检查更新失败')
+      return
+    }
+    // 检查失败（源不可达等）时 status 里带 error，不能误报「已是最新版本」
+    if (result && result.error) {
+      ElMessage.error(result.error)
+      return
+    }
+    if (result && result.updateAvailable) ElMessage.success(`有新版本 ${result.latest}`)
+    else ElMessage.success('已是最新版本')
+  } catch (err) {
+    ElMessage.error(err?.message || '检查更新失败')
+  }
+}
+
+/** 应用内热更新：确认后由主进程安装新版本并重启服务（进度经广播回写 store） */
+async function promptUpdate() {
+  const latest = updateLatest.value
+  const current = updateCurrent.value
+  try {
+    await ElMessageBox.confirm(
+      `当前 ${current || '未知'}，将更新到 ${latest}。更新期间服务会重启一次，约 1～5 分钟。`,
+      '更新 DeepSeek Harness',
+      { type: 'warning', confirmButtonText: '开始更新', cancelButtonText: '取消' },
+    )
+  } catch { return /* 用户取消 */ }
+  updateBusy.value = true
+  try {
+    const result = await window.gitReport.harnessUpdateInstall({ version: latest })
+    if (result && result.ok === false) ElMessage.error(result.error || '更新失败')
+    else ElMessage.success(`已更新到 ${(result && result.version) || latest}`)
+  } catch (err) {
+    ElMessage.error(err?.message || '更新失败')
+  } finally {
+    updateBusy.value = false
+  }
+}
+
 onMounted(async () => {
   unsubscribe = window.gitReport.onHarnessStatus(apply)
   await refresh()
+  // 更新态以主进程为准（App.vue 的订阅早于本视图，但设置面板要显示最新版本号）
+  window.gitReport.harnessUpdateStatus?.()
+    .then((status) => { if (status && typeof status === 'object') Object.assign(state.harnessUpdate, status) })
+    .catch(() => { /* 主进程尚未就绪 */ })
   // 主进程已随应用启动拉起服务；若因端口/安装问题未就绪，进入页面时再兜底启动一次
   if (!running.value && !starting.value && installed.value) start()
   portInput.value = Number(state.config.harness?.port) || 3080
@@ -452,4 +548,8 @@ onBeforeUnmount(() => {
 .harness-immersive-label { white-space: nowrap; }
 
 .harness-hint { margin-top: 2px; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+
+/* 运行时版本行：版本号 + 检查更新（有新版本时多一个更新按钮） */
+.harness-version-row { display: flex; align-items: center; gap: 8px; }
+.harness-version { font-family: var(--brand-mono); font-size: 13px; color: #55606e; }
 </style>

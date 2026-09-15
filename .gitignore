@@ -7,3 +7,7 @@ release/
 build/harness-runtime/
 build/harness-runtime.tar.gz
 build/harness-runtime.json
+# 随包分发的 npm（应用内热更新内置 dsh 用，约 16MB + 3MB 归档，不入库）
+build/harness-updater/
+build/harness-updater.tar.gz
+build/harness-updater.json

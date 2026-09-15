@@ -156,4 +156,9 @@ contextBridge.exposeInMainWorld('gitReport', {
   harnessRestart: (opts) => ipcRenderer.invoke('harness:restart', toPlain(opts)),
   harnessOpenExternal: () => ipcRenderer.invoke('harness:openExternal'),
   onHarnessStatus: (cb) => subscribe('harness:status', cb),
+  // 内置运行时更新：检查新版本 / 应用内热更新（进度经 harness:update 广播）
+  harnessUpdateStatus: () => ipcRenderer.invoke('harness:updateStatus'),
+  harnessUpdateCheck: (opts) => ipcRenderer.invoke('harness:updateCheck', toPlain(opts)),
+  harnessUpdateInstall: (opts) => ipcRenderer.invoke('harness:updateInstall', toPlain(opts)),
+  onHarnessUpdate: (cb) => subscribe('harness:update', cb),
 })

@@ -62,6 +62,18 @@ export const state = reactive({
      *  rawCommits，展示、复制与导出必须以此范围为准，避免数据与标题错标 */
     collectedRange: null, // { since, until, repoPaths: string[] }
   },
+  /** 内置 Harness 运行时更新：dsh 新版本提示与应用内热更新进度 */
+  harnessUpdate: {
+    checking: false,
+    current: '',            // 当前运行时的 dsh 版本
+    latest: '',             // 源上的最新版本
+    updateAvailable: false,
+    canUpdate: false,       // 当前形态是否允许热更新（开发态/自定义运行时目录不允许）
+    reason: '',             // 不允许时的原因
+    error: '',
+    busy: false,
+    install: { status: 'idle', version: '', fetched: 0, packages: 0, elapsedMs: 0, error: '' },
+  },
   /** AI 聊天状态（跨视图保留，切换 tab 不丢失对话） */
   chat: {
     messages: [], // [{ role: 'user'|'assistant', content }]

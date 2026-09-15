@@ -201,6 +201,7 @@ node scripts/fill-overnight-e2e.cjs             # 跨夜加班工时
 node scripts/fill-unbind-e2e.cjs                # 解绑任务
 node scripts/fill-min-hours-e2e.cjs              # 有提交的项目保底 0.5h（本地 fake 汉印网关）
 node scripts/harness-fullscreen-e2e.cjs         # Harness 沉浸全屏（启动真实 dsh，耗时数分钟）
+node scripts/harness-update-e2e.cjs             # Harness 更新监听与应用内热更新（真实源下载安装，冷缓存约 5～10 分钟）
 node scripts/startup-background-e2e.cjs         # 打开应用时的后台任务时机（预热推迟到首帧后、在独立进程内跑）
 ```
 

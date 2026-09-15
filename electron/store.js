@@ -44,6 +44,7 @@ const DEFAULTS = {
   harness: {
     port: 3080,       // 期望端口；被占用时自动改用系统分配的空闲端口
     autoStart: true,  // 随应用启动自动开启
+    registry: '',     // 内置 dsh 运行时更新的 npm 源；空=官方源（registry.npmjs.org），可换内网镜像
   },
   // 关闭窗口行为：ask=每次询问（默认按钮是最小化到托盘）/ minimize=直接最小化 / quit=直接退出
   closeAction: 'ask',

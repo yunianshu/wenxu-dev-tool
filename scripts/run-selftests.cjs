@@ -21,6 +21,7 @@ const SUITES = [
   'fill-report-selftest.cjs',
   'harness-defaults-selftest.cjs',
   'harness-runtime-selftest.cjs',
+  'harness-update-selftest.cjs',
   'harness-popup-selftest.cjs',
   'extensions-selftest.cjs',
   'terminal-selftest.cjs',

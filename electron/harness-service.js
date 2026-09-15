@@ -88,10 +88,12 @@ function resolveCli() {
 
 /**
  * 内置运行时目录（随安装包分发）：
- * 打包后为 <resources>/harness-runtime（原样目录）或解包后的用户数据目录
- * （安装包实际分发的是 harness-runtime.tar.gz，见 electron/harness-runtime.js），
- * 开发态为 <repo>/build/harness-runtime。内含 dsh/（固定版本的依赖树），
- * 由 Electron 自带的 Node 执行，使目标机器无需安装 dsh 或 Node。
+ * 打包后为解包到用户数据目录的运行时（安装包实际分发的是 harness-runtime.tar.gz，
+ * 见 electron/harness-runtime.js），开发态为 <repo>/build/harness-runtime。
+ *
+ * 统一走 harness-runtime 的解析链（DSH_RUNTIME_DIR → 随包原样目录 → 用户目录已解包
+ * 或应用内热更新装出来的运行时）：这样「热更新装到用户目录」与「服务实际启动哪个目录」
+ * 永远是同一个判断，不会出现更新成功但服务仍跑旧目录的情况。
  */
 function bundledRuntimeDir() {
   // DSH_RUNTIME_DIR 显式指定运行时目录（不设时按安装包/开发态默认位置查找）
@@ -99,16 +101,7 @@ function bundledRuntimeDir() {
   if (override) {
     try { return fs.existsSync(path.join(override, 'dsh')) ? override : '' } catch { return '' }
   }
-  const candidates = []
-  try {
-    if (process.resourcesPath) candidates.push(path.join(process.resourcesPath, 'harness-runtime'))
-  } catch { /* noop */ }
-  candidates.push(path.join(__dirname, '..', 'build', 'harness-runtime'))
-  for (const dir of candidates) {
-    try { if (fs.existsSync(path.join(dir, 'dsh'))) return dir } catch { /* noop */ }
-  }
-  // 归档解包完成后的位置（ensureBundledRuntime 写入）
-  return harnessRuntime.cachedRuntimeDir()
+  return harnessRuntime.resolveRuntime().dir
 }
 
 function bundledEntry(dir) {
@@ -238,6 +231,8 @@ function snapshot() {
   return {
     ...state,
     installed: isInstalled(),
+    // 当前运行时里的 dsh 版本（界面展示 + 更新提示的比较基准）
+    dshVersion: harnessRuntime.currentRuntimeVersion(),
     detail: logBuffer.slice(-MAX_LOG_CHARS),
   }
 }

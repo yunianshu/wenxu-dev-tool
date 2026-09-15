@@ -31,7 +31,7 @@
 
 <script setup>
 import { ref, h, onMounted, watch } from 'vue'
-import { ElMessage, ElMessageBox, ElCheckbox } from 'element-plus'
+import { ElMessage, ElMessageBox, ElNotification, ElCheckbox } from 'element-plus'
 import AppSidebar from './components/AppSidebar.vue'
 import ChangelogDialog from './components/ChangelogDialog.vue'
 import AppTopbar from './components/AppTopbar.vue'
@@ -147,6 +147,25 @@ onMounted(async () => {
   try { state.ui.fullscreen = !!(await window.gitReport.winIsFullScreen()) } catch { /* 主进程未就绪 */ }
   // 关闭询问：主进程 close 拦截后广播，这里弹与项目 UI 一致的询问框，结果回传执行
   window.gitReport.onWinAskClose?.(showCloseAsk)
+
+  // 内置 Harness 更新：状态与安装进度由主进程广播（安装可达分钟级）；
+  // 首次发现某个新版本时（notify）提示一次，点提示直接进 Harness 页更新
+  window.gitReport.onHarnessUpdate?.((payload) => {
+    if (!payload || typeof payload !== 'object') return
+    Object.assign(state.harnessUpdate, payload)
+    if (payload.notify && payload.latest) {
+      ElNotification({
+        title: `DeepSeek Harness 有新版本 ${payload.latest}`,
+        message: `当前 ${payload.current}，点此进入 Harness 页更新`,
+        type: 'info',
+        duration: 10000,
+        onClick: () => { view.value = 'harness' },
+      })
+    }
+  })
+  window.gitReport.harnessUpdateStatus?.()
+    .then((status) => { if (status && typeof status === 'object') Object.assign(state.harnessUpdate, status) })
+    .catch(() => { /* 主进程尚未就绪 */ })
 
   await loadProjects()
   try {

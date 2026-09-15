@@ -21,6 +21,7 @@ const fillService = require('./fill-service')
 const zentaoService = require('./zentao-service')
 const hanprintService = require('./hanprint-service')
 const harnessService = require('./harness-service')
+const harnessUpdate = require('./harness-update')
 
 // 统一数据目录为 ASCII 固定值，与产品显示名（productName，可中文）解耦：
 // dev / 打包 GUI / 无头 CLI 三模式共用同一份配置，改名或换产品名不丢数据
@@ -280,6 +281,7 @@ function startBackgroundTasks(source) {
   if (process.env.SMOKE_EXIT_MS) console.log(`[startup] 后台任务启动（${source}）`)
   warmupPipeline()
   startHarnessIfEnabled()
+  startHarnessUpdateWatch()
 }
 
 /** 内置 DeepSeek Harness 自启动（autoStart=false 时不启动；冒烟模式默认跳过） */
@@ -294,6 +296,29 @@ function startHarnessIfEnabled() {
       else console.log('[harness] 启动未就绪：', snapshot.error || snapshot.status)
     })
     .catch((err) => console.log('[harness] 启动失败：', (err && err.message) || String(err)))
+}
+
+/** 首次检查更新的延迟：错开启动高峰（Harness 自启与仓库预热都在抢主进程与网络） */
+const UPDATE_FIRST_DELAY_MS = Number(process.env.HARNESS_UPDATE_DELAY_MS) >= 0
+  ? Number(process.env.HARNESS_UPDATE_DELAY_MS)
+  : 15000
+/** 复查周期（harness-update 内部按 6 小时节流，未到期时 check 立即返回） */
+const UPDATE_POLL_MS = 30 * 60 * 1000
+let updateWatch = null
+
+/**
+ * 监视 DeepSeek Harness 新版本：启动后延迟首查，之后每 30 分钟复查（实际按 6 小时节流）。
+ * 发现新版本经 harness:update 广播，界面据此提示，用户可直接在应用内热更新。
+ */
+function startHarnessUpdateWatch() {
+  // 冒烟模式跳过（会引入真实网络请求与时长抖动），需要时用 SMOKE_HARNESS_UPDATE=1 显式开启
+  if (process.env.SMOKE_EXIT_MS && process.env.SMOKE_HARNESS_UPDATE !== '1') return
+  if (updateWatch) return
+  const first = setTimeout(() => { harnessUpdate.check().catch(() => {}) }, UPDATE_FIRST_DELAY_MS)
+  if (first.unref) first.unref()
+  const timer = setInterval(() => { harnessUpdate.check().catch(() => {}) }, UPDATE_POLL_MS)
+  if (timer.unref) timer.unref()
+  updateWatch = { first, timer }
 }
 
 /**
@@ -786,6 +811,25 @@ function registerIpc() {
     try {
       await shell.openExternal(snapshot.url)
       return { ok: true }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) }
+    }
+  })
+
+  // ─── DeepSeek Harness 内置运行时更新（检查新版本 + 应用内热更新） ───
+  // 检查/安装进度经 harness:update 广播：安装可达分钟级，界面需要实时状态
+  harnessUpdate.setEmitter((payload) => broadcast('harness:update', payload))
+  ipcMain.handle('harness:updateStatus', () => harnessUpdate.status())
+  ipcMain.handle('harness:updateCheck', async (_e, opts) => {
+    try {
+      return { ...(await harnessUpdate.check({ ...(opts || {}), force: true })) }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) }
+    }
+  })
+  ipcMain.handle('harness:updateInstall', async (_e, opts) => {
+    try {
+      return await harnessUpdate.install(opts || {})
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) }
     }
