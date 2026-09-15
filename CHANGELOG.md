@@ -4,6 +4,8 @@
 
 ## 未发布
 
+- 仓库迁移：GitHub 仓库更名为 `yunianshu/wenxu-dev-tool`，同步更新 remote、
+  `package.json` 的仓库地址与 electron-builder 发布配置（release 与应用内自动更新改走新仓库）。
 - 新增「终端工作台」：应用内嵌真实终端（node-pty + xterm.js），一个窗格 = 一个项目会话，
   支持 1/2/3/4 个窗格平铺（四宫格盯多个项目）与拖拽调整分屏比例。
 - 终端会话在主进程常驻：切到其他页面只销毁终端视图，pty 进程与输出缓冲都保留，
