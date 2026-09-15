@@ -453,13 +453,13 @@ function focusProject(projectId) {
 
 <style scoped>
 /* 与 Harness 页同样的满高布局：标题栏已投递到顶栏，这里只剩网格。
-   原先的留白由 PageHeader 的 padding 提供，现在自补一份 */
+   原先的留白由 PageHeader 提供，现在自补一份（四边一致，见 --tool-page-gap） */
 .terminal-page {
   height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 18px 32px 20px;
+  padding: var(--tool-page-gap);
 }
 
 .terminal-toolbar {
@@ -496,7 +496,6 @@ function focusProject(projectId) {
   min-height: 0;
   display: grid;
   gap: var(--splitter-hit);
-  padding-bottom: 4px;
   /* 兜底：万一轨道数算错，隐式轨道也等分剩余空间，
      而不是让窗格落进 auto 轨道被挤成几像素高 */
   grid-auto-rows: minmax(0, 1fr);

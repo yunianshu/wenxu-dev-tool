@@ -403,8 +403,8 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  /* 标题栏已投递到顶栏，这里不再留出页头的高度 */
-  padding: 16px 26px 24px;
+  /* 标题栏已投递到顶栏，这里不再留出页头的高度（四边留白与终端工作台共用同一个值） */
+  padding: var(--tool-page-gap);
 }
 /* 沉浸全屏：去掉页面留白与卡片描边，webview 直接铺满整屏 */
 .harness-page.is-immersive { padding: 0; }

@@ -413,6 +413,7 @@ async function main() {
       const area = document.querySelector('.content-area')
       const g = grid ? grid.getBoundingClientRect() : null
       const a = area.getBoundingClientRect()
+      const boxes = [...document.querySelectorAll('.terminal-grid .term-pane')].map((el) => el.getBoundingClientRect())
       return {
         slotExists: !!slot,
         slotTitle: slot?.querySelector('.topbar-page-title')?.textContent || '',
@@ -423,6 +424,14 @@ async function main() {
         gridTopOffset: g ? Math.round(g.top - a.top) : -1,
         gridHeight: g ? Math.round(g.height) : -1,
         areaHeight: Math.round(a.height),
+        // 网格相对内容区的四边留白：四个方向必须一样宽
+        inset: g ? {
+          left: Math.round(g.left - a.left), top: Math.round(g.top - a.top),
+          right: Math.round(a.right - g.right), bottom: Math.round(a.bottom - g.bottom),
+        } : null,
+        // 窗格之间的间隙：横向取第 1|2 格，纵向取第 1|3 格
+        paneGapH: boxes[1] ? Math.round(boxes[1].left - boxes[0].right) : -1,
+        paneGapV: boxes[2] ? Math.round(boxes[2].top - boxes[0].bottom) : -1,
       }
     })()`)
     check('顶栏出现插槽容器', topbar.slotExists)
@@ -435,6 +444,11 @@ async function main() {
     check('终端网格吃到了省下的高度',
       topbar.gridTopOffset >= 0 && topbar.gridTopOffset <= 24 && topbar.gridHeight >= topbar.areaHeight - 60,
       `网格距内容区顶 ${topbar.gridTopOffset}px，网格高 ${topbar.gridHeight} / 内容区高 ${topbar.areaHeight}`)
+    check('页面四边留白一致（左右与上下同宽）',
+      !!topbar.inset && new Set(Object.values(topbar.inset)).size === 1, JSON.stringify(topbar.inset))
+    check('窗格横竖间隙一致',
+      topbar.paneGapH > 0 && topbar.paneGapH === topbar.paneGapV,
+      `横向 ${topbar.paneGapH}px / 纵向 ${topbar.paneGapV}px`)
 
     // 真实点击顶栏里的「添加窗格」下拉：既验证按钮没被拖拽区吃掉，也验证弹层定位正常
     const beforeAdd = await cdp.eval(`(() => { ${HELPERS}; return __panes().length })()`)
@@ -497,7 +511,8 @@ async function main() {
     }
 
     await gotoMenu('工作台')
-    await new Promise((r) => setTimeout(r, 1800))
+    // 等页内标题栏真的渲染出来再断言（视图过渡是 out-in，固定延时偶尔会撞上中间态）
+    await waitFor(cdp, `!!document.querySelector('.content-area .page-header')`, '工作台页渲染出页内标题栏')
     const plainPage = await cdp.eval(`(() => {
       const slot = document.querySelector('#app-topbar-slot')
       return {

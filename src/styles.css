@@ -35,6 +35,9 @@
   --row-h: 44px;
   --sidebar-width: 216px;
   --topbar-height: 64px;
+  /* 工具页（终端工作台 / DeepSeek Harness）的四边留白：两页共用同一个值，
+     四个方向必须一致，否则网格看起来会偏向一侧 */
+  --tool-page-gap: 20px;
   --shadow-float: 0 16px 40px rgba(20, 30, 50, .10);
   /* Element Plus 控件高度统一到 36px，配合菜单项 40px 保证点击区域达标 */
   --el-component-size: 36px;
@@ -697,8 +700,7 @@ body {
 }
 .topbar-slot::-webkit-scrollbar { height: 4px; }
 .topbar-slot > * { flex-shrink: 0; }
-.topbar-page { display: flex; align-items: center; gap: 18px; min-width: 0; }
-.topbar-page-title {
+.topbar-page { display: flex; align-items: center; gap: 18px; min-width: 0; }.topbar-page-title {
   margin: 0;
   color: var(--brand-text);
   font-size: 15px;
@@ -936,7 +938,16 @@ body {
 .target-host { font-size: 13px; color: var(--brand-text-sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 420px; }
 .f-hint { font-size: 13px; color: var(--brand-text-sub); line-height: 1.6; margin-top: 2px; }
 .mono { font-family: var(--brand-mono); }
-.settings-sections { width: fit-content; flex-shrink: 0; margin-bottom: 2px; }
+/* 设置页分区导航带：与分区带同一节奏（顶部细线 + 左右 32px 内边距），
+   分段控件不再贴到内容区边缘（对照 design/project-tool-ui.pen 试样 C） */
+.settings-nav {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 14px 32px;
+  border-top: 1px solid var(--line);
+}
+.settings-sections { width: fit-content; flex-shrink: 0; }
 .settings-about { max-width: 760px; padding: 28px; }
 .settings-about h2 { margin: 4px 0 8px; }
 .settings-about > p { color: var(--text-muted); line-height: 1.7; }
