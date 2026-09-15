@@ -1,10 +1,8 @@
 <template>
   <div class="report-page">
-    <PageHeader
-      title="活动报告"
-      :description="currentProject ? `查看“${currentProject.name}”的 Git 活动，并整理为可回顾的项目报告。` : '汇总全部项目的 Git 活动；Git 是项目报告的可选数据源。'"
-    />
-    <!-- 顶部工具条：选周期 → 点生成，一键完成 -->
+    <!-- 顶部工具条：选周期 → 点生成，一键完成。
+         这里原先还有一条只写着「活动报告」的页头（没有任何操作按钮），
+         侧栏与顶栏已经指明所在位置，那条页头是纯占位，去掉后内容整体上移 -->
     <el-card shadow="never" class="card report-toolbar-card">
       <div class="report-toolbar">
         <div class="toolbar-left">
@@ -245,7 +243,6 @@ import { toPlain } from '../utils/ipc'
 import { shortPath } from '../utils/path'
 import { reposForProject } from '../utils/project-context'
 import { useProjects } from '../composables/useProjects'
-import PageHeader from '../components/PageHeader.vue'
 import BaseChart from '../components/BaseChart.vue'
 import CountUp from '../components/CountUp.vue'
 

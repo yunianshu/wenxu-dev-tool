@@ -202,6 +202,9 @@ body {
   flex-direction: column;
   height: 100%;
   gap: 14px;
+  /* 内容区自身 padding 为 0，普通页面的四边留白一直由各自的 PageHeader 提供；
+     本页那条只剩标题的页头已移除，所以在这里自补同样的留白，避免内容贴边 */
+  padding: 22px 32px 18px;
 }
 .report-toolbar-card { flex-shrink: 0; }
 .report-toolbar {
@@ -924,7 +927,7 @@ body {
 .context-budget { color: var(--brand-text-sub); font-size: 12px; }
 
 /* 部署与设置 */
-.deploy-page .page-header, .settings-page .page-header, .report-page .page-header { flex-shrink: 0; }
+.deploy-page .page-header, .settings-page .page-header { flex-shrink: 0; }
 /* 发布与发布日志并排（日志在发布卡右侧），发布历史在下方通栏、占满剩余宽度。
    用卡片自身类名定位：组件内的 el-dialog 会内联渲染隐藏的 el-overlay，
    .card 的 nth-child 序号不可靠（历史遗留写法曾因此从未命中）。 */
@@ -1056,6 +1059,9 @@ button:focus-visible, [role='button']:focus-visible, .el-button:focus-visible, .
   border-radius: 0;
   box-shadow: none;
   margin-bottom: 0;
+  /* 清掉圆角卡片时代的 .card{padding:4px}：分区带的左右留白由内部 padding 给，
+     根节点再垫 4px 会让正文落到 36px，与其它分区的 32px 对不齐 */
+  padding: 0;
 }
 .card > .el-card__header { padding: 14px 32px; border-bottom: 1px solid var(--line); }
 .card > .el-card__body { padding: 20px 32px; }
