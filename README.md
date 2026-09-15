@@ -4,10 +4,10 @@
 
 在本应用中，**项目是一等领域对象**：只填写项目名称即可创建，不要求必须是 Git 仓库，也不要求配置部署。Git 活动、AI 助手和部署都是项目的**可选能力**——Git 只是报告的数据来源之一，而不是产品的中心。
 
-侧栏导航分三组、八个入口：
+侧栏导航分三组、九个入口：
 
 - **工作区**：工作台、项目
-- **项目能力**：AI 助手、DeepSeek Harness、活动报告、一键填报、部署
+- **项目能力**：AI 助手、DeepSeek Harness、终端工作台、活动报告、一键填报、部署
 - **系统**：扩展管理、设置
 
 应用顶部提供统一的当前项目选择器，切换项目后 AI、报告和部署自动使用同一项目上下文。
@@ -27,7 +27,8 @@
 项目列表与详情，支持新建、编辑、归档/删除（删除有危险操作确认）：
 
 - 字段：名称、说明、本地目录、状态、标签、项目备注
-- 「项目能力」含 PowerShell 快捷入口：一键在项目目录打开 PowerShell 终端（macOS/Linux 打开系统默认终端；未关联目录时置灰）
+- 「项目能力」含终端工作台入口：一键切到终端工作台并在分屏窗格中打开该项目的终端
+- 「项目能力」含外部终端入口：在项目目录另开一个独立 PowerShell 窗口（macOS/Linux 打开系统默认终端；未关联目录时置灰）
 - 「项目能力」含本地调试入口：一键运行项目根目录的 `start.bat`；未找到时提示生成模板（生成后可编辑为实际启动命令），不需要调试的项目可一键关闭并记住偏好
 - 只填名称即可创建项目；关联本地目录为可选操作
 - 若目录是 Git 仓库则展示 Git 信息，但不改变项目的成立条件
@@ -61,6 +62,21 @@
 运行时解析优先级：已解包的内置运行时 → 本机全局安装的 `dsh` → PATH。开发/调试可用 `DSH_RUNTIME_DIR` 指定运行时目录，或用 `DSH_CLI` 指定可执行文件。
 
 构建：`scripts/prepare-harness-runtime.cjs` 在打包前（`beforePack`）安装固定版本 dsh 到 `build/harness-runtime/`（已缓存，约 217MB，不入库；版本用 `DSH_VERSION` 覆盖），并打成 `build/harness-runtime.tar.gz`（约 49MB）随包分发。安装包体积因此增大（Windows 约 +49MB）。
+
+## 终端工作台（内嵌多窗格终端）
+
+把「多个项目的 CLI 同时盯」做成一个界面：**一个窗格 = 一个项目会话**，四个项目就是上下左右四宫格。
+
+- **内置真终端**：主进程用 `node-pty` 起 ConPTY/pty，渲染层用 xterm.js 显示。不是「另开外部窗口」，命令行、日志与报错都在应用界面里
+- **平铺分屏**：最多 4 个窗格，自动按窗格数排布（1 个满屏 / 2 个左右 / 3~4 个 2×2），也可手动锁定「左右 / 上下 / 四宫格 / 三宫格」；窗格之间的分隔条可拖拽调整比例
+- **会话常驻**：切到其他页面只销毁终端视图，pty 进程与输出都留在主进程，切回来恢复画面（回放最近 256KB 输出，更早的以「已超出缓冲上限」提示标出）。跑着的 `npm run dev` 不会因为切页被中断
+- **多窗口布局记忆**：窗格顺序、每个窗格绑定的项目、shell 选择、分屏方式与列宽行高写入 `userData/terminal-layout.json`，**下次打开软件自动恢复上次的多窗口布局**（进程不跨重启，恢复时按项目目录重新拉起会话；项目被删除或未关联目录的窗格会跳过并提示）
+- **shell 解析**：Windows 按 `pwsh` 7 → Windows PowerShell 5.1 → `cmd` 优先级自动选择（与本应用内置 Harness 的解析优先级一致），每个窗格可用标题栏的下拉单独切换；macOS/Linux 用系统默认 shell
+- **默认安全**：新建窗格只 `cd` 到项目目录并打开交互式 shell，不自动执行任何命令；窗格内命令以当前用户权限直接运行，不经过 Harness 沙箱与审批
+- **入口**：侧栏「终端工作台」；项目页「项目能力 → 终端工作台」可切到工作台并聚焦该项目窗格（原「外部 PowerShell」窗口入口保留）
+- **退出即结束**：应用退出时先整树结束 shell 子进程再释放 pty，不留残留进程；会话异常退出（退出码）在窗格上给出状态与「重新打开」入口
+- **实现要点**：主进程 `electron/pty-service.js` 管会话表与输出环形缓冲，`electron/terminal-layout.js` 管布局落盘；`node-pty` 是原生模块，通过 `build.asarUnpack` 放在 asar 外，用的是它自带的 N-API 预编译产物（Electron 自带 Node 24 直接加载，无需 node-gyp）
+- **打包注意**：`build.npmRebuild` 必须为 `false`——`node-pty` 的 N-API 产物同时兼容 Node 与 Electron，而 electron-builder 默认会调 `@electron/rebuild` 重新编译它，这会在没有 Python/VS 构建链的机器上直接让打包失败（本机实测报 `Could not find any Python installation to use`）。升级 `node-pty` 后请确认 `node_modules/node-pty/prebuilds/<平台>-<架构>/` 里有对应产物
 
 ## 活动报告
 
@@ -173,7 +189,7 @@ npm start          # 构建渲染层并启动
 
 ## 测试
 
-主进程自测（无外部依赖，`npm test` 一键运行），覆盖：部署编排 / 脚本部署形态 / 数据同步 / AI 部署助手（体检、方案合并、文件生成防护、配置套用）/ 版本号注入防护 / 发布包符号链接 / 报告历史上限 / Git 扫描与收集 / 一键填报工时算法 / Harness 运行时与默认配置 / 扩展管理 / 终端 / 本地调试 / 项目配置 / AI 上下文。
+主进程自测（无外部依赖，`npm test` 一键运行），覆盖：部署编排 / 脚本部署形态 / 数据同步 / AI 部署助手（体检、方案合并、文件生成防护、配置套用）/ 版本号注入防护 / 发布包符号链接 / 报告历史上限 / Git 扫描与收集 / 一键填报工时算法 / Harness 运行时与默认配置 / 扩展管理 / 终端 / 终端工作台（真实 pty 往返 + 布局持久化）/ 本地调试 / 项目配置 / AI 上下文。
 
 ```bash
 npm test
@@ -203,6 +219,7 @@ node scripts/fill-min-hours-e2e.cjs              # 有提交的项目保底 0.5h
 node scripts/harness-fullscreen-e2e.cjs         # Harness 沉浸全屏（启动真实 dsh，耗时数分钟）
 node scripts/harness-update-e2e.cjs             # Harness 更新监听与应用内热更新（真实源下载安装，冷缓存约 5～10 分钟）
 node scripts/startup-background-e2e.cjs         # 打开应用时的后台任务时机（预热推迟到首帧后、在独立进程内跑）
+node scripts/terminal-workbench-e2e.cjs         # 终端工作台：4 窗格恢复 / 切页不丢会话 / 布局落盘与重启恢复
 ```
 
 服务器侧脚本链路（真实 bash 执行 deploy.sh）：`node scripts/deploy-scriptmode-selftest.cjs`、`node scripts/deploy-datasync-selftest.cjs`（已含在 `npm test`）。
@@ -231,6 +248,8 @@ npm run build:linux     # Linux（AppImage + deb）
 │   ├── git-service.js     #   Git 扫描/收集/仓库信息（纯 Node）
 │   ├── ai-service.js      #   AI 对话（流式）
 │   ├── harness-service.js #   内置 DeepSeek Harness（dsh web）启停与进程树管理
+│   ├── pty-service.js     #   终端工作台：pty 会话表 / shell 解析 / 输出环形缓冲 / 整树回收
+│   ├── terminal-layout.js #   终端工作台布局持久化（窗格顺序/项目/shell/分屏比例）
 │   ├── report-history.js  #   报告历史
 │   ├── zentao-service.js  #   禅道客户端（登录/我的任务/工时写入）
 │   ├── hanprint-service.js #  汉印工时平台客户端（登录/任务字典/占比提交）
@@ -247,7 +266,7 @@ npm run build:linux     # Linux（AppImage + deb）
 │       ├── release-notes.js     #   更新内容（Git 提交 → 通俗中文说明 / 打标签）
 │       └── scripts/deploy.sh    #   服务器端部署脚本
 ├── src/                   # 渲染进程（Vue 3）
-│   ├── views/             #   工作台 / 项目 / AI 助手 / DeepSeek Harness / 活动报告 / 一键填报 / 部署 / 扩展管理 / 设置
+│   ├── views/             #   工作台 / 项目 / AI 助手 / DeepSeek Harness / 终端工作台 / 活动报告 / 一键填报 / 部署 / 扩展管理 / 设置
 │   ├── components/        #   导航、页头、项目编辑、对话面板、图表等
 │   ├── composables/       #   项目加载与当前项目选择
 │   └── utils/             #   项目上下文 / AI 上下文 / 报告生成 / 日期
@@ -259,6 +278,7 @@ npm run build:linux     # Linux（AppImage + deb）
 - 项目数据与配置保存在 `userData/config.json`、`userData/deploy-projects.json`（兼容旧部署项目数据）
 - 一键填报的项目-禅道任务绑定保存在 `userData/fill-bindings.json`
 - 内置 Harness 服务的进程记录保存在 `userData/harness.json`（用于清理异常退出遗留的服务进程）
+- 终端工作台的多窗口布局保存在 `userData/terminal-layout.json`（独立于 `config.json`，避免被「保存设置」的整体回写覆盖）
 - 发布历史保存在 `userData/deploy-history.json`（完整日志在 `userData/deploy-logs/`）；每条发布记录同时保存本次采集到的 Git 提交号、采集范围、提交列表与更新说明
 - API Key、SSH 凭据与禅道/汉印密码经 safeStorage 加密落盘
 

@@ -11,6 +11,8 @@ const aiService = require('./ai-service')
 const projectService = require('./project-service')
 const extensionsService = require('./extensions-service')
 const terminalService = require('./terminal-service')
+const ptyService = require('./pty-service')
+const terminalLayout = require('./terminal-layout')
 const localDebugService = require('./local-debug-service')
 const deployService = require('./deploy/deploy-service')
 const deployProjects = require('./deploy/deploy-projects')
@@ -568,6 +570,83 @@ function registerIpc() {
     }
   })
 
+  // ─── 终端工作台（内嵌真终端：一窗格 = 一个项目会话） ───
+  ptyService.setEmitter((ch, payload) => broadcast(ch, payload))
+  // 会话表在主进程常驻，渲染层切页只销毁视图，进程与输出都还在
+  ipcMain.handle('terminal:shellOptions', () => {
+    try {
+      return { ok: true, options: ptyService.shellOptions() }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err), options: [] }
+    }
+  })
+  ipcMain.handle('terminal:create', (_e, options) => {
+    try {
+      return { ok: true, session: ptyService.create(options || {}) }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) }
+    }
+  })
+  ipcMain.handle('terminal:list', () => {
+    try {
+      return { ok: true, sessions: ptyService.list() }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err), sessions: [] }
+    }
+  })
+  // attach 一次性取回会话信息 + 回放输出（切回页面恢复画面用）
+  ipcMain.handle('terminal:attach', (_e, sessionId) => {
+    try {
+      return { ok: true, ...ptyService.attach(sessionId) }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) }
+    }
+  })
+  ipcMain.handle('terminal:write', (_e, { sessionId, data }) => {
+    try {
+      ptyService.write(sessionId, data)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) }
+    }
+  })
+  ipcMain.handle('terminal:resize', (_e, { sessionId, cols, rows }) => {
+    try {
+      return { ok: true, applied: ptyService.resize(sessionId, cols, rows) }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) }
+    }
+  })
+  ipcMain.handle('terminal:close', (_e, sessionId) => {
+    try {
+      return { ok: true, closed: ptyService.close(sessionId) }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) }
+    }
+  })
+  // 多窗口布局：窗格顺序 + 绑定项目 + shell 选择 + 分屏比例，独立文件持久化
+  ipcMain.handle('terminal:layoutGet', () => {
+    try {
+      return { ok: true, layout: terminalLayout.load() }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) }
+    }
+  })
+  ipcMain.handle('terminal:layoutSave', (_e, layout) => {
+    try {
+      return terminalLayout.save(layout)
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) }
+    }
+  })
+  ipcMain.handle('terminal:layoutClear', () => {
+    try {
+      return terminalLayout.clear()
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) }
+    }
+  })
+
   // 本地调试：探测 / 运行 / 生成项目根目录 start.bat
   ipcMain.handle('debug:status', (_e, dir) => {
     try {
@@ -946,8 +1025,8 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-// 关闭软件即关闭内置 Harness 服务与 git 工作进程（stop 均为同步的进程终止，可安全用于退出钩子）
+// 关闭软件即关闭内置 Harness 服务、git 工作进程与终端会话（stop 均为同步的进程终止，可安全用于退出钩子）
 // before-quit 同时置 isQuitting：此后各窗口的 close 事件直接放行，不再弹询问框
-app.on('before-quit', () => { isQuitting = true; harnessService.stop(); gitService.stop() })
-app.on('will-quit', () => { harnessService.stop(); gitService.stop() })
-process.on('exit', () => { harnessService.stop(); gitService.stop() })
+app.on('before-quit', () => { isQuitting = true; harnessService.stop(); gitService.stop(); ptyService.stop() })
+app.on('will-quit', () => { harnessService.stop(); gitService.stop(); ptyService.stop() })
+process.on('exit', () => { harnessService.stop(); gitService.stop(); ptyService.stop() })

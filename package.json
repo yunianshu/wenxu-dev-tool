@@ -28,6 +28,8 @@
   "devDependencies": {
     "@element-plus/icons-vue": "^2.3.1",
     "@vitejs/plugin-vue": "^5.2.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "concurrently": "^9.1.2",
     "cross-env": "^7.0.3",
     "echarts": "^5.6.0",
@@ -46,6 +48,10 @@
       "dist/**/*",
       "electron/**/*"
     ],
+    "asarUnpack": [
+      "node_modules/node-pty/**"
+    ],
+    "npmRebuild": false,
     "extraResources": [
       {
         "from": "build/harness-runtime.tar.gz",
@@ -111,6 +117,7 @@
     "archiver": "^7.0.1",
     "dompurify": "^3.4.13",
     "marked": "^18.0.9",
+    "node-pty": "^1.1.0",
     "ssh2": "^1.17.0",
     "tar": "^7.5.22",
     "yaml": "^2.9.0"

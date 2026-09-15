@@ -74,7 +74,14 @@ export const state = reactive({
     busy: false,
     install: { status: 'idle', version: '', fetched: 0, packages: 0, elapsedMs: 0, error: '' },
   },
-  /** AI 聊天状态（跨视图保留，切换 tab 不丢失对话） */
+  /** 终端工作台（内嵌多窗格终端）：跨视图只保留轻量标记，
+   *  窗格与会话列表在视图内维护，pty 进程本身在主进程常驻 */
+  terminal: {
+    /** 当前聚焦窗格对应的项目（用于顶栏/其他页面展示上下文） */
+    focusedProjectId: '',
+    /** 从项目页跳转过来时要聚焦的项目（视图挂载时消费一次） */
+    pendingFocusProjectId: '',
+  },  /** AI 聊天状态（跨视图保留，切换 tab 不丢失对话） */
   chat: {
     messages: [], // [{ role: 'user'|'assistant', content }]
     streaming: false,

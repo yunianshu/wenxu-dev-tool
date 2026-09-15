@@ -9,11 +9,12 @@
         :hide-project-switcher="view === 'fillreport'"
         @select-project="selectProject"
       />
-      <main class="content-area" :class="{ 'content-area--flush': view === 'harness' }">
+      <main class="content-area" :class="{ 'content-area--flush': view === 'harness' || view === 'terminal' }">
         <transition name="view-fade" mode="out-in">
           <DashboardView v-if="view === 'dashboard'" key="dashboard" @navigate="navigate" @create-project="openProjectEditor()" />
           <ProjectsView v-else-if="view === 'projects'" key="projects" @navigate="navigate" @create-project="openProjectEditor()" @edit-project="openProjectEditor" />
           <ChatView v-else-if="view === 'chat'" key="chat" @navigate="navigate" />
+          <TerminalWorkbenchView v-else-if="view === 'terminal'" key="terminal" />
           <HarnessView v-else-if="view === 'harness'" key="harness" />
           <ReportView v-else-if="view === 'report'" key="report" @navigate="navigate" />
           <FillReportView v-else-if="view === 'fillreport'" key="fillreport" @navigate="navigate" />
@@ -39,6 +40,7 @@ import ProjectEditor from './components/ProjectEditor.vue'
 import DashboardView from './views/DashboardView.vue'
 import ProjectsView from './views/ProjectsView.vue'
 import ChatView from './views/ChatView.vue'
+import TerminalWorkbenchView from './views/TerminalWorkbenchView.vue'
 import HarnessView from './views/HarnessView.vue'
 import ReportView from './views/ReportView.vue'
 import FillReportView from './views/FillReportView.vue'

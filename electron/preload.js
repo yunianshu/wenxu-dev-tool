@@ -92,6 +92,21 @@ contextBridge.exposeInMainWorld('gitReport', {
     ipcRenderer.invoke('extensions:readSkill', { platform, name }),
   // 终端（在项目目录打开 PowerShell / 系统终端）
   openTerminal: (dir) => ipcRenderer.invoke('terminal:open', dir),
+  // ─── 终端工作台（内嵌终端：一窗格 = 一个项目会话） ───
+  terminalShellOptions: () => ipcRenderer.invoke('terminal:shellOptions'),
+  terminalCreate: (options) => ipcRenderer.invoke('terminal:create', toPlain(options)),
+  terminalList: () => ipcRenderer.invoke('terminal:list'),
+  terminalAttach: (sessionId) => ipcRenderer.invoke('terminal:attach', sessionId),
+  terminalWrite: (sessionId, data) => ipcRenderer.invoke('terminal:write', { sessionId, data: String(data) }),
+  terminalResize: (sessionId, cols, rows) => ipcRenderer.invoke('terminal:resize', { sessionId, cols, rows }),
+  terminalClose: (sessionId) => ipcRenderer.invoke('terminal:close', sessionId),
+  // 多窗口布局持久化（窗格顺序 / 绑定项目 / shell 选择 / 分屏比例）
+  terminalLayoutGet: () => ipcRenderer.invoke('terminal:layoutGet'),
+  terminalLayoutSave: (layout) => ipcRenderer.invoke('terminal:layoutSave', toPlain(layout)),
+  terminalLayoutClear: () => ipcRenderer.invoke('terminal:layoutClear'),
+  onTerminalData: (cb) => subscribe('terminal:data', cb),
+  onTerminalExit: (cb) => subscribe('terminal:exit', cb),
+  onTerminalClosed: (cb) => subscribe('terminal:closed', cb),
   // 本地调试（项目根目录 start.bat 探测 / 运行 / 生成模板）
   debugStatus: (dir) => ipcRenderer.invoke('debug:status', dir),
   debugRun: (dir) => ipcRenderer.invoke('debug:run', dir),

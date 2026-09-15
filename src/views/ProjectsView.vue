@@ -70,7 +70,8 @@
             <button type="button" @click="$emit('navigate', 'chat')"><span><strong>AI 助手</strong><small>使用项目资料开展分析与规划</small></span><el-icon><ArrowRight /></el-icon></button>
             <button type="button" @click="$emit('navigate', 'report')"><span><strong>活动报告</strong><small>{{ matchedRepos.length ? '查看关联 Git 活动' : '关联目录后可采集 Git 活动' }}</small></span><el-icon><ArrowRight /></el-icon></button>
             <button type="button" @click="$emit('navigate', 'deploy')"><span><strong>部署</strong><small>{{ deploymentConfigured(selected) ? '进入发布工作区' : '需要时再配置部署' }}</small></span><el-icon><ArrowRight /></el-icon></button>
-            <button type="button" :disabled="!canOpenTerminal" @click="openPowerShell"><span><strong>PowerShell</strong><small>{{ canOpenTerminal ? '在项目目录打开终端' : '关联本地目录后可用' }}</small></span><el-icon><ArrowRight /></el-icon></button>
+            <button type="button" :disabled="!canOpenTerminal" @click="openInWorkbench"><span><strong>终端工作台</strong><small>{{ canOpenTerminal ? '在窗格中打开该项目终端' : '关联本地目录后可用' }}</small></span><el-icon><ArrowRight /></el-icon></button>
+            <button v-if="canOpenTerminal" type="button" @click="openPowerShell"><span><strong>外部 PowerShell</strong><small>另开一个独立终端窗口</small></span><el-icon><TopRight /></el-icon></button>
             <button
               type="button"
               :class="{ 'debug-off': isDebugOff }"
@@ -113,6 +114,17 @@ const filteredProjects = computed(() => state.projects.items.filter((project) =>
 const selected = computed(() => currentProject.value || filteredProjects.value[0] || null)
 const matchedRepos = computed(() => reposForProject(selected.value, state.discoveredRepos))
 const canOpenTerminal = computed(() => !!selected.value?.localPath)
+
+/** 在终端工作台的分屏窗格中打开该项目（切到工作台视图并聚焦对应窗格） */
+function openInWorkbench() {
+  const project = selected.value
+  if (!project?.localPath) {
+    ElMessage.warning('请先在编辑中关联本地目录')
+    return
+  }
+  state.terminal.pendingFocusProjectId = project.id
+  emit('navigate', 'terminal')
+}
 
 async function openPowerShell() {
   const dir = selected.value?.localPath
