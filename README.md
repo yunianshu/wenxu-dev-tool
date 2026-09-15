@@ -220,6 +220,7 @@ node scripts/harness-fullscreen-e2e.cjs         # Harness 沉浸全屏（启动�
 node scripts/harness-update-e2e.cjs             # Harness 更新监听与应用内热更新（真实源下载安装，冷缓存约 5～10 分钟）
 node scripts/startup-background-e2e.cjs         # 打开应用时的后台任务时机（预热推迟到首帧后、在独立进程内跑）
 node scripts/terminal-workbench-e2e.cjs         # 终端工作台：4 窗格恢复 / 切页不丢会话 / 布局落盘与重启恢复
+node scripts/terminal-workbench-interact-e2e.cjs # 终端工作台交互（真实鼠标键盘）：点窗格聚焦 / 命令回显不串窗格 / 关闭按钮 / 拖拽分隔条 / 落盘时序
 ```
 
 服务器侧脚本链路（真实 bash 执行 deploy.sh）：`node scripts/deploy-scriptmode-selftest.cjs`、`node scripts/deploy-datasync-selftest.cjs`（已含在 `npm test`）。

@@ -83,7 +83,7 @@
  * 全部写入 userData/terminal-layout.json，下次启动自动恢复同样排布。
  * 进程本身不跨应用重启（pty 随应用退出结束），恢复时按项目目录重新拉起会话。
  */
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown, Plus } from '@element-plus/icons-vue'
 import PageHeader from '../components/PageHeader.vue'
@@ -126,14 +126,17 @@ function cellStyle(index) {
   return { gridColumn: `${(index % cols) + 1}`, gridRow: `${Math.floor(index / cols) + 1}` }
 }
 
-/** 竖向分隔条：仅同一行内、且其右侧确实还有窗格时才有意义 */
+/** 竖向分隔条：每个列交界一条（跨全部行）。
+ *  按窗格索引生成会出现「同一列交界、上下两行各一条」的重叠元素，这里按列去重 */
 const columnSeps = computed(() => {
   const { cols } = layout.value
   const list = []
   if (cols < 2) return list
-  panes.value.forEach((_, index) => {
-    if ((index + 1) % cols !== 0 && index < panes.value.length - 1) list.push({ index })
-  })
+  for (let c = 0; c < cols - 1; c += 1) {
+    // 该列右侧确实还有窗格时才画（末行只剩一个窗格时不画右半段的空分隔条）
+    const hasNeighbor = panes.value.some((_, i) => i % cols === c && i + 1 < panes.value.length)
+    if (hasNeighbor) list.push({ index: c })
+  }
   return list
 })
 
@@ -148,10 +151,14 @@ const rowSeps = computed(() => {
   return list
 })
 
-/** 分隔条定位：竖向落在两列交界（跨整行），横向落在两行交界（跨整行宽） */
+/**
+ * 分隔条定位：先落在间隙左/上方的单元格里，再由 CSS 用负外边距溢到间隙上。
+ * grid 没有「放在 gap 上」的写法；若直接占用相邻那一列/行，分隔条会铺满该单元格，
+ * 把那个窗格（含标题栏按钮）的鼠标事件全部吞掉，只剩一个窗格能点。
+ */
 function splitterStyle(index, horizontal = false) {
-  if (horizontal) return { gridColumn: `1 / span ${layout.value.cols}`, gridRow: `${index + 1}` }
-  return { gridColumn: `${index + 2}`, gridRow: `1 / span ${layout.value.rows}` }
+  if (horizontal) return { gridColumn: `1 / span ${layout.value.cols}`, gridRow: `${index}` }
+  return { gridColumn: `${(index % layout.value.cols) + 1}`, gridRow: `1 / span ${layout.value.rows}` }
 }
 
 /** 可添加的项目：有关联目录且尚未出现在窗格中 */
@@ -276,21 +283,36 @@ function startRowDrag(index, event) {
 
 // ─── 布局持久化：任何结构性变化都落盘（项目、shell、分屏方式、列宽行高） ───
 let saveTimer = null
+/** 恢复期间抑制落盘：恢复顺带会改分屏方式/列宽，若因此写盘，
+ *  会把「因项目当前不可用而跳过的窗格」覆盖成永久丢失 */
+let restoring = false
+
+function buildLayout() {
+  return {
+    gridMode: gridMode.value,
+    columnWidths: columnWidths.value.slice(0, 2),
+    rowHeights: rowHeights.value.slice(0, 2),
+    panes: panes.value.map((p) => ({
+      projectId: p.projectId,
+      shellId: p.shellId,
+      title: '',
+      width: 0.5,
+    })),
+  }
+}
+
+/** 立即落盘（切页/卸载时用，绕过 400ms 防抖） */
+function writeLayout() {
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+  window.gitReport.terminalLayoutSave(buildLayout()).catch(() => {})
+}
+
 function scheduleSave() {
+  if (restoring) return
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
     saveTimer = null
-    window.gitReport.terminalLayoutSave({
-      gridMode: gridMode.value,
-      columnWidths: columnWidths.value.slice(0, 2),
-      rowHeights: rowHeights.value.slice(0, 2),
-      panes: panes.value.map((p) => ({
-        projectId: p.projectId,
-        shellId: p.shellId,
-        title: '',
-        width: 0.5,
-      })),
-    }).catch(() => {})
+    window.gitReport.terminalLayoutSave(buildLayout()).catch(() => {})
   }, 400)
 }
 
@@ -310,22 +332,31 @@ async function restoreLayout() {
   const res = await window.gitReport.terminalLayoutGet().catch(() => null)
   const saved = res?.layout
   if (!saved?.panes?.length) return
-  const restored = []
-  let missing = 0
-  for (const item of saved.panes) {
-    const project = state.projects.items.find((p) => p.id === item.projectId)
-    if (!project?.localPath) { missing += 1; continue }
-    const pane = makePane(project, item)
-    // 上次的 shell 选择也要恢复（该 id 在当前机器上不存在时回落自动）
-    if (item.shellId && shellOptions.value.some((o) => o.id === item.shellId)) pane.shellId = item.shellId
-    restored.push(pane)
+  restoring = true
+  try {
+    const restored = []
+    let missing = 0
+    const seen = new Set()
+    for (const item of saved.panes) {
+      const project = state.projects.items.find((p) => p.id === item.projectId)
+      // 同一项目只恢复一个窗格：两个窗格绑同一项目会 attach 到同一个 pty，输出会互相串
+      if (!project?.localPath || seen.has(item.projectId)) { missing += 1; continue }
+      seen.add(item.projectId)
+      const pane = makePane(project, item)
+      // 上次的 shell 选择也要恢复（该 id 在当前机器上不存在时回落自动）
+      if (item.shellId && shellOptions.value.some((o) => o.id === item.shellId)) pane.shellId = item.shellId
+      restored.push(pane)
+    }
+    if (saved.gridMode === 'auto' || GRID_PRESETS[saved.gridMode]) gridMode.value = saved.gridMode
+    if (Array.isArray(saved.columnWidths) && saved.columnWidths.length === 2) columnWidths.value = saved.columnWidths
+    if (Array.isArray(saved.rowHeights) && saved.rowHeights.length === 2) rowHeights.value = saved.rowHeights
+    panes.value = restored.slice(0, 4)
+    if (missing) ElMessage.warning(`上次有 ${missing} 个窗格的项目已不可用，已跳过`)
+  } finally {
+    // 等 watch 回调跑完再解除抑制：恢复动作本身不落盘，避免把跳过的窗格写没
+    await nextTick()
+    restoring = false
   }
-  if (saved.gridMode === 'auto' || GRID_PRESETS[saved.gridMode]) gridMode.value = saved.gridMode
-  if (Array.isArray(saved.columnWidths) && saved.columnWidths.length === 2) columnWidths.value = saved.columnWidths
-  if (Array.isArray(saved.rowHeights) && saved.rowHeights.length === 2) rowHeights.value = saved.rowHeights
-  panes.value = restored.slice(0, 4)
-  // 恢复动作本身会触发 watch：这里不落盘（避免把「跳过失效窗格」的结果写回去丢信息）
-  if (missing) ElMessage.warning(`上次有 ${missing} 个窗格的项目已不可用，已跳过`)
 }
 
 onMounted(async () => {
@@ -338,6 +369,12 @@ onMounted(async () => {
   const wantId = state.terminal.pendingFocusProjectId
   state.terminal.pendingFocusProjectId = ''
   if (wantId) focusProject(wantId)
+})
+
+/** 切到其他页面会卸载本视图：立即落盘（不等 400ms 防抖）。
+ *  否则「改完布局就切页、紧接着关掉应用」时，防抖里那次改动会随进程一起消失 */
+onBeforeUnmount(() => {
+  if (saveTimer) writeLayout()
 })
 
 /** 项目被删除时同步移除对应窗格，避免留一个死窗格 */
@@ -401,27 +438,41 @@ function focusProject(projectId) {
   font-size: 13px;
 }
 
-/* 平铺网格：1px 间隙由分隔条填充，分隔条本身可拖拽 */
+/* 平铺网格：间隙由分隔条填充，分隔条本身可拖拽。
+   --splitter-hit 同时决定间隙宽度与分隔条命中区，两者必须一致：
+   分隔条只有正好压在间隙上，才不会侵占两侧窗格的鼠标事件。 */
 .terminal-grid {
+  --splitter-hit: 6px;
   flex: 1;
   min-height: 0;
   margin-top: 16px;
   display: grid;
-  gap: 6px;
+  gap: var(--splitter-hit);
   padding-bottom: 4px;
 }
 
-/* 分隔条：落在网格间隙里，hover 时高亮提示可拖动 */
+/* 分隔条：只占间隙那一小条，hover 时高亮提示可拖动 */
 .term-splitter {
   position: relative;
   z-index: 2;
-  align-self: stretch;
-  justify-self: stretch;
-  cursor: col-resize;
   background: transparent;
 }
 
+/* 竖向：占左侧那一列，向右溢出一个间隙宽，正好压在两列之间 */
+.term-splitter--v {
+  align-self: stretch;
+  justify-self: end;
+  width: var(--splitter-hit);
+  margin-right: calc(-1 * var(--splitter-hit));
+  cursor: col-resize;
+}
+
+/* 横向：占上方那一行，向下溢出一个间隙高，正好压在两行之间 */
 .term-splitter--h {
+  justify-self: stretch;
+  align-self: end;
+  height: var(--splitter-hit);
+  margin-bottom: calc(-1 * var(--splitter-hit));
   cursor: row-resize;
 }
 

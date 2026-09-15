@@ -12,6 +12,7 @@
  *   T6 重启恢复：再次启动应用，按落盘顺序恢复窗格并重新拉起真实会话
  *   T7 退出不留残留：应用退出后 shell 进程全部结束
  *   T8 全程无渲染层错误
+ *   T9 窗格可交互：每个窗格矩形内的采样点都命中窗格自身（不被分隔条等覆盖层抢占）
  *
  * 前置：npm run build:renderer（驱动 dist/ 产物）
  * 用法：node scripts/terminal-workbench-e2e.cjs
@@ -127,6 +128,23 @@ const HELPERS = `
       overlays: panes.map((p) => p.querySelector('.term-overlay p')?.textContent || ''),
       rendered: !!document.querySelector('.terminal-grid .xterm'),
       page: document.querySelector('.page')?.className || '',
+      // 命中测试：窗格矩形内的点是否真的落在该窗格上。
+      // 分隔条一旦占用整个单元格就会盖住窗格——界面看着正常、会话也活着，
+      // 但点不动也打不了字，只有命中测试能发现。
+      blocked: panes.reduce((sum, p) => {
+        const r = p.getBoundingClientRect()
+        let bad = 0
+        for (let ry = 1; ry <= 3; ry += 1) {
+          for (let rx = 1; rx <= 3; rx += 1) {
+            const hit = document.elementFromPoint(
+              Math.round(r.x + (r.width * rx) / 4),
+              Math.round(r.y + (r.height * ry) / 4),
+            )
+            if (!p.contains(hit)) bad += 1
+          }
+        }
+        return sum + bad
+      }, 0),
       live: all.filter((s) => !s.exited && s.pid > 0).length,
       exited: all.filter((s) => s.exited).length,
       pids: all.map((s) => s.pid),
@@ -199,6 +217,8 @@ async function main() {
     PROJECTS.every((p) => flow.restored.cwds.some((c) => path.resolve(c) === path.resolve(p.localPath))),
     flow.restored.cwds.join(' | '))
   check('无会话异常退出', flow.restored.exited === 0)
+  check('窗格未被分隔条盖住（36 个采样点全部命中自身）', flow.restored.blocked === 0,
+    `被抢占 ${flow.restored.blocked}/36`)
 
   check('切走后终端视图已卸载', flow.left.panes === 0, `残留 ${flow.left.panes} 个窗格`)
   check('切走后 pty 会话仍全部存活', flow.left.live === 4, `存活 ${flow.left.live}`)
