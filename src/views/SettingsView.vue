@@ -1,7 +1,9 @@
 <template>
   <div class="settings-page">
     <PageHeader title="设置" description="管理 AI 服务、Git 活动采集和个人身份。" />
-    <el-segmented v-model="activeSection" :options="SETTING_SECTIONS" class="settings-sections" />
+    <div class="settings-nav">
+      <el-segmented v-model="activeSection" :options="SETTING_SECTIONS" class="settings-sections" />
+    </div>
 
     <!-- Git 活动源：作为工作台入口的直接落点，优先于扫描配置展示 -->
     <el-card v-show="activeSection === 'git'" shadow="never" class="card settings-repo-card">

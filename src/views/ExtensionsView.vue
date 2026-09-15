@@ -323,17 +323,22 @@ onMounted(loadExtensions)
 </script>
 
 <style scoped>
-/* 一级/二级共用卡片网格 */
+/* 一级/二级共用卡片网格：卡片行左右 32px 内边距，与分区带同一节奏 */
 .ext-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 14px;
+  padding: 16px 32px 20px;
 }
 .ext-items { grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); }
 
-/* 一级分区 */
-.ext-section { margin-bottom: 6px; }
-.ext-section-head { margin-bottom: 10px; }
+/* 一级分区：分区带（顶部细线 + 标题行，底部收尾线） */
+.ext-section { border-top: 1px solid var(--line); }
+.ext-section:last-child { border-bottom: 1px solid var(--line); }
+.ext-section-head {
+  padding: 14px 32px;
+  border-bottom: 1px solid var(--line);
+}
 .ext-section-title {
   display: flex;
   align-items: center;
@@ -392,10 +397,13 @@ onMounted(loadExtensions)
   flex-shrink: 0;
   gap: 12px;
   flex-wrap: wrap;
+  padding: 16px 32px 14px;
 }
 .ext-detail-head { display: flex; align-items: center; gap: 12px; }
 .ext-detail-title { font-size: 16px; font-weight: 600; color: var(--brand-text); }
 .ext-detail-sub { font-size: 12px; color: var(--brand-text-sub); margin-top: 2px; }
+/* 二级提示条：作为分区带，左右留白与卡片行一致 */
+.extensions-page .el-alert.card { padding: 12px 32px; }
 
 /* 二级子项卡片 */
 .ext-item {

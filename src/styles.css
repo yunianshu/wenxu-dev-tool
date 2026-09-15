@@ -951,7 +951,7 @@ body {
   border-top: 1px solid var(--line);
 }
 .settings-sections { width: fit-content; flex-shrink: 0; }
-.settings-about { max-width: 760px; padding: 28px; }
+.settings-about { max-width: 760px; padding: 28px 32px; }
 .settings-about h2 { margin: 4px 0 8px; }
 .settings-about > p { color: var(--text-muted); line-height: 1.7; }
 .close-behavior { margin: 22px 0 0; padding-top: 18px; border-top: 1px solid var(--line); }
