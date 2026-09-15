@@ -667,7 +667,17 @@ body {
   border-bottom: 1px solid var(--line);
   -webkit-app-region: drag; /* 无边框窗口：顶栏空白处可拖拽移动/双击最大化 */
 }
-.project-switcher { display: flex; align-items: center; gap: 10px; min-width: 0; -webkit-app-region: no-drag; }
+/* 顶栏整条（含中间插槽的空白、页标题文字）都是窗口拖拽区，只有要点的控件退出拖拽区。
+   app-region 会继承给后代：给容器设 no-drag 就会连带整片区域拖不动窗口。
+   反面教材是 .topbar-slot —— 它 flex: 1 占满顶栏中段，曾经整条设 no-drag，
+   结果顶栏能拖的只剩左右两条 28px 内边距，窗口几乎拖不动。 */
+.app-topbar :is(
+  button, a, input, select, textarea, label,
+  [tabindex], [role="button"], [role="combobox"], [role="textbox"],
+  .el-select, .el-dropdown, .el-input, .el-date-editor,
+  .el-switch, .el-checkbox, .el-radio-group
+) { -webkit-app-region: no-drag; }
+.project-switcher { display: flex; align-items: center; gap: 10px; min-width: 0; }
 /* margin-left:auto：隐藏左侧项目切换器后（space-between 对唯一子元素失效）仍固定右侧 */
 .win-controls { display: flex; align-items: center; gap: 2px; margin-left: auto; margin-right: -14px; -webkit-app-region: no-drag; }
 .win-btn {
@@ -689,8 +699,9 @@ body {
 .project-select { width: 230px; }
 .project-select .el-select__wrapper { box-shadow: none !important; background: #f3f5f6; }
 /* 工具页标题栏：由页面 Teleport 进顶栏（终端工作台 / DeepSeek Harness）。
-   顶栏整条是 -webkit-app-region: drag，插槽内的控件必须显式 no-drag，
-   否则点击会被当成拖拽窗口——按钮看着在，就是点不动。 */
+   插槽只是布局容器、不是控件，所以**保持可拖拽**：它 flex: 1 占满顶栏中段，
+   一旦整条设成 no-drag，顶栏中间这一大片空白就再也拖不动窗口；
+   里面的按钮/下拉由上面 .app-topbar 那条控件规则退出拖拽区。 */
 .topbar-slot {
   flex: 1;
   min-width: 0;
@@ -701,7 +712,6 @@ body {
      插槽内容比容器高 1px（行框基线差异）就会冒出一条垂直滚动条 */
   overflow-x: auto;
   overflow-y: hidden;
-  -webkit-app-region: no-drag;
 }
 .topbar-slot::-webkit-scrollbar { height: 4px; }
 .topbar-slot > * { flex-shrink: 0; }
