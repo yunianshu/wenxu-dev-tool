@@ -1,27 +1,28 @@
 <template>
   <div class="page harness-page" :class="{ 'is-immersive': immersive }">
-    <PageHeader
-      v-if="!immersive"
-      title="DeepSeek Harness"
-      description="内置的 DeepSeek 智能体工作台：打开软件自动开启本地服务，关闭软件时一并关闭。"
-    >
-      <template #actions>
-        <span :class="['harness-pill', `is-${snapshot.status}`]">{{ statusLabel }}</span>
-        <!-- 新版本：常驻入口；安装期间原地变成进度（安装可达分钟级，不能只给个转圈） -->
-        <el-button v-if="updating" :loading="true" disabled>{{ updateProgressText }}</el-button>
-        <el-button v-else-if="updateAvailable && updateCanUpdate" type="primary" plain @click="promptUpdate">
-          <el-icon><Download /></el-icon>更新到 {{ updateLatest }}
-        </el-button>
-        <el-button v-if="running" @click="openExternal"><el-icon><TopRight /></el-icon>浏览器打开</el-button>
-        <el-button v-if="running" @click="reload"><el-icon><Refresh /></el-icon>刷新</el-button>
-        <el-button v-if="running" :loading="busy" @click="restart"><el-icon><RefreshRight /></el-icon>重启服务</el-button>
-        <el-button v-else-if="installed" type="primary" :loading="busy" @click="start">
-          <el-icon><VideoPlay /></el-icon>启动服务
-        </el-button>
-        <el-button v-if="running" @click="enterFullscreen"><el-icon><FullScreen /></el-icon>全屏</el-button>
-        <el-button @click="settingsVisible = true"><el-icon><Setting /></el-icon>服务设置</el-button>
-      </template>
-    </PageHeader>
+    <!-- 标题栏投递到应用顶栏：该页与「当前项目」无关，顶栏原本闲置（沉浸全屏时
+         顶栏整体不存在，v-if 与 immersive 同源，行为与原先隐藏页头一致） -->
+    <Teleport v-if="!immersive" to="#app-topbar-slot">
+      <div class="topbar-page">
+        <h1 class="topbar-page-title">DeepSeek Harness</h1>
+        <div class="harness-actions">
+          <span :class="['harness-pill', `is-${snapshot.status}`]">{{ statusLabel }}</span>
+          <!-- 新版本：常驻入口；安装期间原地变成进度（安装可达分钟级，不能只给个转圈） -->
+          <el-button v-if="updating" :loading="true" disabled>{{ updateProgressText }}</el-button>
+          <el-button v-else-if="updateAvailable && updateCanUpdate" type="primary" plain @click="promptUpdate">
+            <el-icon><Download /></el-icon>更新到 {{ updateLatest }}
+          </el-button>
+          <el-button v-if="running" @click="openExternal"><el-icon><TopRight /></el-icon>浏览器打开</el-button>
+          <el-button v-if="running" @click="reload"><el-icon><Refresh /></el-icon>刷新</el-button>
+          <el-button v-if="running" :loading="busy" @click="restart"><el-icon><RefreshRight /></el-icon>重启服务</el-button>
+          <el-button v-else-if="installed" type="primary" :loading="busy" @click="start">
+            <el-icon><VideoPlay /></el-icon>启动服务
+          </el-button>
+          <el-button v-if="running" @click="enterFullscreen"><el-icon><FullScreen /></el-icon>全屏</el-button>
+          <el-button @click="settingsVisible = true"><el-icon><Setting /></el-icon>服务设置</el-button>
+        </div>
+      </div>
+    </Teleport>
 
     <div class="harness-shell">
       <div class="harness-stage">
@@ -136,7 +137,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Close, FullScreen } from '@element-plus/icons-vue'
-import PageHeader from '../components/PageHeader.vue'
 import { state } from '../store'
 import { toPlain } from '../utils/ipc'
 
@@ -403,12 +403,15 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 22px 26px 24px;
+  /* 标题栏已投递到顶栏，这里不再留出页头的高度 */
+  padding: 16px 26px 24px;
 }
-.harness-page .page-header { margin-bottom: 14px; }
 /* 沉浸全屏：去掉页面留白与卡片描边，webview 直接铺满整屏 */
 .harness-page.is-immersive { padding: 0; }
 .harness-page.is-immersive .harness-shell { border: 0; border-radius: 0; }
+
+/* 顶栏里的操作组（原先放在 PageHeader 的 actions 插槽里） */
+.harness-actions { display: flex; align-items: center; gap: 8px; }
 
 .harness-pill {
   display: inline-flex;

@@ -1,7 +1,11 @@
 <template>
   <div class="page terminal-page">
-    <PageHeader title="终端工作台" description="一个窗格一个项目会话，多项目的 CLI 同屏并行；切到其他页面后仍在后台运行。">
-      <template #actions>
+    <!-- 标题栏投递到应用顶栏：该页与「当前项目」无关，顶栏原本闲置；
+         投递后既省下一条标题栏的高度给终端，也让顶栏承载真实操作。
+         沉浸全屏时顶栏整体不存在（v-if），所以用 v-if 而不是 disabled。 -->
+    <Teleport v-if="topbarReady" to="#app-topbar-slot">
+      <div class="topbar-page">
+        <h1 class="topbar-page-title">终端工作台</h1>
         <div class="terminal-toolbar">
           <el-dropdown trigger="click" :disabled="!canAddPane" @command="addPane">
             <el-button type="primary" :disabled="!canAddPane" :title="panes.length >= MAX_PANES ? `最多同时开 ${MAX_PANES} 个窗格` : ''">
@@ -28,8 +32,8 @@
 
           <el-button v-if="panes.length" size="small" @click="closeAll">全部关闭</el-button>
         </div>
-      </template>
-    </PageHeader>
+      </div>
+    </Teleport>
 
     <p v-if="!state.projects.items.length" class="terminal-hint">
       还没有项目：先到「项目」页创建项目并关联本地目录，再回到这里分屏开终端。
@@ -87,7 +91,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown, Plus } from '@element-plus/icons-vue'
-import PageHeader from '../components/PageHeader.vue'
 import TerminalPane from '../components/TerminalPane.vue'
 import { state } from '../store'
 
@@ -109,6 +112,8 @@ const activeIndex = ref(0)
 const columnWidths = ref([0.5, 0.5])
 const rowHeights = ref([0.5, 0.5])
 const gridRef = ref(null)
+/** 顶栏是否在位（沉浸全屏时整个顶栏被卸载，此时不投递标题栏） */
+const topbarReady = computed(() => !state.ui.fullscreen)
 
 /**
  * 列数/行数。
@@ -447,12 +452,14 @@ function focusProject(projectId) {
 </script>
 
 <style scoped>
-/* 与 Harness 页同样的满高布局：工具条固定，网格占满剩余高度 */
+/* 与 Harness 页同样的满高布局：标题栏已投递到顶栏，这里只剩网格。
+   原先的留白由 PageHeader 的 padding 提供，现在自补一份 */
 .terminal-page {
   height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  padding: 18px 32px 20px;
 }
 
 .terminal-toolbar {
@@ -487,7 +494,6 @@ function focusProject(projectId) {
   --splitter-hit: 6px;
   flex: 1;
   min-height: 0;
-  margin-top: 16px;
   display: grid;
   gap: var(--splitter-hit);
   padding-bottom: 4px;

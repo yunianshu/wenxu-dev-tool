@@ -20,6 +20,9 @@
         {{ projectStatusLabel(currentProject.status) }}
       </el-tag>
     </div>
+    <!-- 工具页（终端工作台 / Harness）把自己的标题栏 Teleport 到这里：
+         这两页与「当前项目」无关，顶栏原本闲置，正好改成它们的标题栏 -->
+    <div id="app-topbar-slot" class="topbar-slot" />
     <!-- 无边框窗口的标题栏按钮（顶栏其余空白区域可拖拽移动窗口） -->
     <div class="win-controls">
       <button class="win-btn" type="button" title="最小化" @click="winMinimize">

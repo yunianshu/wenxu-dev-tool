@@ -14,8 +14,12 @@
  *   I4 切换分屏方式（左右/上下/四宫格/三宫格/自动）后，每个窗格都留在可视区内
  *   I5 标题栏关闭按钮可点，点了真的关掉对应的 pty 会话
  *   I6 竖向与横向分隔条都能拖动，分别改变列宽与行高比例
- *   I7 恢复时跳过的失效窗格不会被回写覆盖，且「上下」4 行布局能原样还原
- *   I8 关窗格后切页、紧接着退出应用，这一步改动不丢（切页时立即落盘）
+ *   I7 页头投递到顶栏：标题与工具栏出现在顶栏、内容区不再有页内标题栏、
+ *      插槽不是窗口拖拽区（按钮能被真实鼠标点到）、内容区吃到了省下的高度
+ *   I8 Harness 页同样投递（打包态跳过：首次进入会解包内置运行时，分钟级）；
+ *      来回切页顶栏不残留、普通页面的「当前项目」选择器恢复
+ *   I9 恢复时跳过的失效窗格不会被回写覆盖，且「上下」4 行布局能原样还原
+ *   I10 关窗格后切页、紧接着退出应用，这一步改动不丢（切页时立即落盘）
  *
  * 前置：npm run build:renderer（驱动 dist/ 产物）
  * 用法：node scripts/terminal-workbench-interact-e2e.cjs
@@ -402,13 +406,120 @@ async function main() {
       check('拖横向分隔条改变行高比例', beforeRows !== afterRows, `${beforeRows} → ${afterRows}`)
     }
 
+    console.log('\n[I7] 页头投递到顶栏：结构、拖拽区与真实点击')
+    const topbar = await cdp.eval(`(() => {
+      const slot = document.querySelector('#app-topbar-slot')
+      const grid = document.querySelector('.terminal-grid')
+      const area = document.querySelector('.content-area')
+      const g = grid ? grid.getBoundingClientRect() : null
+      const a = area.getBoundingClientRect()
+      return {
+        slotExists: !!slot,
+        slotTitle: slot?.querySelector('.topbar-page-title')?.textContent || '',
+        slotHasToolbar: !!slot?.querySelector('.terminal-toolbar'),
+        anyProjectSwitcher: !!document.querySelector('.app-topbar .project-select'),
+        appRegion: slot ? getComputedStyle(slot).webkitAppRegion : '',
+        pageHeaderInContent: !!document.querySelector('.content-area .page-header'),
+        gridTopOffset: g ? Math.round(g.top - a.top) : -1,
+        gridHeight: g ? Math.round(g.height) : -1,
+        areaHeight: Math.round(a.height),
+      }
+    })()`)
+    check('顶栏出现插槽容器', topbar.slotExists)
+    check('插槽里是该页标题', topbar.slotTitle === '终端工作台', `实际「${topbar.slotTitle}」`)
+    check('插槽里是终端工具栏', topbar.slotHasToolbar)
+    check('工具页不再显示「当前项目」选择器', !topbar.anyProjectSwitcher)
+    // 顶栏整条是窗口拖拽区；插槽漏设 no-drag 时按钮看着在、就是点不动（DOM 断言看不出来）
+    check('插槽不是窗口拖拽区', topbar.appRegion === 'no-drag', `webkitAppRegion=${topbar.appRegion}`)
+    check('内容区不再有页内标题栏', !topbar.pageHeaderInContent)
+    check('终端网格吃到了省下的高度',
+      topbar.gridTopOffset >= 0 && topbar.gridTopOffset <= 24 && topbar.gridHeight >= topbar.areaHeight - 60,
+      `网格距内容区顶 ${topbar.gridTopOffset}px，网格高 ${topbar.gridHeight} / 内容区高 ${topbar.areaHeight}`)
+
+    // 真实点击顶栏里的「添加窗格」下拉：既验证按钮没被拖拽区吃掉，也验证弹层定位正常
+    const beforeAdd = await cdp.eval(`(() => { ${HELPERS}; return __panes().length })()`)
+    const addBtn = await cdp.eval(`(() => {
+      const btn = document.querySelector('#app-topbar-slot .terminal-toolbar .el-button')
+      if (!btn) return null
+      const r = btn.getBoundingClientRect()
+      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), disabled: !!btn.disabled }
+    })()`)
+    check('顶栏里的「添加窗格」按钮可用', !!addBtn && !addBtn.disabled, addBtn ? `位置 ${addBtn.x},${addBtn.y}` : '未找到按钮')
+    if (addBtn) {
+      await click(cdp, addBtn.x, addBtn.y)
+      await new Promise((r) => setTimeout(r, 800))
+      // 用 getBoundingClientRect 判可见：弹层是 fixed 定位，offsetParent 恒为 null
+      const menu = await cdp.eval(`(() => {
+        const items = [...document.querySelectorAll('.el-dropdown-menu__item')]
+          .filter((el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 })
+        const first = items[0]?.getBoundingClientRect()
+        return {
+          texts: items.map((el) => el.textContent.trim()),
+          point: first ? { x: Math.round(first.x + first.width / 2), y: Math.round(first.y + first.height / 2) } : null,
+        }
+      })()`)
+      check('点顶栏的「添加窗格」能弹出项目菜单', menu.texts.length > 0, `菜单：${menu.texts.join(' / ') || '（空）'}`)
+      if (menu.point) {
+        await click(cdp, menu.point.x, menu.point.y)
+        await new Promise((r) => setTimeout(r, 1800))
+      }
+      const afterAdd = await cdp.eval(`(() => { ${HELPERS}; return __panes().length })()`)
+      check('选项目后真的新增了一个窗格', afterAdd === beforeAdd + 1, `${beforeAdd} → ${afterAdd}`)
+    }
+
+    console.log('\n[I8] Harness 页同样投递；来回切页顶栏不残留')
+    const gotoMenu = (label) => cdp.eval(`(() => {
+      const m = [...document.querySelectorAll('.app-menu .el-menu-item')].find((el) => el.textContent.includes('${label}'))
+      if (m) m.click()
+      return !!m
+    })()`)
+    if (EXE) {
+      // 打包产物首次进入 Harness 会解包内置 dsh 运行时（tar.gz → runtime，分钟级），
+      // 期间渲染层被卡住会让 CDP 求值超时。该页的投递逻辑与终端页共用同一套
+      // 顶栏插槽机制，已在开发态验证；打包态这里只验证「离开工具页后插槽清空」。
+      console.log('  SKIP  Harness 切页断言（打包产物首次进入会解包内置运行时，分钟级）')
+    } else {
+      await gotoMenu('DeepSeek Harness')
+      await new Promise((r) => setTimeout(r, 2500))
+      const harnessBar = await cdp.eval(`(() => {
+        const slot = document.querySelector('#app-topbar-slot')
+        return {
+          title: slot?.querySelector('.topbar-page-title')?.textContent || '',
+          buttons: [...(slot?.querySelectorAll('.harness-actions .el-button') || [])].map((b) => b.textContent.trim()),
+          hasTerminalToolbar: !!slot?.querySelector('.terminal-toolbar'),
+          pageHeaderInContent: !!document.querySelector('.content-area .page-header'),
+        }
+      })()`)
+      check('Harness 页标题出现在顶栏', harnessBar.title === 'DeepSeek Harness', `实际「${harnessBar.title}」`)
+      check('Harness 的操作按钮出现在顶栏', harnessBar.buttons.length > 0, harnessBar.buttons.join(' / '))
+      check('顶栏不再残留终端页的工具栏', !harnessBar.hasTerminalToolbar)
+      check('Harness 页内容区也不再有页内标题栏', !harnessBar.pageHeaderInContent)
+    }
+
+    await gotoMenu('工作台')
+    await new Promise((r) => setTimeout(r, 1800))
+    const plainPage = await cdp.eval(`(() => {
+      const slot = document.querySelector('#app-topbar-slot')
+      return {
+        slotChildren: slot ? slot.children.length : -1,
+        projectSwitcher: !!document.querySelector('.app-topbar .project-select'),
+        pageHeaderInContent: !!document.querySelector('.content-area .page-header'),
+      }
+    })()`)
+    check('离开工具页后顶栏插槽清空', plainPage.slotChildren === 0, `插槽子元素 ${plainPage.slotChildren}`)
+    check('普通页面的「当前项目」选择器和页内标题栏都回来了',
+      plainPage.projectSwitcher && plainPage.pageHeaderInContent)
+
+    await gotoMenu('终端工作台')
+    await waitFor(cdp, `(() => { ${HELPERS}; return __panes().length > 0 })()`, '切回终端工作台')
+
     const errors = await cdp.eval(`window.__e2eErrors || []`)
     check('全程无渲染层错误', (errors || []).length === 0, JSON.stringify(errors || []))
 
     // 必须先退干净：应用带单实例锁，旧实例还活着时新实例会直接退出
     await stopApp(app, PORT)
 
-    console.log('\n[I7] 恢复：跳过的失效窗格不被回写覆盖，「上下」4 行布局能原样还原')
+    console.log('\n[I9] 恢复：跳过的失效窗格不被回写覆盖，「上下」4 行布局能原样还原')
     const layoutPath = path.join(USER_DATA, 'terminal-layout.json')
     const readLayout = () => JSON.parse(fs.readFileSync(layoutPath, 'utf8'))
     fs.writeFileSync(layoutPath, JSON.stringify({
@@ -451,7 +562,7 @@ async function main() {
       check('「上下」4 窗格重启后按 4 行竖排还原', stacked,
         `网格 ${boxes.grid.w}×${boxes.grid.h}，各格 ${boxes.panes.map((b) => `${b.w}×${b.h}`).join(' ')}，期望高约 ${Math.round(expectH)}`)
 
-      console.log('\n[I8] 关窗格 → 切页 → 立刻退出应用，这一步改动不丢')
+      console.log('\n[I10] 关窗格 → 切页 → 立刻退出应用，这一步改动不丢')
       const closePoint = await cdp2.eval(`(() => {
         ${HELPERS}
         const pane = __panes()[__panes().length - 1]

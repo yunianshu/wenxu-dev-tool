@@ -683,6 +683,30 @@ body {
 .topbar-label { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .project-select { width: 230px; }
 .project-select .el-select__wrapper { box-shadow: none !important; background: #f3f5f6; }
+/* 工具页标题栏：由页面 Teleport 进顶栏（终端工作台 / DeepSeek Harness）。
+   顶栏整条是 -webkit-app-region: drag，插槽内的控件必须显式 no-drag，
+   否则点击会被当成拖拽窗口——按钮看着在，就是点不动。 */
+.topbar-slot {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  overflow-x: auto; /* 窗口很窄时（Harness 按钮多）横向滚动，不把窗口按钮挤走 */
+  -webkit-app-region: no-drag;
+}
+.topbar-slot::-webkit-scrollbar { height: 4px; }
+.topbar-slot > * { flex-shrink: 0; }
+.topbar-page { display: flex; align-items: center; gap: 18px; min-width: 0; }
+.topbar-page-title {
+  margin: 0;
+  color: var(--brand-text);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -.01em;
+  white-space: nowrap;
+}
 .content-area { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 24px 32px 32px; }
 /* 内嵌 Harness 视图自带留白与滚动，内容区不再叠加 padding/scroll */
 .content-area--flush { padding: 0; overflow: hidden; }

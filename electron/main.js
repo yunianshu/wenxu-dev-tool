@@ -1000,7 +1000,8 @@ app.whenReady().then(() => {
           mainWindow.focus()
           const domInfo = await wc.executeJavaScript(`(() => {
             const root = document.querySelector('.content-area > *')
-            return { content: root ? root.className : '(empty)', title: document.querySelector('.content-area h1, .content-area .page-title')?.textContent || '' }
+            // 页面标题：工具页（终端工作台 / Harness）把标题栏投递到了顶栏，一并查
+            return { content: root ? root.className : '(empty)', title: document.querySelector('.content-area h1, .content-area .page-title, .app-topbar h1')?.textContent || '' }
           })()`).catch(() => null)
           if (domInfo) console.log('[SMOKE][dom]', JSON.stringify(domInfo))
           const image = await wc.capturePage()
