@@ -1,6 +1,11 @@
 <template>
   <div class="settings-page">
-    <PageHeader title="设置" description="管理 AI 服务、Git 活动采集和个人身份。" />
+    <!-- 页头上提到应用顶栏（全局配置页，与项目无关） -->
+    <Teleport v-if="topbarReady" to="#app-topbar-slot">
+      <div class="topbar-page">
+        <h1 class="topbar-page-title">设置</h1>
+      </div>
+    </Teleport>
     <div class="settings-nav">
       <el-segmented v-model="activeSection" :options="SETTING_SECTIONS" class="settings-sections" />
     </div>
@@ -355,11 +360,13 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { state } from '../store'
+import { useTopbarReady } from '../composables/useTopbarReady'
 import { useProjects } from '../composables/useProjects'
 import { toPlain } from '../utils/ipc'
 import { shortPath, pathKey } from '../utils/path'
-import PageHeader from '../components/PageHeader.vue'
 defineEmits(['show-changelog'])
+
+const topbarReady = useTopbarReady()
 
 const props = defineProps({
   initialSection: {

@@ -1,16 +1,22 @@
 <template>
   <div class="deploy-page">
-    <PageHeader title="部署" :description="currentProject ? `管理“${currentProject.name}”的环境、发布与回滚。` : '选择一个项目后进入部署工作区。'">
-      <template #actions>
+    <!-- 页头上提到应用顶栏；部署目标就是项目，所以把项目下拉挂在标题旁
+         （读作「部署 · 自测项目 1」），既显示当前部署哪个项目也保留了切换入口 -->
+    <Teleport v-if="topbarReady" to="#app-topbar-slot">
+      <div class="topbar-page">
+        <div class="topbar-title-group">
+          <h1 class="topbar-page-title">部署</h1>
+          <TopbarProjectSelect />
+        </div>
         <el-button v-if="currentProject" @click="aiOpen = true"><el-icon><MagicStick /></el-icon>AI 部署助手</el-button>
         <el-button v-if="currentProject" @click="configOpen = true"><el-icon><Setting /></el-icon>部署设置</el-button>
         <el-button v-if="currentProject" :loading="testing" :disabled="!form.id || dirty" @click="testConnection"><el-icon><Link /></el-icon>测试连接</el-button>
-      </template>
-    </PageHeader>
+      </div>
+    </Teleport>
 
     <EmptyState
       v-if="!currentProject" icon="Promotion" title="先选择一个项目"
-      description="部署始终作用于明确的项目。请从顶部选择项目，或先创建项目。"
+      description="部署始终作用于明确的项目。请到「项目」页选中一个项目，或先创建项目。"
       action="前往项目" @action="$emit('navigate', 'projects')"
     />
 
@@ -89,9 +95,10 @@
 import { reactive, ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { state } from '../store'
+import { useTopbarReady } from '../composables/useTopbarReady'
 import { useProjects } from '../composables/useProjects'
-import PageHeader from '../components/PageHeader.vue'
 import EmptyState from '../components/EmptyState.vue'
+import TopbarProjectSelect from '../components/TopbarProjectSelect.vue'
 import DeployConfigDrawer from '../components/deploy/DeployConfigDrawer.vue'
 import DeployAiAssistant from '../components/deploy/DeployAiAssistant.vue'
 import DeployRunPanel from '../components/deploy/DeployRunPanel.vue'
@@ -100,6 +107,7 @@ import { emptyTarget, emptyProject, fmtDur } from '../components/deploy/deploy-f
 
 defineEmits(['navigate'])
 const { currentProject, loadProjects: loadSharedProjects } = useProjects()
+const topbarReady = useTopbarReady()
 
 const form = reactive(emptyProject())
 const configOpen = ref(false)

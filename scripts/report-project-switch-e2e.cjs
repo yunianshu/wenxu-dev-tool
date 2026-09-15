@@ -107,8 +107,18 @@ const EVAL = `(async () => {
   r.summaryInit = (q('.detail-summary') || {}).textContent || ''
   r.commitsInit = commitTexts()
 
+  // 切项目入口：顶栏那个独立的「当前项目」下拉已移除，改由工作台页顶栏标题旁的
+  // 项目下拉承担（部署页同款）。切完再回到活动报告页看数据区是否跟随。
+  const goMenu = async (label) => {
+    const item = [...document.querySelectorAll('.app-menu .el-menu-item')].find((el) => el.textContent.includes(label))
+    if (item) item.click()
+    await sleep(1500)
+    return !!item
+  }
   const openSelect = async () => {
-    const root = q('.project-select')
+    const okMenu = await goMenu('工作台')
+    if (!okMenu) return { opened: false, err: 'no-menu' }
+    const root = q('#app-topbar-slot .topbar-project-select')
     if (!root) return { opened: false, err: 'no-select' }
     const wrapper = root.querySelector('.el-select__wrapper') || root
     const fire = (type, el) => el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }))
@@ -130,7 +140,8 @@ const EVAL = `(async () => {
     const o = await openSelect()
     const opt = qa('.el-select-dropdown__item').find((e) => vis(e) && e.textContent.trim() === label)
     if (opt) opt.click()
-    await sleep(1200)
+    await sleep(900)
+    await goMenu('活动报告') // 回到报告页核对数据区
     return { ...o, clicked: !!opt }
   }
 

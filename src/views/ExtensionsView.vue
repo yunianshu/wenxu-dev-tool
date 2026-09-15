@@ -1,9 +1,11 @@
 <template>
   <div class="settings-page extensions-page">
-    <PageHeader
-      title="扩展管理"
-      description="统一管理 Claude Code、Codex、Kimi CLI、Zcode 四个平台的技能与插件。"
-    />
+    <!-- 页头上提到应用顶栏（与项目无关的全局管理页） -->
+    <Teleport v-if="topbarReady" to="#app-topbar-slot">
+      <div class="topbar-page">
+        <h1 class="topbar-page-title">扩展管理</h1>
+      </div>
+    </Teleport>
 
     <!-- 一级：扩展项卡片，按 技能 / 插件 分区 -->
     <template v-if="!selected">
@@ -186,10 +188,12 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import PageHeader from '../components/PageHeader.vue'
+import { state } from '../store'
+import { useTopbarReady } from '../composables/useTopbarReady'
 
 const loading = ref(false)
 const platforms = ref([])
+const topbarReady = useTopbarReady()
 const selected = ref(null) // null=一级总览；{ platformId, type: 'skills'|'plugins' }
 const docVisible = ref(false)
 const docTitle = ref('')

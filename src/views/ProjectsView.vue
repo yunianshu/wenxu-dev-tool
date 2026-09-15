@@ -1,10 +1,12 @@
 <template>
   <div class="page projects-page">
-    <PageHeader title="项目" description="项目是资料、AI、活动报告与部署的统一入口。">
-      <template #actions>
+    <!-- 页头上提到应用顶栏（本页自带项目列表，不再需要顶栏那份额外的项目切换器） -->
+    <Teleport v-if="topbarReady" to="#app-topbar-slot">
+      <div class="topbar-page">
+        <h1 class="topbar-page-title">项目</h1>
         <el-button type="primary" @click="$emit('create-project')"><el-icon><Plus /></el-icon>新建项目</el-button>
-      </template>
-    </PageHeader>
+      </div>
+    </Teleport>
 
     <div v-if="state.projects.items.length" class="projects-layout">
       <aside class="project-list-panel">
@@ -97,9 +99,9 @@
 import { computed, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
-import PageHeader from '../components/PageHeader.vue'
 import EmptyState from '../components/EmptyState.vue'
 import { state } from '../store'
+import { useTopbarReady } from '../composables/useTopbarReady'
 import { useProjects } from '../composables/useProjects'
 import { deploymentConfigured, projectStatusLabel, reposForProject } from '../utils/project-context'
 
@@ -107,6 +109,8 @@ defineEmits(['navigate', 'create-project', 'edit-project'])
 const query = ref('')
 const status = ref('')
 const { currentProject, selectProject, removeProject, saveProject } = useProjects()
+/** 顶栏是否在位（沉浸全屏时整个顶栏被卸载，此时不投递页头） */
+const topbarReady = useTopbarReady()
 const filteredProjects = computed(() => state.projects.items.filter((project) => {
   const haystack = `${project.name} ${project.description} ${(project.tags || []).join(' ')}`.toLowerCase()
   return (!query.value || haystack.includes(query.value.toLowerCase())) && (!status.value || project.status === status.value)

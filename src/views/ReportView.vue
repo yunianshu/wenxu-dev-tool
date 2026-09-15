@@ -1,8 +1,13 @@
 <template>
   <div class="report-page">
-    <!-- 顶部工具条：选周期 → 点生成，一键完成。
-         这里原先还有一条只写着「活动报告」的页头（没有任何操作按钮），
-         侧栏与顶栏已经指明所在位置，那条页头是纯占位，去掉后内容整体上移 -->
+    <!-- 页头上提到应用顶栏（本页不带项目控件：没选项目时按全部项目汇总） -->
+    <Teleport v-if="topbarReady" to="#app-topbar-slot">
+      <div class="topbar-page">
+        <h1 class="topbar-page-title">活动报告</h1>
+      </div>
+    </Teleport>
+
+    <!-- 顶部工具条：选周期 → 点生成，一键完成 -->
     <el-card shadow="never" class="card report-toolbar-card">
       <div class="report-toolbar">
         <div class="toolbar-left">
@@ -237,6 +242,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { state } from '../store'
+import { useTopbarReady } from '../composables/useTopbarReady'
 import { todayStr, addDays, untilToEnd } from '../utils/date'
 import { groupByProject, buildMarkdown, stripPrefix } from '../utils/report'
 import { toPlain } from '../utils/ipc'
@@ -248,6 +254,8 @@ import CountUp from '../components/CountUp.vue'
 
 const period = ref('daily')
 const { currentProject } = useProjects()
+/** 顶栏是否在位（沉浸全屏时整个顶栏被卸载，此时不投递页头） */
+const topbarReady = useTopbarReady()
 const scopedRepos = computed(() => currentProject.value
   ? reposForProject(currentProject.value, state.discoveredRepos)
   : state.discoveredRepos)

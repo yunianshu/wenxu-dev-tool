@@ -68,7 +68,7 @@ const EVAL = `(async () => {
   const item = menu.find((e) => e.textContent.trim().startsWith('DeepSeek Harness'))
   if (item) item.click()
   await sleep(1500)
-  const settingBtn = [...document.querySelectorAll('.page-header button')].find((b) => b.textContent.trim().includes('服务设置'))
+  const settingBtn = [...document.querySelectorAll('#app-topbar-slot button')].find((b) => b.textContent.trim().includes('服务设置'))
   r.settingsButton = !!settingBtn
   if (settingBtn) { settingBtn.click(); await sleep(1200) }
   r.versionRow = text('.harness-version')

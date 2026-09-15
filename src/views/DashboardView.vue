@@ -1,14 +1,17 @@
 <template>
   <div class="page dashboard-page">
-    <PageHeader
-      :title="currentProject ? currentProject.name : '工作台'"
-      :description="currentProject ? (currentProject.description || '集中查看这个项目的资料、活动和交付状态。') : '从项目出发，管理资料、活动、AI 协作与部署。'"
-    >
-      <template #actions>
+    <!-- 页头上提到应用顶栏；标题固定为「工作台」（原先选中项目后标题会被项目名顶替），
+         项目名放在标题旁的下拉里，既显示当前在看哪个项目，也保留了切换入口 -->
+    <Teleport v-if="topbarReady" to="#app-topbar-slot">
+      <div class="topbar-page">
+        <div class="topbar-title-group">
+          <h1 class="topbar-page-title">工作台</h1>
+          <TopbarProjectSelect />
+        </div>
         <el-button v-if="currentProject" @click="$emit('navigate', 'projects')">查看项目资料</el-button>
         <el-button v-else type="primary" @click="$emit('create-project')"><el-icon><Plus /></el-icon>创建项目</el-button>
-      </template>
-    </PageHeader>
+      </div>
+    </Teleport>
 
     <section class="metric-strip" aria-label="项目概览">
       <div class="metric-item"><span>项目总数</span><strong>{{ state.projects.items.length }}</strong><small>{{ activeCount }} 个进行中</small></div>
@@ -99,14 +102,17 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import PageHeader from '../components/PageHeader.vue'
+import TopbarProjectSelect from '../components/TopbarProjectSelect.vue'
 import EmptyState from '../components/EmptyState.vue'
 import { state } from '../store'
+import { useTopbarReady } from '../composables/useTopbarReady'
 import { useProjects } from '../composables/useProjects'
 import { deploymentConfigured, projectStatusLabel, reposForProject } from '../utils/project-context'
 
 defineEmits(['navigate', 'create-project'])
 const { currentProject, selectProject } = useProjects()
+/** 顶栏是否在位（沉浸全屏时整个顶栏被卸载，此时不投递页头） */
+const topbarReady = useTopbarReady()
 const reports = ref([])
 const deployments = ref([])
 const activeCount = computed(() => state.projects.items.filter((project) => project.status === 'active').length)

@@ -57,14 +57,14 @@ const EVAL_A = `(async () => {
   const chrome = () => ({
     sidebar: !!q('.app-sidebar'),
     topbar: !!q('.app-topbar'),
-    header: !!q('.harness-page .page-header'),
+    header: !!q('#app-topbar-slot .topbar-page-title'),
     footer: !!q('.harness-footer'),
   })
   r.before = chrome()
   r.fsBefore = await window.gitReport.winIsFullScreen()
 
   // F1：页头「全屏」按钮
-  const fsBtn = [...document.querySelectorAll('.page-actions button')].find((b) => b.textContent.includes('全屏'))
+  const fsBtn = [...document.querySelectorAll('#app-topbar-slot button')].find((b) => b.textContent.includes('全屏'))
   r.fsButtonFound = !!fsBtn
   if (fsBtn) fsBtn.click()
   await sleep(1800)
@@ -94,7 +94,7 @@ const EVAL_A = `(async () => {
   r.prefAfterExit = !!(cfg2 && cfg2.harness && cfg2.harness.fullscreen)
 
   // 留一个全屏状态给截图（F7 人工核对悬浮条在 webview 之上）
-  const fsBtn2 = [...document.querySelectorAll('.page-actions button')].find((b) => b.textContent.includes('全屏'))
+  const fsBtn2 = [...document.querySelectorAll('#app-topbar-slot button')].find((b) => b.textContent.includes('全屏'))
   if (fsBtn2) fsBtn2.click()
   await sleep(1200)
   r.fsForShot = await window.gitReport.winIsFullScreen()
@@ -123,7 +123,7 @@ const EVAL_B = `(async () => {
   r.webviewAttached = !!wv
   if (!wv) return r
 
-  const fsBtn = [...document.querySelectorAll('.page-actions button')].find((b) => b.textContent.includes('全屏'))
+  const fsBtn = [...document.querySelectorAll('#app-topbar-slot button')].find((b) => b.textContent.includes('全屏'))
   if (fsBtn) fsBtn.click()
   await sleep(1800)
   r.entered = await window.gitReport.winIsFullScreen()
@@ -140,7 +140,7 @@ const EVAL_B = `(async () => {
   r.afterEsc = {
     sidebar: !!q('.app-sidebar'),
     topbar: !!q('.app-topbar'),
-    header: !!q('.harness-page .page-header'),
+    header: !!q('#app-topbar-slot .topbar-page-title'),
     footer: !!q('.harness-footer'),
   }
   // Esc 退出同样要记下用户意图（否则下次进入又会自动全屏）
@@ -167,7 +167,7 @@ const EVAL_C_SET = `(async () => {
     await sleep(500)
   }
   r.webviewAttached = !!wv
-  const fsBtn = [...document.querySelectorAll('.page-actions button')].find((b) => b.textContent.includes('全屏'))
+  const fsBtn = [...document.querySelectorAll('#app-topbar-slot button')].find((b) => b.textContent.includes('全屏'))
   if (fsBtn) fsBtn.click()
   await sleep(1800)
   r.entered = await window.gitReport.winIsFullScreen()

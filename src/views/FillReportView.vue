@@ -1,9 +1,11 @@
 <template>
   <div class="fill-page">
-    <PageHeader
-      title="一键填报"
-      description="按填写的上班/下班时间计算工时（扣午休、0.5h 向下取整），下班时间早于上班时间按次日跨夜；确认后一键写入禅道任务。"
-    />
+    <!-- 页头上提到应用顶栏（按所选项目集合填报，与「当前项目」无关） -->
+    <Teleport v-if="topbarReady" to="#app-topbar-slot">
+      <div class="topbar-page">
+        <h1 class="topbar-page-title">一键填报</h1>
+      </div>
+    </Teleport>
 
     <!-- 顶部工具条：选日期 → 选项目 → 生成报告 -->
     <el-card shadow="never" class="card">
@@ -306,14 +308,15 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { state } from '../store'
+import { useTopbarReady } from '../composables/useTopbarReady'
 import { todayStr } from '../utils/date'
 import { toPlain } from '../utils/ipc'
 import { reposForProject } from '../utils/project-context'
 import { useProjects } from '../composables/useProjects'
-import PageHeader from '../components/PageHeader.vue'
 
 const emit = defineEmits(['navigate'])
 const { loadProjects } = useProjects()
+const topbarReady = useTopbarReady()
 
 /** 跨视图保留：所选项目存共享状态，切换视图再回来不丢 */
 const selectedProjectIds = computed({

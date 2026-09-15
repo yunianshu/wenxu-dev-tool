@@ -93,6 +93,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown, Plus } from '@element-plus/icons-vue'
 import TerminalPane from '../components/TerminalPane.vue'
 import { state } from '../store'
+import { useTopbarReady } from '../composables/useTopbarReady'
 
 /** 网格预设：列 × 行 */
 const GRID_PRESETS = {
@@ -113,7 +114,7 @@ const columnWidths = ref([0.5, 0.5])
 const rowHeights = ref([0.5, 0.5])
 const gridRef = ref(null)
 /** 顶栏是否在位（沉浸全屏时整个顶栏被卸载，此时不投递标题栏） */
-const topbarReady = computed(() => !state.ui.fullscreen)
+const topbarReady = useTopbarReady()
 
 /**
  * 列数/行数。

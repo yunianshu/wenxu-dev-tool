@@ -2,11 +2,13 @@
   <div class="app-shell" :class="{ 'is-immersive': state.ui.fullscreen }">
     <AppSidebar v-if="!state.ui.fullscreen" v-model="view" @show-changelog="changelogVisible = true" />
     <section class="shell-main">
+      <!-- 顶栏不再占一块「当前项目」：页头都上提到这里，需要项目的页面
+           把项目下拉挂在标题旁（工作台 / 部署），见各视图的 Teleport -->
       <AppTopbar
         v-if="!state.ui.fullscreen"
         :projects="state.projects.items"
         :current-id="state.projects.currentId"
-        :hide-project-switcher="hidesProjectSwitcher"
+        hide-project-switcher
         @select-project="selectProject"
       />
       <main class="content-area" :class="{ 'content-area--flush': view === 'harness' || view === 'terminal' }">
@@ -31,7 +33,7 @@
 </template>
 
 <script setup>
-import { ref, h, computed, onMounted, watch } from 'vue'
+import { ref, h, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification, ElCheckbox } from 'element-plus'
 import AppSidebar from './components/AppSidebar.vue'
 import ChangelogDialog from './components/ChangelogDialog.vue'
@@ -59,10 +61,6 @@ const editorVisible = ref(false)
 const editorSaving = ref(false)
 const editingProject = ref(null)
 const { loadProjects, selectProject, saveProject } = useProjects()
-
-/** 顶栏的「当前项目」对这些页面没有意义：一键填报按工时填报、终端工作台与
- *  Harness 是工具页（它们把自己的标题栏投递到顶栏，见各视图的 Teleport） */
-const hidesProjectSwitcher = computed(() => ['fillreport', 'terminal', 'harness'].includes(view.value))
 
 /** 首帧已绘制：连续两次 requestAnimationFrame 之后，浏览器已完成第一次绘制。
  *  窗口被遮挡/锁屏时 rAF 会被 Chromium 节流，因此加一个上限兜底，
@@ -148,6 +146,8 @@ function showCloseAsk() {
 }
 
 onMounted(async () => {
+  // 外壳已进文档：此后各视图投递页头到顶栏插槽才能找到目标（初始视图挂载时还在文档外）
+  state.ui.shellMounted = true
   // 沉浸全屏：窗口全屏状态由主进程维护，渲染层只跟随（F11/Esc 等外部改变同样同步）
   window.gitReport.onWinFullscreen((value) => { state.ui.fullscreen = !!value })
   try { state.ui.fullscreen = !!(await window.gitReport.winIsFullScreen()) } catch { /* 主进程未就绪 */ }

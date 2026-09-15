@@ -511,41 +511,48 @@ async function main() {
     }
 
     await gotoMenu('工作台')
-    // 等页内标题栏真的渲染出来再断言（视图过渡是 out-in，固定延时偶尔会撞上中间态）
-    await waitFor(cdp, `!!document.querySelector('.content-area .page-header')`, '工作台页渲染出页内标题栏')
+    // 等该页页头投递上来再断言（视图过渡是 out-in，固定延时偶尔会撞上中间态）
+    await waitFor(cdp, `(() => {
+      const t = document.querySelector('#app-topbar-slot .topbar-page-title')
+      return t && t.textContent.trim() === '工作台'
+    })()`, '工作台页头投递到顶栏')
     const plainPage = await cdp.eval(`(() => {
       const slot = document.querySelector('#app-topbar-slot')
       return {
-        slotChildren: slot ? slot.children.length : -1,
+        slotTitle: slot?.querySelector('.topbar-page-title')?.textContent.trim() || '',
         projectSwitcher: !!document.querySelector('.app-topbar .project-select'),
+        projectBlockText: (slot?.textContent || '').includes('当前项目'),
         pageHeaderInContent: !!document.querySelector('.content-area .page-header'),
       }
     })()`)
-    check('离开工具页后顶栏插槽清空', plainPage.slotChildren === 0, `插槽子元素 ${plainPage.slotChildren}`)
-    check('普通页面的「当前项目」选择器和页内标题栏都回来了',
-      plainPage.projectSwitcher && plainPage.pageHeaderInContent)
+    check('离开工具页后顶栏换成该页自己的标题', plainPage.slotTitle === '工作台', `实际「${plainPage.slotTitle}」`)
+    check('顶栏不再有独立的「当前项目」块', !plainPage.projectSwitcher && !plainPage.projectBlockText)
+    check('普通页面的内容区也没有页内标题栏', !plainPage.pageHeaderInContent)
 
-    // 活动报告页的页头只有标题、没有任何操作，属纯占位，应当已删除并让内容上移
+    // 活动报告页同样把标题投递到顶栏（它按当前项目过滤，但顶栏不带项目控件）
     await gotoMenu('活动报告')
     await waitFor(cdp, `!!document.querySelector('.report-toolbar-card')`, '活动报告页渲染出工具条')
     const reportPage = await cdp.eval(`(() => {
       const card = document.querySelector('.report-toolbar-card')
       const area = document.querySelector('.content-area')
+      const slot = document.querySelector('#app-topbar-slot')
       const c = card ? card.getBoundingClientRect() : null
       const a = area.getBoundingClientRect()
       return {
+        slotTitle: slot?.querySelector('.topbar-page-title')?.textContent.trim() || '',
+        hasProjectPick: !!slot?.querySelector('.topbar-project-select'),
         pageHeader: !!document.querySelector('.content-area .page-header'),
         cardTopOffset: c ? Math.round(c.top - a.top) : -1,
         cardLeftOffset: c ? Math.round(c.left - a.left) : -1,
-        projectSwitcher: !!document.querySelector('.app-topbar .project-select'),
       }
     })()`)
-    check('活动报告页不再有只剩下标题的页内标题栏', !reportPage.pageHeader)
-    // 内容区自身 padding 为 0：删掉页头后必须自己补留白，否则整页贴边
-    check('活动报告的工具条不贴边（自补了与页头一致的留白）',
+    check('活动报告页的标题也在顶栏', reportPage.slotTitle === '活动报告', `实际「${reportPage.slotTitle}」`)
+    check('活动报告页不再有页内标题栏', !reportPage.pageHeader)
+    // 该页的卡片直接铺到内容区边缘，左右留白靠自己的 padding（上下由内容区提供）
+    check('活动报告的工具条不贴边',
       reportPage.cardTopOffset >= 16 && reportPage.cardLeftOffset >= 24,
       `距内容区 顶 ${reportPage.cardTopOffset}px / 左 ${reportPage.cardLeftOffset}px`)
-    check('活动报告页保留「当前项目」（报告按项目过滤，这里仍然需要）', reportPage.projectSwitcher)
+    check('活动报告页顶栏不带项目控件（按你选的「不需要」）', !reportPage.hasProjectPick)
 
     await gotoMenu('终端工作台')
     await waitFor(cdp, `(() => { ${HELPERS}; return __panes().length > 0 })()`, '切回终端工作台')

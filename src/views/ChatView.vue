@@ -1,13 +1,15 @@
 <template>
   <div class="page ai-page">
-    <PageHeader title="AI 助手" description="让 AI 理解整个项目，再协助分析、规划和输出。">
-      <template #actions>
+    <!-- 页头上提到应用顶栏 -->
+    <Teleport v-if="topbarReady" to="#app-topbar-slot">
+      <div class="topbar-page">
+        <h1 class="topbar-page-title">AI 助手</h1>
         <el-button v-if="!configured" @click="$emit('navigate', 'settings')">配置 AI 服务</el-button>
         <el-button v-else :loading="collecting" :disabled="!currentProject || !matchedRepos.length" @click="refreshActivity">
           <el-icon><Refresh /></el-icon>刷新 Git 活动
         </el-button>
-      </template>
-    </PageHeader>
+      </div>
+    </Teleport>
 
     <div v-if="currentProject" class="ai-workspace">
       <aside class="context-rail">
@@ -42,7 +44,7 @@
 
     <EmptyState
       v-else icon="ChatDotRound" title="先选择一个项目"
-      description="AI 需要明确的项目上下文。请从顶部选择项目，或先创建项目。"
+      description="AI 需要明确的项目上下文。请到「项目」页选中一个项目，或先创建项目。"
       action="前往项目" @action="$emit('navigate', 'projects')"
     />
   </div>
@@ -51,10 +53,10 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import PageHeader from '../components/PageHeader.vue'
 import EmptyState from '../components/EmptyState.vue'
 import ChatPanel from '../components/ChatPanel.vue'
 import { state } from '../store'
+import { useTopbarReady } from '../composables/useTopbarReady'
 import { useProjects } from '../composables/useProjects'
 import { buildProjectContext } from '../utils/ai-context'
 import { commitsForProject, deploymentConfigured, reposForProject } from '../utils/project-context'
@@ -63,6 +65,8 @@ import { addDays, todayStr } from '../utils/date'
 
 defineEmits(['navigate'])
 const { currentProject } = useProjects()
+/** 顶栏是否在位（沉浸全屏时整个顶栏被卸载，此时不投递页头） */
+const topbarReady = useTopbarReady()
 const sources = reactive({ project: true, git: false, reports: false, deploy: false })
 const reports = ref([])
 const deployments = ref([])

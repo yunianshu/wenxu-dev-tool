@@ -202,9 +202,8 @@ body {
   flex-direction: column;
   height: 100%;
   gap: 14px;
-  /* 内容区自身 padding 为 0，普通页面的四边留白一直由各自的 PageHeader 提供；
-     本页那条只剩标题的页头已移除，所以在这里自补同样的留白，避免内容贴边 */
-  padding: 22px 32px 18px;
+  /* 左右留白：本页的卡片直接铺到内容区边缘，需要自己给（上下由 .content-area 提供） */
+  padding: 0 32px;
 }
 .report-toolbar-card { flex-shrink: 0; }
 .report-toolbar {
@@ -698,12 +697,18 @@ body {
   display: flex;
   align-items: center;
   gap: 18px;
-  overflow-x: auto; /* 窗口很窄时（Harness 按钮多）横向滚动，不把窗口按钮挤走 */
+  /* 只允许横向滚动：overflow-x: auto 会把另一轴也变成 auto，
+     插槽内容比容器高 1px（行框基线差异）就会冒出一条垂直滚动条 */
+  overflow-x: auto;
+  overflow-y: hidden;
   -webkit-app-region: no-drag;
 }
 .topbar-slot::-webkit-scrollbar { height: 4px; }
 .topbar-slot > * { flex-shrink: 0; }
-.topbar-page { display: flex; align-items: center; gap: 18px; min-width: 0; }.topbar-page-title {
+.topbar-page { display: flex; align-items: center; gap: 18px; min-width: 0; }
+/* 标题 + 项目下拉合成一组（读作「部署 · 自测项目 1」），与后面的操作按钮拉开距离 */
+.topbar-title-group { display: flex; align-items: center; gap: 6px; min-width: 0; flex-shrink: 0; }
+.topbar-page-title {
   margin: 0;
   color: var(--brand-text);
   font-size: 15px;
@@ -712,6 +717,15 @@ body {
   letter-spacing: -.01em;
   white-space: nowrap;
 }
+/* 项目下拉：贴着标题、无边框，视觉上就是标题的一部分（替代原先独立的「当前项目」块） */
+.topbar-project-select { width: 168px; }
+.topbar-project-select .el-select__wrapper {
+  box-shadow: none !important;
+  background: transparent;
+  padding-left: 2px;
+  padding-right: 4px;
+}
+.topbar-project-select .el-select__wrapper:hover { background: var(--line); }
 .content-area { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 24px 32px 32px; }
 /* 内嵌 Harness 视图自带留白与滚动，内容区不再叠加 padding/scroll */
 .content-area--flush { padding: 0; overflow: hidden; }
@@ -927,7 +941,7 @@ body {
 .context-budget { color: var(--brand-text-sub); font-size: 12px; }
 
 /* 部署与设置 */
-.deploy-page .page-header, .settings-page .page-header { flex-shrink: 0; }
+
 /* 发布与发布日志并排（日志在发布卡右侧），发布历史在下方通栏、占满剩余宽度。
    用卡片自身类名定位：组件内的 el-dialog 会内联渲染隐藏的 el-overlay，
    .card 的 nth-child 序号不可靠（历史遗留写法曾因此从未命中）。 */
@@ -990,12 +1004,12 @@ button:focus-visible, [role='button']:focus-visible, .el-button:focus-visible, .
 }
 
 /* ---------- 点击区域底线：主要操作与菜单项不小于 40px ---------- */
-.el-button--large, .el-button--primary, .page-actions .el-button { min-height: 40px; }
+.el-button--large, .el-button--primary { min-height: 40px; }
 .app-menu .el-menu-item { min-height: 40px; }
 .project-list-item, .capability-row, .recent-row { min-height: var(--row-h); }
 
 /* ---------- 点击区域底线：主要操作与菜单项不小于 40px ---------- */
-.el-button--large, .el-button--primary, .page-actions .el-button { min-height: 40px; }
+.el-button--large, .el-button--primary { min-height: 40px; }
 .app-menu .el-menu-item { min-height: 40px; }
 .project-list-item, .capability-row, .recent-row { min-height: var(--row-h); }
 
@@ -1007,9 +1021,14 @@ button:focus-visible, [role='button']:focus-visible, .el-button:focus-visible, .
    内容区重设计 · 分区带（对照 design/project-tool-ui.pen 试样 C）
    整页是一张白色版面，分区之间只用 1px 细线分隔；不再每块套圆角卡片。
    ================================================== */
-.content-area { padding: 0; background: var(--surface); }
+/* 上下留白由内容区承担（原先由各页 PageHeader 的 padding 提供，页头已全部上提到顶栏）；
+   左右留白仍由各页自己的区块承担（分区带 / 卡片行普遍是 32px 内边距），
+   内容区再给一份就会叠成 64px、把整页挤窄。 */
+.content-area { padding: 22px 0 24px; background: var(--surface); }
+/* 工具页（终端工作台 / Harness）自己管留白与滚动，内容区不能叠 padding。
+   这条必须排在上面那条之后：同特异性下后写者生效，否则 flush 会被覆盖 */
+.content-area--flush { padding: 0; }
 .page { max-width: none; }
-.page-header { min-height: 0; padding: 22px 32px 18px; margin-bottom: 0; align-items: flex-end; }
 
 /* 分区带：白底 + 顶部细线，无圆角、无投影 */
 .workspace-panel {
