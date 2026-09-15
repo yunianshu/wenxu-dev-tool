@@ -206,6 +206,19 @@ async function main() {
     `${loaded.gridMode} ${JSON.stringify(loaded.columnWidths)} ${JSON.stringify(loaded.rowHeights)}`)
   check('布局文件落在 userData 目录', path.dirname(terminalLayout.file()) === tempRoot)
 
+  // 轨道比例随分屏方式变长：「上下」4 个窗格 = 4 行 4 个比例。
+  // 不能按固定两位截断——被截掉的行会落到隐式 auto 轨道上，把窗格挤成几像素高
+  terminalLayout.save({
+    gridMode: '2x1',
+    columnWidths: [1],
+    rowHeights: [0.25, 0.25, 0.25, 0.25],
+    panes: [{ projectId: 'proj-a' }, { projectId: 'proj-b' }],
+  })
+  const tall = terminalLayout.load()
+  check('轨道比例按实际轨道数保留（不截断成两位）',
+    JSON.stringify(tall.columnWidths) === '[1]' && JSON.stringify(tall.rowHeights) === '[0.25,0.25,0.25,0.25]',
+    `${JSON.stringify(tall.columnWidths)} ${JSON.stringify(tall.rowHeights)}`)
+
   // 脏数据：非法分屏方式与比例不能写进布局（否则重启时会按脏值渲染）
   terminalLayout.save({ gridMode: '99x99', columnWidths: [0, 1], rowHeights: ['a', 2], panes: [{ projectId: 'proj-d' }] })
   const sanitized = terminalLayout.load()

@@ -11,10 +11,11 @@
  *   I1 每个窗格矩形内的采样点都命中窗格自身（不被分隔条抢占）
  *   I2 点哪个窗格，键盘焦点就落在哪个窗格的终端上，该窗格高亮为聚焦态
  *   I3 键盘输入的命令只在被点窗格的会话里回显（不会串到别的窗格）
- *   I4 标题栏关闭按钮可点，点了真的关掉对应的 pty 会话
- *   I5 竖向与横向分隔条都能拖动，分别改变列宽与行高比例
- *   I6 恢复时跳过的失效窗格不会被回写覆盖（布局文件保留原样）
- *   I7 关窗格后切页、紧接着退出应用，这一步改动不丢（切页时立即落盘）
+ *   I4 切换分屏方式（左右/上下/四宫格/三宫格/自动）后，每个窗格都留在可视区内
+ *   I5 标题栏关闭按钮可点，点了真的关掉对应的 pty 会话
+ *   I6 竖向与横向分隔条都能拖动，分别改变列宽与行高比例
+ *   I7 恢复时跳过的失效窗格不会被回写覆盖，且「上下」4 行布局能原样还原
+ *   I8 关窗格后切页、紧接着退出应用，这一步改动不丢（切页时立即落盘）
  *
  * 前置：npm run build:renderer（驱动 dist/ 产物）
  * 用法：node scripts/terminal-workbench-interact-e2e.cjs
@@ -327,7 +328,35 @@ async function main() {
     const echoedProject = Object.entries(byProject).find(([, v]) => v)?.[0]
     check('回显落在右下窗格绑定的项目上', echoedProject === 'proj-4', `实际 ${echoedProject}`)
 
-    console.log('\n[I4] 标题栏关闭按钮可点，且真的关掉对应 pty 会话')
+    console.log('\n[I4] 切换分屏方式：每个窗格都必须留在可视区内')
+    for (const mode of ['左右', '上下', '四宫格', '三宫格', '自动']) {
+      const clicked = await cdp.eval(`(() => {
+        const btn = [...document.querySelectorAll('.terminal-toolbar .el-radio-button__inner')]
+          .find((el) => el.textContent.trim() === '${mode}')
+        if (btn) btn.click()
+        return !!btn
+      })()`)
+      await new Promise((r) => setTimeout(r, 900))
+      const sizes = await cdp.eval(`(() => { ${HELPERS}; return __panes().map((p) => {
+        const r = p.getBoundingClientRect()
+        return { w: Math.round(r.width), h: Math.round(r.height), t: __title(p) }
+      }) })()`)
+      const ok = clicked && sizes.length === 4 && sizes.every((s) => s.w > 40 && s.h > 40)
+      check(`「${mode}」下 4 个窗格都在可视区`, ok,
+        `按钮${clicked ? '已点' : '未找到'}，各窗格尺寸 ${sizes.map((s) => `${s.w}×${s.h}`).join(' ')}`)
+      const blocked = await cdp.eval(`(() => { ${HELPERS}; return __panes().reduce((n, p) => {
+        const r = p.getBoundingClientRect()
+        let bad = 0
+        for (let ry = 1; ry <= 3; ry += 1) for (let rx = 1; rx <= 3; rx += 1) {
+          const hit = document.elementFromPoint(Math.round(r.x + r.width * rx / 4), Math.round(r.y + r.height * ry / 4))
+          if (!p.contains(hit)) bad += 1
+        }
+        return n + bad
+      }, 0) })()`)
+      check(`「${mode}」下窗格未被盖住`, blocked === 0, `被抢占 ${blocked}/36`)
+    }
+
+    console.log('\n[I5] 标题栏关闭按钮可点，且真的关掉对应 pty 会话')
     const before = await cdp.eval(`(async () => { ${HELPERS}; return (await __sessions()).length })()`)
     const closeBtnPoint = await cdp.eval(`(() => {
       ${HELPERS}
@@ -343,7 +372,7 @@ async function main() {
     check('点关闭按钮后窗格减少一个', paneCount === 3, `剩 ${paneCount} 个窗格（按钮 title=${closeBtnPoint.title}）`)
     check('对应 pty 会话被真正关闭', after === before - 1, `${before} → ${after}`)
 
-    console.log('\n[I5] 拖动分隔条改变比例')
+    console.log('\n[I6] 拖动分隔条改变比例')
     const beforeCols = await cdp.eval(`getComputedStyle(document.querySelector('.terminal-grid')).gridTemplateColumns`)
     const beforeRows = await cdp.eval(`getComputedStyle(document.querySelector('.terminal-grid')).gridTemplateRows`)
     // 取点避开两分隔条的 6px 交叉带：竖条在中点、横条在中列，恰好重叠在几何中心
@@ -379,17 +408,19 @@ async function main() {
     // 必须先退干净：应用带单实例锁，旧实例还活着时新实例会直接退出
     await stopApp(app, PORT)
 
-    console.log('\n[I6] 恢复时会跳过失效窗格，且不把布局文件回写成跳过后的样子')
+    console.log('\n[I7] 恢复：跳过的失效窗格不被回写覆盖，「上下」4 行布局能原样还原')
     const layoutPath = path.join(USER_DATA, 'terminal-layout.json')
     const readLayout = () => JSON.parse(fs.readFileSync(layoutPath, 'utf8'))
     fs.writeFileSync(layoutPath, JSON.stringify({
       ...readLayout(),
-      gridMode: '2x2',
-      columnWidths: [0.5, 0.5],
-      rowHeights: [0.5, 0.5],
+      gridMode: '2x1',
+      columnWidths: [1],
+      rowHeights: [0.25, 0.25, 0.25, 0.25],
       panes: [
         { projectId: 'proj-1', shellId: '', title: '', width: 0.5 },
         { projectId: 'proj-2', shellId: '', title: '', width: 0.5 },
+        { projectId: 'proj-3', shellId: '', title: '', width: 0.5 },
+        { projectId: 'proj-4', shellId: '', title: '', width: 0.5 },
         { projectId: 'ghost-not-exist', shellId: '', title: '', width: 0.5 },
       ],
     }, null, 2))
@@ -398,14 +429,29 @@ async function main() {
     const cdp2 = await Cdp.connect(await waitForPage(PORT + 1, second.child))
     await cdp2.send('Runtime.enable')
     try {
-      await waitFor(cdp2, `(() => { ${HELPERS}; return __panes().length === 2 })()`, '跳过失效窗格后恢复出 2 个窗格')
+      await waitFor(cdp2, `(() => { ${HELPERS}; return __panes().length === 4 })()`, '跳过失效窗格后恢复出 4 个窗格')
       await new Promise((r) => setTimeout(r, 2000)) // 超过 400ms 防抖窗口，观察是否会回写
       const after = readLayout()
-      check('只渲染可用窗格', true, '2 个窗格')
-      check('布局文件保留被跳过的窗格（未被覆盖成 2 个）', after.panes.length === 3,
+      check('只渲染可用窗格', true, '4 个窗格（失效窗格被跳过）')
+      check('布局文件保留被跳过的窗格（未被覆盖成 4 个）', after.panes.length === 5,
         `文件 ${after.panes.length} 个窗格：${after.panes.map((p) => p.projectId).join(',')}`)
 
-      console.log('\n[I7] 关窗格 → 切页 → 立刻退出应用，这一步改动不丢')
+      // 「上下」= 单列多行：每格占满整宽，高度约等于网格高度均分
+      const boxes = await cdp2.eval(`(() => {
+        ${HELPERS}
+        const grid = document.querySelector('.terminal-grid').getBoundingClientRect()
+        return {
+          grid: { w: Math.round(grid.width), h: Math.round(grid.height) },
+          panes: __panes().map((p) => { const r = p.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) } }),
+        }
+      })()`)
+      const expectH = (boxes.grid.h - 3 * 6) / 4
+      const stacked = boxes.panes.length === 4
+        && boxes.panes.every((b) => b.w === boxes.grid.w && Math.abs(b.h - expectH) < 10)
+      check('「上下」4 窗格重启后按 4 行竖排还原', stacked,
+        `网格 ${boxes.grid.w}×${boxes.grid.h}，各格 ${boxes.panes.map((b) => `${b.w}×${b.h}`).join(' ')}，期望高约 ${Math.round(expectH)}`)
+
+      console.log('\n[I8] 关窗格 → 切页 → 立刻退出应用，这一步改动不丢')
       const closePoint = await cdp2.eval(`(() => {
         ${HELPERS}
         const pane = __panes()[__panes().length - 1]

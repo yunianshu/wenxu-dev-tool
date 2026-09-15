@@ -3,8 +3,8 @@
     <PageHeader title="终端工作台" description="一个窗格一个项目会话，多项目的 CLI 同屏并行；切到其他页面后仍在后台运行。">
       <template #actions>
         <div class="terminal-toolbar">
-          <el-dropdown trigger="click" :disabled="!addableProjects.length" @command="addPane">
-            <el-button type="primary" :disabled="!addableProjects.length">
+          <el-dropdown trigger="click" :disabled="!canAddPane" @command="addPane">
+            <el-button type="primary" :disabled="!canAddPane" :title="panes.length >= MAX_PANES ? `最多同时开 ${MAX_PANES} 个窗格` : ''">
               <el-icon><Plus /></el-icon>添加窗格
               <el-icon class="el-icon--right"><ArrowDown /></el-icon>
             </el-button>
@@ -16,8 +16,9 @@
             </template>
           </el-dropdown>
 
-          <!-- 分屏方式：自动按窗格数排；也可手动锁定列/行 -->
-          <el-radio-group v-model="gridMode" size="small" @change="onGridChange">
+          <!-- 分屏方式：自动按窗格数排；也可手动锁定列/行。
+               窗格多于一屏格子时行数会自动往下加，比例由 track 数对齐（见 layout） -->
+          <el-radio-group v-model="gridMode" size="small">
             <el-radio-button value="auto">自动</el-radio-button>
             <el-radio-button value="1x2">左右</el-radio-button>
             <el-radio-button value="2x1">上下</el-radio-button>
@@ -98,6 +99,8 @@ const GRID_PRESETS = {
   '3x1': { cols: 3, rows: 1 },
 }
 const MIN_SHARE = 0.15
+/** 最多同屏窗格数（与文档一致）；超过这个数就不再允许添加 */
+const MAX_PANES = 4
 
 const panes = ref([])
 const gridMode = ref('auto')
@@ -107,18 +110,45 @@ const columnWidths = ref([0.5, 0.5])
 const rowHeights = ref([0.5, 0.5])
 const gridRef = ref(null)
 
-/** 列数/行数：auto 时按窗格数选最接近方形的排布（1→1×1，2→1×2，3/4→2×2） */
+/**
+ * 列数/行数。
+ * auto：按窗格数选最接近方形的排布（1→1×1，2→1×2，3/4→2×2，再多就往下加行）。
+ * 手动：预设给出要的列数与**最小**行数，窗格多于一屏格子时必须继续加行——
+ *   多出来的窗格会落到隐式 auto 轨道上，把 fr 轨道挤到只剩几像素（窗格看着「消失」）。
+ */
 const layout = computed(() => {
-  if (gridMode.value !== 'auto' && GRID_PRESETS[gridMode.value]) return GRID_PRESETS[gridMode.value]
-  const count = panes.value.length
+  const count = Math.max(1, panes.value.length)
+  const preset = gridMode.value !== 'auto' ? GRID_PRESETS[gridMode.value] : null
+  if (preset) {
+    return { cols: preset.cols, rows: Math.max(preset.rows, Math.ceil(count / preset.cols)) }
+  }
   if (count <= 1) return { cols: 1, rows: 1 }
-  if (count === 2) return { cols: 2, rows: 1 }
-  return { cols: 2, rows: 2 }
+  return { cols: 2, rows: Math.ceil(count / 2) }
 })
 
+/**
+ * 轨道比例数组的长度必须精确等于轨道数：少一个就会出现隐式 auto 轨道，
+ * 而 auto 轨道优先按内容占位、会把 fr 轨道挤没。长度对不上时直接等分。
+ */
+function fitShares(list, count) {
+  const n = Math.max(1, count)
+  if (list.length === n) return list
+  return Array.from({ length: n }, () => 1 / n)
+}
+
+// 分屏维度变化（切分屏方式、增删窗格）时把比例对齐到实际轨道数
+watch(
+  () => `${layout.value.cols}x${layout.value.rows}`,
+  () => {
+    columnWidths.value = fitShares(columnWidths.value, layout.value.cols)
+    rowHeights.value = fitShares(rowHeights.value, layout.value.rows)
+  },
+  { immediate: true },
+)
+
 const gridStyle = computed(() => ({
-  gridTemplateColumns: columnWidths.value.slice(0, layout.value.cols).map((w) => `${w}fr`).join(' '),
-  gridTemplateRows: rowHeights.value.slice(0, layout.value.rows).map((h) => `${h}fr`).join(' '),
+  gridTemplateColumns: columnWidths.value.map((w) => `${w}fr`).join(' '),
+  gridTemplateRows: rowHeights.value.map((h) => `${h}fr`).join(' '),
 }))
 
 function cellStyle(index) {
@@ -167,6 +197,9 @@ const addableProjects = computed(() => {
   return state.projects.items.filter((p) => p.localPath && !used.has(p.id))
 })
 
+/** 还能不能再加：受窗格总数与可添加项目数双重限制 */
+const canAddPane = computed(() => panes.value.length < MAX_PANES && addableProjects.value.length > 0)
+
 function makePane(project, saved = {}) {
   return {
     paneId: `pane-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
@@ -187,6 +220,10 @@ function addPane(projectId) {
   const project = state.projects.items.find((p) => p.id === projectId)
   if (!project?.localPath) {
     ElMessage.warning('该项目未关联本地目录，无法打开终端')
+    return
+  }
+  if (panes.value.length >= MAX_PANES) {
+    ElMessage.warning(`最多同时开 ${MAX_PANES} 个窗格`)
     return
   }
   panes.value.push(makePane(project))
@@ -229,15 +266,6 @@ function onSession(payload) {
 function onShellChange({ paneId, shellId }) {
   const pane = panes.value.find((p) => p.paneId === paneId)
   if (pane) pane.shellId = shellId
-}
-
-function onGridChange(mode) {
-  gridMode.value = mode
-  const preset = GRID_PRESETS[mode]
-  if (preset) {
-    columnWidths.value = Array.from({ length: preset.cols }, () => 1 / preset.cols)
-    rowHeights.value = Array.from({ length: preset.rows }, () => 1 / preset.rows)
-  }
 }
 
 // ─── 拖拽分隔条：调整列宽 / 行高比例（比例随布局落盘） ───
@@ -290,8 +318,11 @@ let restoring = false
 function buildLayout() {
   return {
     gridMode: gridMode.value,
-    columnWidths: columnWidths.value.slice(0, 2),
-    rowHeights: rowHeights.value.slice(0, 2),
+    // 轨道比例按实际轨道数存（「上下」4 窗格就是 4 个数），数量随分屏方式变化。
+    // 必须浅拷贝成普通数组：Vue 的响应式数组是 Proxy，直接传进 contextBridge
+    // 暴露的接口会在克隆阶段抛 "An object could not be cloned"（preload 的 toPlain 拦不住）
+    columnWidths: [...columnWidths.value],
+    rowHeights: [...rowHeights.value],
     panes: panes.value.map((p) => ({
       projectId: p.projectId,
       shellId: p.shellId,
@@ -327,6 +358,15 @@ watch(
   { deep: true },
 )
 
+/**
+ * 磁盘上的轨道比例是否可用：长度 1~12、每个都是 (0,1] 的正数。
+ * 长度随分屏方式变化（「上下」4 窗格存 4 个），不能按固定两位校验。
+ */
+function isShareList(value) {
+  return Array.isArray(value) && value.length >= 1 && value.length <= 12
+    && value.every((n) => Number.isFinite(n) && n > 0 && n <= 1)
+}
+
 /** 启动恢复：读上次布局 → 只保留项目仍存在且有本地目录的窗格 */
 async function restoreLayout() {
   const res = await window.gitReport.terminalLayoutGet().catch(() => null)
@@ -348,9 +388,11 @@ async function restoreLayout() {
       restored.push(pane)
     }
     if (saved.gridMode === 'auto' || GRID_PRESETS[saved.gridMode]) gridMode.value = saved.gridMode
-    if (Array.isArray(saved.columnWidths) && saved.columnWidths.length === 2) columnWidths.value = saved.columnWidths
-    if (Array.isArray(saved.rowHeights) && saved.rowHeights.length === 2) rowHeights.value = saved.rowHeights
-    panes.value = restored.slice(0, 4)
+    panes.value = restored.slice(0, MAX_PANES)
+    // 比例必须在窗格之后设置：此时轨道数才确定，长度匹配的值会被原样保留；
+    // 反过来先设比例，会被中间态的轨道数等分覆盖，用户拖好的比例就丢了
+    if (isShareList(saved.columnWidths)) columnWidths.value = saved.columnWidths
+    if (isShareList(saved.rowHeights)) rowHeights.value = saved.rowHeights
     if (missing) ElMessage.warning(`上次有 ${missing} 个窗格的项目已不可用，已跳过`)
   } finally {
     // 等 watch 回调跑完再解除抑制：恢复动作本身不落盘，避免把跳过的窗格写没
@@ -449,6 +491,10 @@ function focusProject(projectId) {
   display: grid;
   gap: var(--splitter-hit);
   padding-bottom: 4px;
+  /* 兜底：万一轨道数算错，隐式轨道也等分剩余空间，
+     而不是让窗格落进 auto 轨道被挤成几像素高 */
+  grid-auto-rows: minmax(0, 1fr);
+  grid-auto-columns: minmax(0, 1fr);
 }
 
 /* 分隔条：只占间隙那一小条，hover 时高亮提示可拖动 */

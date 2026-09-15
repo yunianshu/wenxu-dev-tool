@@ -40,11 +40,19 @@ function normalizePane(raw) {
 /** 分屏方式白名单：与渲染层的预设保持一致，脏值一律回落 auto */
 const GRID_MODES = ['auto', '1x2', '2x1', '2x2', '3x1']
 
-/** 归一化比例序列：只接受 0~1 之间的有限数，并默认两位（列/行各最多两个） */
+/** 单个方向的轨道数上限（四宫格 2、竖排按窗格数最多 4，留些余量） */
+const MAX_TRACKS = 12
+
+/**
+ * 归一化轨道比例序列：只接受 (0,1] 之间的有限数。
+ * 长度随分屏方式变化——「上下」4 个窗格就是 4 行 4 个比例，
+ * 所以按 1~MAX_TRACKS 个都收，不能固定成两位（固定两位会让多出来的轨道
+ * 落到隐式 auto 轨道上，把窗格挤成几像素高）。
+ */
 function normalizeShares(value, fallback) {
   if (!Array.isArray(value)) return fallback
-  const nums = value.slice(0, 2).map((n) => Number(n))
-  if (nums.length !== 2 || nums.some((n) => !Number.isFinite(n) || n <= 0 || n >= 1)) return fallback
+  const nums = value.slice(0, MAX_TRACKS).map((n) => Number(n))
+  if (!nums.length || nums.some((n) => !Number.isFinite(n) || n <= 0 || n > 1)) return fallback
   return nums
 }
 
