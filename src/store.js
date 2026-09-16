@@ -51,6 +51,8 @@ export const state = reactive({
   /** 应用外壳状态：沉浸全屏由主进程窗口全屏驱动（Harness 视图铺满整屏时隐藏侧栏/顶栏） */
   ui: {
     fullscreen: false,
+    /** 侧栏是否收起（收起后只显示图标）。纯外观偏好，由主进程 ui-prefs.json 持久化 */
+    sidebarCollapsed: false,
     /** 外壳（含顶栏插槽）是否已挂载进文档。初始挂载期间根元素还没进 document，
      *  document.querySelector 找不到顶栏插槽，投递页头的 Teleport 会失败 */
     shellMounted: false,

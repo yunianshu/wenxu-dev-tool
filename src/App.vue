@@ -1,6 +1,19 @@
 <template>
-  <div class="app-shell" :class="{ 'is-immersive': state.ui.fullscreen }">
-    <AppSidebar v-if="!state.ui.fullscreen" v-model="view" @show-changelog="changelogVisible = true" />
+  <div
+    class="app-shell"
+    :class="{
+      'is-immersive': state.ui.fullscreen,
+      'is-sidebar-collapsed': state.ui.sidebarCollapsed,
+      'is-sidebar-animatable': sidebarAnimatable,
+    }"
+  >
+    <AppSidebar
+      v-if="!state.ui.fullscreen"
+      v-model="view"
+      :collapsed="state.ui.sidebarCollapsed"
+      @toggle-collapse="toggleSidebar"
+      @show-changelog="changelogVisible = true"
+    />
     <section class="shell-main">
       <!-- 顶栏不再占一块「当前项目」：页头都上提到这里，需要项目的页面
            把项目下拉挂在标题旁（工作台 / 部署），见各视图的 Teleport -->
@@ -33,7 +46,7 @@
 </template>
 
 <script setup>
-import { ref, h, onMounted, watch } from 'vue'
+import { ref, h, nextTick, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification, ElCheckbox } from 'element-plus'
 import AppSidebar from './components/AppSidebar.vue'
 import ChangelogDialog from './components/ChangelogDialog.vue'
@@ -70,6 +83,34 @@ function afterFirstPaint() {
     new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
     new Promise((resolve) => setTimeout(resolve, 1500)),
   ])
+}
+
+/** 侧栏折叠动画开关：从磁盘恢复收起状态时不能播一次滑出动画（见 restoreSidebarPref） */
+const sidebarAnimatable = ref(false)
+/** 用户是否已手动开合过侧栏：用于压过迟到的偏好读取（见 restoreSidebarPref） */
+let sidebarTouched = false
+
+/** 侧栏收起状态（外观偏好）：按上次退出时的状态恢复。
+ *  恢复过程本身不加动画（见 sidebarAnimatable），避免每次启动都看到侧栏滑一次 */
+async function restoreSidebarPref() {
+  let saved = null
+  try {
+    saved = await window.gitReport.uiPrefsLoad?.()
+  } catch { /* 主进程未就绪：保持默认展开 */ }
+  // 主进程繁忙时这个回包可能晚于用户点击：用户已经点过就以用户为准，
+  // 否则会把刚切换的状态倒回磁盘上的旧值（侧栏自己弹回去）
+  if (!sidebarTouched) state.ui.sidebarCollapsed = saved?.sidebarCollapsed === true
+  await nextTick()
+  sidebarAnimatable.value = true
+}
+
+/** 侧栏收起/展开：外观偏好即时生效并落盘，下次启动按收起状态恢复 */
+function toggleSidebar() {
+  sidebarTouched = true
+  state.ui.sidebarCollapsed = !state.ui.sidebarCollapsed
+  // 落盘失败不阻断交互（下次启动回落到展开态），仅记录，不打扰用户
+  window.gitReport?.uiPrefsSave?.({ sidebarCollapsed: state.ui.sidebarCollapsed })
+    ?.catch((error) => console.error('侧栏偏好保存失败', error))
 }
 
 /** 将页面导航意图集中映射；活动源列表复用设置页的 Git 活动分区。 */
@@ -153,6 +194,9 @@ onMounted(async () => {
   try { state.ui.fullscreen = !!(await window.gitReport.winIsFullScreen()) } catch { /* 主进程未就绪 */ }
   // 关闭询问：主进程 close 拦截后广播，这里弹与项目 UI 一致的询问框，结果回传执行
   window.gitReport.onWinAskClose?.(showCloseAsk)
+
+  // 侧栏偏好不阻塞启动（与项目加载无关），独立恢复
+  restoreSidebarPref()
 
   // 内置 Harness 更新：状态与安装进度由主进程广播（安装可达分钟级）；
   // 首次发现某个新版本时（notify）提示一次，点提示直接进 Harness 页更新

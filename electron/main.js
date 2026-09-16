@@ -13,6 +13,7 @@ const extensionsService = require('./extensions-service')
 const terminalService = require('./terminal-service')
 const ptyService = require('./pty-service')
 const terminalLayout = require('./terminal-layout')
+const uiPrefs = require('./ui-prefs')
 const localDebugService = require('./local-debug-service')
 const deployService = require('./deploy/deploy-service')
 const deployProjects = require('./deploy/deploy-projects')
@@ -381,6 +382,10 @@ function registerIpc() {
     return mainWindow.isFullScreen()
   })
   ipcMain.handle('win:isFullScreen', () => !!(mainWindow && mainWindow.isFullScreen()))
+
+  // 界面偏好（侧栏收起等纯外观状态）：独立文件落盘，不被设置页的整份配置回写覆盖
+  ipcMain.handle('ui:prefsLoad', () => uiPrefs.load())
+  ipcMain.handle('ui:prefsSave', (_e, prefs) => uiPrefs.save(prefs))
 
   // 配置
   ipcMain.handle('config:load', () => store.load())

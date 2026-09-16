@@ -78,6 +78,9 @@ contextBridge.exposeInMainWorld('gitReport', {
   winSetFullScreen: (flag) => ipcRenderer.invoke('win:setFullScreen', !!flag),
   winIsFullScreen: () => ipcRenderer.invoke('win:isFullScreen'),
   onWinFullscreen: (cb) => subscribe('win:fullscreen', cb),
+  // 界面偏好（侧栏收起等纯外观状态，落盘 userData/ui-prefs.json）
+  uiPrefsLoad: () => ipcRenderer.invoke('ui:prefsLoad'),
+  uiPrefsSave: (prefs) => ipcRenderer.invoke('ui:prefsSave', toPlain(prefs)),
   // 项目中心
   projectsList: () => ipcRenderer.invoke('projects:list'),
   projectsSave: (project) => ipcRenderer.invoke('projects:save', toPlain(project)),
