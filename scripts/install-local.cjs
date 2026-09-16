@@ -11,16 +11,19 @@
  *   3. robocopy /MIR 同步 release/<版本>/win-unpacked → 固定安装位置
  *   4. 校验安装后 exe 版本与 package.json 一致
  *   5. 桌面快捷方式指向固定位置（每次覆盖刷新）
- *   6. 启动应用
+ *   6. 清理 release/ 下的旧版本产物（只留当前版本，见 scripts/prune-releases.cjs）
+ *   7. 启动应用
  *
  * 注意：本机自用更新通道，不写卸载器/注册表（应用用户数据在
- * %APPDATA%\dev-project-manager，不受更新影响）。分发给他人仍用 release/ 里的安装包。
+ * %APPDATA%\dev-project-manager，不受更新影响）。分发给他人用 release/<当前版本>/
+ * 里的安装包；旧版本的安装包会被第 6 步清掉，需要时从 git 重新打包。
  *
  * 用法：npm run install:local（或 node scripts/install-local.cjs）
  */
 const { spawnSync, spawn, execSync } = require('child_process')
 const fs = require('fs')
 const path = require('path')
+const { prune, formatSize } = require('./prune-releases')
 
 const ROOT = path.resolve(__dirname, '..')
 const pkg = require(path.join(ROOT, 'package.json'))
@@ -101,6 +104,13 @@ const desktop = path.join(process.env.USERPROFILE || process.env.HOME, 'Desktop'
 ps(`$s = (New-Object -ComObject WScript.Shell).CreateShortcut('${desktop.replace(/'/g, "''")}'); $s.TargetPath = '${installedExe.replace(/'/g, "''")}'; $s.WorkingDirectory = '${installDir.replace(/'/g, "''")}'; $s.Save()`)
 console.log('[install-local] 桌面快捷方式已刷新')
 
-// ── 6. 启动 ──
+// ── 6. 清理旧版本产物：release/ 每个版本约 758MB，逐版本累积会把磁盘吃满。
+//      安装已经完成，清理失败（产物被占用等）只警告，不影响这次更新 ──
+const pruned = prune({ log: (m) => console.log(m) })
+if (pruned.removed.length || pruned.failed.length) {
+  console.log(`[install-local] 旧版本产物清理：删除 ${pruned.removed.length} 个、释放 ${formatSize(pruned.freedBytes)}，保留 v${pkg.version}`)
+}
+
+// ── 7. 启动 ──
 spawn(installedExe, [], { detached: true, stdio: 'ignore', cwd: installDir }).unref()
 console.log(`[install-local] 完成：v${pkg.version} 已更新并启动`)

@@ -237,7 +237,14 @@ npm run build:mac       # macOS（dmg）
 npm run build:linux     # Linux（AppImage + deb）
 ```
 
-产物输出至 `release/` 目录。
+产物输出至 `release/` 目录（每个版本约 758MB：安装包 + 便携版 + win-unpacked）。
+本地更新通道（`npm run install:local` / `update:local`）安装成功后会**自动清理
+`release/` 下的旧版本目录**，只保留当前版本，避免逐版本累积占满磁盘。需要单独清理时：
+
+```bash
+node scripts/prune-releases.cjs --dry-run  # 先看将删除哪些（不动文件）
+node scripts/prune-releases.cjs            # 执行：保留 package.json 当前版本，删除其余版本目录
+```
 
 ## 目录结构
 
