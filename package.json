@@ -1,6 +1,6 @@
 {
   "name": "dev-project-manager",
-  "version": "1.4.74",
+  "version": "1.4.75",
   "description": "跨平台个人项目管理工作台：以项目为中心，集成 AI 助手、Git 活动报告与一键部署等可选能力（Windows / macOS / Linux）",
   "main": "electron/main.js",
   "author": {
