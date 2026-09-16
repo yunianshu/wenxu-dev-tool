@@ -227,6 +227,31 @@ async function cleanupStale() {
   clearPidFile()
 }
 
+/**
+ * 清理 dsh profiles 模块锁的孤儿残留。dsh 每次启动都会持
+ * `<home>/profiles/node_modules.lock` 校验/重建模块回退链接（更新运行时后必触发），
+ * 锁内容是持有者 PID；进程被 taskkill /F 强杀（本应用的 stop 与更新流程都会）时
+ * 锁文件不会随之消失，dsh 的锁协议也不自行回收孤儿锁，之后每次启动都会在 2 秒
+ * 锁等待上超时失败，只能人工删锁。仅在锁内 PID 已死时删除：PID 存活说明有真实
+ * 持有者（或 PID 已被其它进程复用，保守起见不动），交回正常的锁等待。
+ */
+function clearOrphanModuleLock() {
+  const lockPath = path.join(homeDir(), 'profiles', 'node_modules.lock')
+  let pid
+  try {
+    pid = Number(String(fs.readFileSync(lockPath, 'utf8')).trim())
+  } catch {
+    return // 无锁（ENOENT）或读不了都不抢戏：后者留给 dsh 自己报错
+  }
+  if (!Number.isInteger(pid) || pid <= 0 || isAlive(pid)) return
+  // 复读确认仍是那个死 PID：与其它清理者/新持有者交错的窗口内内容变了就不动
+  try {
+    if (Number(String(fs.readFileSync(lockPath, 'utf8')).trim()) !== pid) return
+    fs.rmSync(lockPath, { force: true })
+    console.log(`[harness] 已清理孤儿模块锁（持有者 PID ${pid} 已退出）：`, lockPath)
+  } catch { /* noop */ }
+}
+
 function snapshot() {
   return {
     ...state,
@@ -285,6 +310,8 @@ async function doStart(opts = {}, token = startSeq) {
 
   // 先清理上次异常退出遗留的进程，避免它们占着旧的运行时目录导致解包删不掉
   await cleanupStale()
+  // 同理清掉强杀留下的孤儿模块锁，否则 dsh 启动会卡在锁等待上超时
+  clearOrphanModuleLock()
 
   // 内置运行时以单文件归档随包分发：首次使用（或升级换版本）需解包到用户数据目录，约 1 分钟
   await harnessRuntime.ensureBundledRuntime({
@@ -498,5 +525,6 @@ module.exports = {
   bundledRuntimeDir,
   isInstalled,
   homeDir,
+  clearOrphanModuleLock,
   DEFAULT_PORT,
 }
