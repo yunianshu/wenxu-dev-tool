@@ -200,15 +200,28 @@ class ZentaoClient {
    * 绑定任务用的选择列表：进行中在前，近 days 天内完成/关闭的在后——任务完成后仍可能要
    * 补填工时，只列进行中会让这些任务选不到。
    *
-   * 入口差异（已对真实魔改版实测）：my-task（m=my&f=task）返回含 done/closed 的任务、
-   * 按 id 倒序单页返回；而 my-work（现有 myTasks 用的入口）只列进行中。该实例上给 my-task
-   * 传 type / recPerPage / pageID 都会返回空列表，故一律不传。
+   * 入口差异（已对真实实例实测）：my-task（m=my&f=task）列的是「指派给我」的任务，
+   * 只有进行中 + 我关闭/取消的，**不含已完成**；我完成、但指派人是他人的任务（接手他人
+   * 任务完成的情形）只出现在 finishedBy（m=my&f=task&type=finishedBy，「我完成的」）。
+   * 两个入口都要取，否则刚完成的任务在绑定弹窗里根本选不到（用户报障：已完成任务无法绑定）。
+   * 分页与其它 type 参数该实例会返回空列表，一律不传；已完成入口失败不阻断主列表。
    *
    * 已知完成时间超出窗口的才剔除；禅道没记时间的已完成任务无法判定，照列（排在最后）——
    * 宁多勿漏，否则刚完成的任务可能因为没写 finishedDate 而选不到。已取消的任务不列。
    */
   async myTaskOptions({ days = 30 } = {}) {
-    const list = await this.fetchTaskList('/index.php?m=my&f=task&t=json')
+    const [assigned, finishedByMe] = await Promise.all([
+      this.fetchTaskList('/index.php?m=my&f=task&t=json'),
+      this.fetchTaskList('/index.php?m=my&f=task&type=finishedBy&t=json').catch(() => []),
+    ])
+    const seen = new Set()
+    const list = []
+    for (const t of [...assigned, ...finishedByMe]) {
+      const key = String(t.id)
+      if (seen.has(key)) continue
+      seen.add(key)
+      list.push(t)
+    }
     const since = new Date(Date.now() - days * 86400000)
     const p = (n) => String(n).padStart(2, '0')
     const sinceStr = `${since.getFullYear()}-${p(since.getMonth() + 1)}-${p(since.getDate())}`

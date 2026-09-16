@@ -56,13 +56,19 @@ function startFakeZentao() {
   const myWorkTasks = [
     { id: String(TASK_DOING), name: '进行中任务', status: 'doing', consumed: '1', left: '6', finishedDate: '0000-00-00 00:00:00', closedDate: '0000-00-00 00:00:00' },
   ]
-  // 与真实实例同形：数组、id 倒序；含近一个月完成、两个月前关闭、已取消
-  const myTasks = [
+  // 与真实实例同形（实测）：「指派给我」入口只列进行中 + 我关闭/取消的，**不含已完成**；
+  // 已完成任务（含接手他人任务完成的）只能从 type=finishedBy 入口取到。
+  const assignedTasks = [
     myWorkTasks[0],
-    { id: String(TASK_DONE), name: '已完成任务', status: 'done', consumed: '8', left: '0', finishedDate: `${DONE_AT} 15:20:00`, closedDate: '0000-00-00 00:00:00' },
     { id: String(TASK_CANCEL), name: '已取消任务', status: 'cancel', consumed: '1', left: '3', finishedDate: '0000-00-00 00:00:00', closedDate: '0000-00-00 00:00:00' },
     { id: String(TASK_CLOSED_OLD), name: '两个月前关闭任务', status: 'closed', consumed: '4', left: '0', finishedDate: '0000-00-00 00:00:00', closedDate: `${OLD_CLOSED_AT} 09:00:00` },
   ]
+  const finishedByMeTasks = [
+    { id: String(TASK_DONE), name: '已完成任务', status: 'done', consumed: '8', left: '0', finishedDate: `${DONE_AT} 15:20:00`, closedDate: '0000-00-00 00:00:00' },
+    // 与「指派给我」入口重复：合并候选要按 id 去重
+    { id: String(TASK_CLOSED_OLD), name: '两个月前关闭任务', status: 'closed', consumed: '4', left: '0', finishedDate: '0000-00-00 00:00:00', closedDate: `${OLD_CLOSED_AT} 09:00:00` },
+  ]
+  const allTasks = [...assignedTasks, ...finishedByMeTasks]
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1')
     state.paths.push(url.pathname + url.search)
@@ -80,14 +86,15 @@ function startFakeZentao() {
       return send(JSON.stringify({ status: '200', data: JSON.stringify({ tasks: myWorkTasks }) }), 'application/json;charset=utf-8')
     }
     if (url.searchParams.get('m') === 'my' && url.searchParams.get('f') === 'task') {
-      return send(JSON.stringify({ status: '200', data: JSON.stringify({ tasks: myTasks }) }), 'application/json;charset=utf-8')
+      const tasks = url.searchParams.get('type') === 'finishedBy' ? finishedByMeTasks : assignedTasks
+      return send(JSON.stringify({ status: '200', data: JSON.stringify({ tasks }) }), 'application/json;charset=utf-8')
     }
     if (url.searchParams.get('f') === 'recordEstimate') {
       return send(JSON.stringify({ status: '200', data: JSON.stringify({ efforts: [] }) }), 'application/json;charset=utf-8')
     }
     if (url.searchParams.get('f') === 'view') {
       const id = url.searchParams.get('taskID')
-      const t = myTasks.find((x) => x.id === id)
+      const t = allTasks.find((x) => x.id === id)
       return send(JSON.stringify({ status: '200', data: JSON.stringify({ task: t || {} }) }), 'application/json;charset=utf-8')
     }
     return send('<html>ok</html>')
