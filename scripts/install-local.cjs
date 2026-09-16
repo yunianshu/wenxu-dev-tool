@@ -23,7 +23,7 @@
 const { spawnSync, spawn, execSync } = require('child_process')
 const fs = require('fs')
 const path = require('path')
-const { prune, formatSize } = require('./prune-releases')
+const { prune, formatSize } = require('./prune-releases.cjs')
 
 const ROOT = path.resolve(__dirname, '..')
 const pkg = require(path.join(ROOT, 'package.json'))
