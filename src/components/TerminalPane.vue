@@ -84,6 +84,34 @@ function reportSession(patch) {
   emit('session', { paneId: props.pane.paneId, ...patch })
 }
 
+/** 终端选区复制：xterm 不内置剪贴板行为，宿主要自己把选区写进系统剪贴板 */
+function copySelection() {
+  const text = term?.getSelection?.() || ''
+  if (!text) return
+  window.gitReport.copyText(text).catch(() => {})
+}
+
+/**
+ * 复制键约定（对齐 Windows Terminal）：
+ * - Ctrl/Cmd+C 有选区 → 复制；无选区 → 照常发 ^C 中断进程
+ * - Ctrl+Insert、Ctrl/Cmd+Shift+C → 无论有没有选区都执行复制
+ */
+function handleTermKey(ev) {
+  if (!ev || ev.type !== 'keydown') return true
+  const ctrl = ev.ctrlKey || ev.metaKey
+  if (ev.code === 'KeyC' && ctrl && !ev.altKey) {
+    if (ev.shiftKey || term?.hasSelection()) {
+      copySelection()
+      return false
+    }
+  }
+  if (ev.code === 'Insert' && ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey) {
+    copySelection()
+    return false
+  }
+  return true
+}
+
 /** 尺寸适配（防抖：拖动分屏/窗口缩放会连续触发） */
 function scheduleFit() {
   if (fitTimer) clearTimeout(fitTimer)
@@ -172,6 +200,7 @@ onMounted(async () => {
   })
   fitAddon = new FitAddon()
   term.loadAddon(fitAddon)
+  term.attachCustomKeyEventHandler(handleTermKey)
   term.open(hostRef.value)
   scheduleFit()
 
