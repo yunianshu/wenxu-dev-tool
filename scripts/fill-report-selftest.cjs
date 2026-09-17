@@ -760,6 +760,62 @@ await test('add dryRun 只回显不发', async () => {
   assert.strictEqual(ff.calls.length, 0)
 })
 
+await test('add：token 过期（code=-2）重登后重试一次成功', async () => {
+  let adds = 0
+  let logins = 0
+  const { client } = makeHpClient((url) => {
+    if (url.includes('/login/getToken')) { logins += 1; return jsonResp({ code: 0, data: `tok-${logins}` }) }
+    if (url.includes('/com/workhour/add')) {
+      adds += 1
+      return adds === 1 ? jsonResp({ code: -2, data: null, msg: '' }) : jsonResp({ code: 0, data: null })
+    }
+    return jsonResp({ code: 0, data: null })
+  })
+  client.token = 'tok-old'
+  const r = await client.add([{ Percent: 100, WorkDate: '2026-09-17' }])
+  assert.strictEqual(r.status, 'ok')
+  assert.strictEqual(adds, 2)
+  assert.strictEqual(logins, 1)
+  assert.strictEqual(client.token, 'tok-1')
+})
+
+await test('add：重登后仍 -2 → 抛「token 过期且重登失败」', async () => {
+  let adds = 0
+  let logins = 0
+  const { client } = makeHpClient((url) => {
+    if (url.includes('/login/getToken')) { logins += 1; return jsonResp({ code: 0, data: 'tok' }) }
+    if (url.includes('/com/workhour/add')) { adds += 1; return jsonResp({ code: -2, data: null, msg: '' }) }
+    return jsonResp({ code: 0, data: null })
+  })
+  client.token = 'tok-old'
+  await assert.rejects(() => client.add([{ Percent: 100 }]), /token 过期且重登失败/)
+  assert.strictEqual(adds, 2)
+  assert.strictEqual(logins, 1) // 重试用的是刚登录的新 token，不再触发第二次登录
+})
+
+await test('add：code=-1 不重试（可能已写入的失败不得重复提交）', async () => {
+  let adds = 0
+  let logins = 0
+  const { client } = makeHpClient((url) => {
+    if (url.includes('/login/getToken')) { logins += 1; return jsonResp({ code: 0, data: 'tok' }) }
+    if (url.includes('/com/workhour/add')) { adds += 1; return jsonResp({ code: -1, data: null, msg: '只能报【2024-12-01】后的工' }) }
+    return jsonResp({ code: 0, data: null })
+  })
+  client.token = 'tok-old'
+  await assert.rejects(() => client.add([{ Percent: 100 }]), /只能报/)
+  assert.strictEqual(adds, 1)
+  assert.strictEqual(logins, 0)
+})
+
+await test('allTypeTasks：GetDict 失败必须抛错（不得吞成空字典伪装成功）', async () => {
+  const { client } = makeHpClient((url) => {
+    if (url.includes('/com/workhour/GetDict')) return jsonResp({ code: -1, data: null, msg: '字典查询失败' })
+    return jsonResp({ code: 0, data: null })
+  })
+  client.token = 'tok'
+  await assert.rejects(() => client.allTypeTasks(), /字典查询失败/)
+})
+
 await test('getByDate：携带 token 查询当日已填', async () => {
   const { client } = makeHpClient((url, opts) => {
     if (url.includes('/com/workhour/GetByDate')) {
@@ -835,6 +891,71 @@ await test('submit：全部为 0% 时不发起汉印提交', async () => {
   }))
   assert.strictEqual(hpAddCalls.length, 0)
   assert.strictEqual(r.hp, null)
+})
+
+// ═══════════ 汉印健壮性回归（空分组不伪装成功 / 提交留痕） ═══════════
+console.log('汉印健壮性回归:')
+const logFile = path.join(tmpRoot, 'userdata', 'fill-log.json')
+function lastLogEntry() {
+  return JSON.parse(fs.readFileSync(logFile, 'utf8')).pop()
+}
+
+await test('submit：成功后 fill-log 留痕（含汉印结果）', async () => {
+  fs.mkdirSync(path.join(tmpRoot, 'userdata'), { recursive: true })
+  await withStubClients(() => fill.submit({
+    date: '2026-09-07',
+    tasks: [{ taskId: 66, taskName: '任务A', rows: [{ date: '2026-09-07', work: '1. x', consumed: 2, left: 1 }] }],
+    hp: { items: [{ TaskId: '66', Percent: 100, WorkDate: '2026-09-07' }] },
+  }))
+  const entry = lastLogEntry()
+  assert.strictEqual(entry.date, '2026-09-07')
+  assert.strictEqual(entry.dryRun, false)
+  assert.strictEqual(entry.ztTasks, 1)
+  assert.strictEqual(entry.hpSent, 1)
+  assert.deepStrictEqual(entry.hp, { updated: 0, appended: 1 })
+  assert.strictEqual(entry.error, undefined)
+})
+
+await test('submit：汉印 add 失败时留痕记录错误原文', async () => {
+  await withStubClients(() => fill.submit({
+    date: '2026-09-07',
+    tasks: [{ taskId: 66, taskName: '任务A', rows: [{ date: '2026-09-07', work: '1. x', consumed: 2, left: 1 }] }],
+    hp: { items: [{ TaskId: '66', Percent: 100, WorkDate: '2026-09-07' }] },
+  }), { hp: { add: async () => { throw new Error('汉印提交失败: 未知错误') } } })
+  const entry = lastLogEntry()
+  assert.strictEqual(entry.hpSent, 1)
+  assert.strictEqual(entry.hp.error, '汉印提交失败: 未知错误')
+})
+
+await test('submit：抛错时留痕 error 字段后原样抛出', async () => {
+  await withStubClients(() => assert.rejects(
+    () => fill.submit({ date: '2026-02-30', tasks: [{ taskId: 66, rows: [{ date: '2026-02-30', consumed: 1 }] }] }),
+    /日期/,
+  ))
+  const entry = lastLogEntry()
+  assert.match(entry.error, /日期/)
+  assert.strictEqual(entry.date, '2026-02-30')
+})
+
+await test('getGroups：空结果不进 60s 缓存（重试必须真实重取）', async () => {
+  store.save({ hanprint: { baseUrl: 'http://hp-cache.example', clientId: '1', account: '21290', password: 'secret' } })
+  let dictHits = 0
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    const u = String(url)
+    if (u.includes('/login/getToken')) return makeResp({ body: JSON.stringify({ code: 0, data: 'tok' }) })
+    if (u.includes('/com/workhour/GetDict')) { dictHits += 1; return makeResp({ body: JSON.stringify({ code: 0, data: [] }) }) }
+    return makeResp({ body: JSON.stringify({ code: 0, data: null }) })
+  }
+  try {
+    const g1 = await hpSvc.getGroups(true)
+    assert.strictEqual(g1.length, 0)
+    const g2 = await hpSvc.getGroups() // 60s 内：空结果若被缓存，GetDict 不会再被打到
+    assert.strictEqual(g2.length, 0)
+    assert.strictEqual(dictHits, 2, '空结果不应按成功缓存，第二次应真实重取')
+  } finally {
+    globalThis.fetch = realFetch
+  }
 })
 
 // ═══════════ store 禅道配置（密码加密往返） ═══════════

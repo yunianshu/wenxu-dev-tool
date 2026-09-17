@@ -88,7 +88,8 @@ class HanprintClient {
   /** 全部报工类型的项目与任务（类型与项目两级并行，单个子列表失败不影响整体；结果保持类型顺序） */
   async allTypeTasks() {
     await this.ensureLogin()
-    const dict = (await this.getData('/com/workhour/GetDict', { dictType: 1 }).catch(() => [])) || []
+    // 字典失败必须抛错：吞掉会以「空分组」伪装成成功，下游条目构造全部落空而 hpReady 仍为 true
+    const dict = (await this.getData('/com/workhour/GetDict', { dictType: 1 })) || []
     // 各类型独立收集：原先三层串行，整链耗时 = 所有请求之和，计划页生成明显偏慢
     const perType = await Promise.all(dict.map(async (ty) => {
       let projects = []
@@ -116,8 +117,10 @@ class HanprintClient {
     return (await this.getData('/com/workhour/GetByDate', { workDate })) || []
   }
 
-  /** 提交工时条目数组；dryRun=true 只回显不发；条目带非零 Id 时为更新（同 workhour-h5 语义） */
-  async add(items, dryRun = false) {
+  /** 提交工时条目数组；dryRun=true 只回显不发；条目带非零 Id 时为更新（同 workhour-h5 语义）。
+   * code=-2（token 过期，服务端未受理）与 GET 一致重登后重试一次；其余失败不重试——
+   * 超时等「可能已写入」的失败重试会造出重复记录（Id=0 追加无幂等键）。 */
+  async add(items, dryRun = false, retried = false) {
     await this.ensureLogin()
     if (dryRun) return { dryRun: true, url: `${this.base}/com/workhour/add`, json: items }
     const resp = await this.fetchImpl(`${this.base}/com/workhour/add`, {
@@ -130,6 +133,11 @@ class HanprintClient {
       signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
     })
     const body = await parseBody(resp)
+    if (body && body.code === -2) {
+      if (retried) throw new Error('汉印 token 过期且重登失败')
+      await this.login()
+      return this.add(items, dryRun, true)
+    }
     if (!body || body.code !== 0) {
       throw new Error(`汉印提交失败: ${(body && body.msg) || '未知错误'}`)
     }
@@ -168,13 +176,19 @@ async function ensureClient(overrides = {}) {
   return shared
 }
 
-/** 任务组列表（60s 进程内缓存；force=true 绕过） */
+/** 任务组列表（60s 进程内缓存；force=true 绕过）。空结果不缓存：
+ * 瞬时失败得到的不完整分组若按成功缓存 60s，重试也会拿到同样的残缺数据。 */
 async function getGroups(force = false) {
-  if (!force && groupsCache && Date.now() - groupsCacheAt < GROUPS_TTL_MS) return groupsCache
+  if (!force && groupsCache && groupsCache.length && Date.now() - groupsCacheAt < GROUPS_TTL_MS) {
+    return groupsCache
+  }
   const client = await ensureClient()
-  groupsCache = await client.allTypeTasks()
-  groupsCacheAt = Date.now()
-  return groupsCache
+  const groups = await client.allTypeTasks()
+  if (Array.isArray(groups) && groups.length) {
+    groupsCache = groups
+    groupsCacheAt = Date.now()
+  }
+  return groups
 }
 
 /** 渲染层传参规范化：空字段表示「使用已保存配置」 */

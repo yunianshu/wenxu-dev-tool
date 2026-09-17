@@ -631,7 +631,7 @@ async function plan(payload) {
  * - dryRun=true 只回显将提交的表单/条目，不写入
  * - 日期必须与所有工时行一致；写入前刷新剩余工时与已有记录，任一查询失败即停止
  */
-async function submit(payload) {
+async function submitCore(payload) {
   const { date, tasks, dryRun, hp } = payload || {}
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || '')) || Number.isNaN(Date.parse(`${date}T00:00:00Z`)) || new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) !== date) {
     throw new Error('请选择有效的填报日期')
@@ -706,6 +706,47 @@ async function submit(payload) {
     }
   }
   return { dryRun: !!dryRun, results, hp: hpResult }
+}
+
+/** 提交留痕：无论成败追加一条到 userData/fill-log.json（上限 500 条，超出丢最旧）。
+ * 汉印/禅道失败现场此前无法回溯（应用无日志、平台无失败记录），这里落明文 JSON 便于排查。 */
+function appendFillLog(entry) {
+  try {
+    const file = path.join(app.getPath('userData'), 'fill-log.json')
+    let list = []
+    try { list = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { /* 首次或文件损坏则重建 */ }
+    if (!Array.isArray(list)) list = []
+    list.push(entry)
+    if (list.length > 500) list = list.slice(-500)
+    fs.writeFileSync(file, JSON.stringify(list))
+  } catch { /* 留痕失败不影响提交本身 */ }
+}
+
+function localStamp() {
+  const d = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+/** submit 外壳：包住 submitCore 做成败留痕，失败原样抛出 */
+async function submit(payload) {
+  const { date, dryRun, hp } = payload || {}
+  try {
+    const r = await submitCore(payload)
+    const sent = hp && Array.isArray(hp.items) ? hp.items.filter((it) => Number(it.Percent) > 0).length : 0
+    appendFillLog({
+      at: localStamp(),
+      date,
+      dryRun: !!dryRun,
+      ztTasks: Array.isArray(r.results) ? r.results.length : 0,
+      hpSent: sent,
+      hp: r.hp ? (r.hp.error ? { error: r.hp.error } : { updated: r.hp.updated || 0, appended: r.hp.appended || 0 }) : null,
+    })
+    return r
+  } catch (e) {
+    appendFillLog({ at: localStamp(), date, dryRun: !!dryRun, error: (e && e.message) || String(e) })
+    throw e
+  }
 }
 
 module.exports = {

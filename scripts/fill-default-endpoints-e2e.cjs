@@ -160,8 +160,9 @@ if (c1) {
   assert('C1 禅道地址默认 http://10.11.34.2', c1.zentaoAddr === ZENTAO_DEFAULT, `实际="${c1.zentaoAddr}"`)
   assert('C1 汉印地址默认 http://10.10.21.2:5293', c1.hanprintAddr === HANPRINT_DEFAULT, `实际="${c1.hanprintAddr}"`)
   assert('C1 汉印所属公司默认 1 · 厦门汉印', String(c1.company).includes('1 · 厦门汉印'), `实际="${c1.company}"`)
-  // 文案断言同时兜住「改了渲染层但没重新 build」的假通过
-  assert('C1 地址说明文案提示已默认填公司地址', String(c1.zentaoHint).includes('已默认填公司地址'), `实际="${c1.zentaoHint}"`)
+  // 默认地址断言兜住「改了渲染层但没重新 build」的假通过；地址行说明文案已按
+  // 「UI 禁止描述性文本」要求移除（f4c4456），此处断言其不再回潮
+  assert('C1 地址行不再保留描述性说明文案', !String(c1.zentaoHint).trim(), `实际="${c1.zentaoHint}"`)
   assert('C4 主进程配置与界面一致',
     c1.cfgAi === AI_DEFAULT && c1.cfgZentao === ZENTAO_DEFAULT && c1.cfgHanprint === HANPRINT_DEFAULT && c1.cfgClientId === '1',
     `cfg=${JSON.stringify({ a: c1.cfgAi, z: c1.cfgZentao, h: c1.cfgHanprint, c: c1.cfgClientId })}`)
