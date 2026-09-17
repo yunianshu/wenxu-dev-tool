@@ -419,7 +419,12 @@ async function main() {
         slotTitle: slot?.querySelector('.topbar-page-title')?.textContent || '',
         slotHasToolbar: !!slot?.querySelector('.terminal-toolbar'),
         anyProjectSwitcher: !!document.querySelector('.app-topbar .project-select'),
-        appRegion: slot ? getComputedStyle(slot).webkitAppRegion : '',
+        // 插槽容器**故意保持可拖拽**（整条 no-drag 会让顶栏中间大片空白拖不动窗口），
+        // 需要退出拖拽区的是里面的控件：断言按钮而不是插槽本身
+        addBtnRegion: slot?.querySelector('.terminal-toolbar .el-button')
+          ? String(getComputedStyle(slot.querySelector('.terminal-toolbar .el-button')).webkitAppRegion) : '',
+        titleRegion: slot?.querySelector('.topbar-page-title')
+          ? String(getComputedStyle(slot.querySelector('.topbar-page-title')).webkitAppRegion) : '',
         pageHeaderInContent: !!document.querySelector('.content-area .page-header'),
         gridTopOffset: g ? Math.round(g.top - a.top) : -1,
         gridHeight: g ? Math.round(g.height) : -1,
@@ -438,8 +443,10 @@ async function main() {
     check('插槽里是该页标题', topbar.slotTitle === '终端工作台', `实际「${topbar.slotTitle}」`)
     check('插槽里是终端工具栏', topbar.slotHasToolbar)
     check('工具页不再显示「当前项目」选择器', !topbar.anyProjectSwitcher)
-    // 顶栏整条是窗口拖拽区；插槽漏设 no-drag 时按钮看着在、就是点不动（DOM 断言看不出来）
-    check('插槽不是窗口拖拽区', topbar.appRegion === 'no-drag', `webkitAppRegion=${topbar.appRegion}`)
+    // 顶栏整条是窗口拖拽区，只有控件退出拖拽区：按钮必须是 no-drag（点得动），
+    // 标题保持 drag/继承（顶栏空白与标题文字上都能拖动窗口）
+    check('插槽里的按钮退出拖拽区（点得动）', topbar.addBtnRegion === 'no-drag', `webkitAppRegion=${topbar.addBtnRegion}`)
+    check('插槽标题仍是窗口拖拽区（能拖动窗口）', topbar.titleRegion !== 'no-drag', `webkitAppRegion=${topbar.titleRegion}`)
     check('内容区不再有页内标题栏', !topbar.pageHeaderInContent)
     check('终端网格吃到了省下的高度',
       topbar.gridTopOffset >= 0 && topbar.gridTopOffset <= 24 && topbar.gridHeight >= topbar.areaHeight - 60,

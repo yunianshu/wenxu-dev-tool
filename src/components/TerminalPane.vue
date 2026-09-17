@@ -27,7 +27,9 @@
         </button>
       </div>
     </header>
-    <div ref="hostRef" class="term-host" />
+    <div ref="hostRef" class="term-host">
+      <div ref="fitHostRef" class="term-fit" />
+    </div>
     <div v-if="error" class="term-overlay">
       <p>{{ error }}</p>
       <button type="button" class="term-retry" @click="restart">重试</button>
@@ -64,6 +66,7 @@ const props = defineProps({
 const emit = defineEmits(['focus', 'close', 'session', 'update:shell'])
 
 const hostRef = ref(null)
+const fitHostRef = ref(null)
 const error = ref('')
 const shortCwd = computed(() => shortPath(props.pane.cwd || ''))
 const statusClass = computed(() => {
@@ -129,6 +132,11 @@ async function ensureSession() {
   if (pane.sessionId || !pane.cwd) return
   error.value = ''
   try {
+    // 先按当前视图尺寸 fit 再建会话：term 刚 open 时是默认 80×24，
+    // 用默认尺寸创建的 pty 要等防抖 fit 才会纠正，而那次 fit 的 resize
+    // 上报可能早于 sessionId 落位被丢掉（见下方 watch），pty 就停在 80×24，
+    // TUI 按旧列宽重绘全部错位（新加窗格显示乱的主因）
+    try { fitAddon?.fit() } catch { /* 视图尚未就绪时按默认尺寸创建 */ }
     // 先 attach 已有会话：应用切页前留下的会话要复用，而不是另开一个进程
     const existing = await window.gitReport.terminalList()
     const hit = (existing?.sessions || []).find(
@@ -143,7 +151,6 @@ async function ensureSession() {
       pendingReplay = false
       reportSession({ sessionId: hit.id, shellLabel: hit.shellLabel, pid: hit.pid, exited: false, exitCode: null })
       term.focus()
-      scheduleFit()
       return
     }
     const res = await window.gitReport.terminalCreate({
@@ -201,7 +208,9 @@ onMounted(async () => {
   fitAddon = new FitAddon()
   term.loadAddon(fitAddon)
   term.attachCustomKeyEventHandler(handleTermKey)
-  term.open(hostRef.value)
+  // 挂在内层适配层上：FitAddon 按父元素 computed 尺寸算行列，直接挂带 padding
+  // 的 .term-host 会把 padding 算进可用空间，导致最右几列、最下一行被裁掉
+  term.open(fitHostRef.value)
   scheduleFit()
 
   // 键盘输入原样透传（含 Ctrl+C 等控制字符）；会话不存在时静默丢弃
@@ -232,6 +241,13 @@ onMounted(async () => {
   }
   await nextTick()
   await ensureSession()
+})
+
+/** sessionId 落位后必补一次尺寸上报：挂载期间的 fit 可能早于会话创建/附加（当时
+ *  sid 为空，terminalResize 被丢掉），pty 会停在创建时的默认尺寸，之后若视图尺寸
+ *  不再变化就永远没人补报 —— TUI 按旧列宽重绘全部错位（新加窗格显示乱的主因） */
+watch(() => props.pane.sessionId, (sid) => {
+  if (sid) scheduleFit()
 })
 
 /** 窗格换了项目/目录：旧会话作废，按新项目重开 */
@@ -349,6 +365,13 @@ onBeforeUnmount(() => {
   min-height: 0;
   padding: 6px 8px 8px;
   overflow: hidden;
+}
+
+/* xterm 的挂载层：无 padding，FitAddon 按它的尺寸算行列才不会被 host 的
+   padding 撑大（否则画布比可视区大，最右/最下内容被裁） */
+.term-fit {
+  width: 100%;
+  height: 100%;
 }
 
 /* xterm 自带样式：确保它撑满宿主容器 */
