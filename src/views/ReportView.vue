@@ -1,6 +1,6 @@
 <template>
   <div class="report-page">
-    <!-- 页头上提到应用顶栏（本页不带项目控件：没选项目时按全部项目汇总） -->
+    <!-- 页头上提到应用顶栏（活动报告固定汇总全部项目，不跟随顶栏当前项目） -->
     <Teleport v-if="topbarReady" to="#app-topbar-slot">
       <div class="topbar-page">
         <h1 class="topbar-page-title">活动报告</h1>
@@ -62,13 +62,6 @@
         class="warn"
       />
       <el-alert
-        v-else-if="currentProject && !scopedRepos.length"
-        type="info"
-        :closable="false"
-        title="当前项目尚未关联可识别的 Git 仓库。项目仍可正常使用，也可以到“项目”中关联本地目录。"
-        class="warn"
-      />
-      <el-alert
         v-else-if="onlyMine && identitiesMissing"
         type="warning"
         :closable="false"
@@ -77,14 +70,14 @@
       />
     </el-card>
 
-    <!-- 项目范围已切换：已收集结果不属于当前项目，不再作为本项目报告展示 -->
+    <!-- 收集范围与当前活动源不一致（如 AI 助手页按单项目刷新过）：旧数据不作展示 -->
     <el-alert
       v-if="scopeMismatch"
       type="info"
       :closable="false"
       show-icon
       class="stale-alert"
-      :title="`已切换项目，下方不再显示「${dataRangeLabel}」的收集结果；点击「生成报告」按“${currentProject?.name || '全部项目'}”重新收集。`"
+      :title="`下方为其它范围收集的数据；点击「生成报告」按全部项目重新收集「${dataRangeLabel}」。`"
     />
 
     <!-- 生成过程：扫描 / 收集中 -->
@@ -149,7 +142,7 @@
                 </div>
               </div>
             </div>
-            <div v-else-if="scopeMismatch" class="collect-hint">项目已切换，请重新生成报告</div>
+            <div v-else-if="scopeMismatch" class="collect-hint">数据已过期，请重新生成报告</div>
             <div v-else class="collect-hint">该时间范围内无提交记录</div>
           </el-tab-pane>
 
@@ -247,18 +240,14 @@ import { todayStr, addDays, untilToEnd } from '../utils/date'
 import { groupByProject, buildMarkdown, stripPrefix } from '../utils/report'
 import { toPlain } from '../utils/ipc'
 import { shortPath } from '../utils/path'
-import { reposForProject } from '../utils/project-context'
-import { useProjects } from '../composables/useProjects'
 import BaseChart from '../components/BaseChart.vue'
 import CountUp from '../components/CountUp.vue'
 
 const period = ref('daily')
-const { currentProject } = useProjects()
 /** 顶栏是否在位（沉浸全屏时整个顶栏被卸载，此时不投递页头） */
 const topbarReady = useTopbarReady()
-const scopedRepos = computed(() => currentProject.value
-  ? reposForProject(currentProject.value, state.discoveredRepos)
-  : state.discoveredRepos)
+// 活动报告固定汇总全部项目（不跟随顶栏当前项目）：报告口径是全量活动，项目维度由分组与图表呈现
+const scopedRepos = computed(() => state.discoveredRepos)
 // 日报默认今天
 const dailyDate = ref(todayStr())
 const customSince = ref(addDays(todayStr(), -6))
@@ -320,8 +309,8 @@ const dataRangeLabel = computed(() => {
 
 const repoKey = (paths) => (paths || []).slice().sort().join('\n')
 
-/** 收集范围与当前项目不一致（切换了项目，或 AI 页按其它项目刷新过活动）。
- *  此时旧数据不属于当前项目，明细/统计必须归零：显示别的项目的提交比显示空更糟。 */
+/** 收集范围与当前活动源不一致（如 AI 助手页按单项目刷新过活动）。
+ *  此时旧数据不是「全部项目」口径，明细/统计必须归零：显示不完整的数据比显示空更糟。 */
 const scopeMismatch = computed(() => {
   if (state.report.phase !== 'done' || !state.report.collectedRange) return false
   return repoKey(state.report.collectedRange.repoPaths) !== repoKey(scopedRepos.value.map((row) => row.path))
@@ -375,7 +364,7 @@ async function generate() {
   }
   // 阶段 2：收集提交
   if (!scopedRepos.value.length) {
-    ElMessage.info(currentProject.value ? '当前项目没有可用的 Git 活动源' : '没有可用的 Git 活动源')
+    ElMessage.info('没有可用的 Git 活动源')
     state.report.rawCommits = []
     state.report.collectedRange = null
     state.report.phase = 'done'
@@ -417,7 +406,7 @@ async function doCollect() {
 }
 
 const authors = computed(() => {
-  // 项目已切换时作者分布同样属于旧数据，不能继续作为筛选依据
+  // 收集范围不一致时作者分布同样属于旧数据，不能继续作为筛选依据
   if (scopeMismatch.value) return []
   const m = new Map()
   state.report.rawCommits.forEach((c) => {
@@ -439,8 +428,8 @@ function isMine(c) {
 const identitiesMissing = computed(() => !(state.config?.identities || []).length)
 
 const filteredCommits = computed(() => {
-  // 项目已切换：rawCommits 属于上一个项目，明细/KPI/图表必须一起归零；
-  // 切回原项目时 scopeMismatch 变回 false，数据自动恢复，因此无需丢弃 rawCommits
+  // 收集范围与全部活动源不一致：rawCommits 可能来自 AI 助手页的单项目刷新，
+  // 明细/KPI/图表必须一起归零；范围恢复后 scopeMismatch 变回 false，数据自动恢复
   if (scopeMismatch.value) return []
   return state.report.rawCommits.filter((c) => {
     if (onlyMine.value) return isMine(c)
@@ -589,13 +578,12 @@ const trendOption = computed(() => {
 })
 
 function getTitle() {
-  const prefix = currentProject.value ? currentProject.value.name : '全部项目'
   const map = {
-    daily: `${prefix}日报 — ${dailyDate.value}`,
-    weekly: `${prefix}周报 — ${rangeLabel.value}`,
-    biweekly: `${prefix}双周报 — ${rangeLabel.value}`,
-    monthly: `${prefix}月报 — ${rangeLabel.value}`,
-    custom: `${prefix}报告 — ${rangeLabel.value}`,
+    daily: `全部项目日报 — ${dailyDate.value}`,
+    weekly: `全部项目周报 — ${rangeLabel.value}`,
+    biweekly: `全部项目双周报 — ${rangeLabel.value}`,
+    monthly: `全部项目月报 — ${rangeLabel.value}`,
+    custom: `全部项目报告 — ${rangeLabel.value}`,
   }
   return map[period.value]
 }
@@ -603,7 +591,7 @@ function getTitle() {
 function getMarkdown() {
   return buildMarkdown({
     title: getTitle(),
-    subtitle: `项目范围：${currentProject.value?.name || '全部项目'} · Git 活动源：${scopedRepos.value.length} 个 · 作者：${onlyMine.value ? `本人(${(state.config.identities || []).length}个账号)` : '全部作者'}`,
+    subtitle: `项目范围：全部项目 · Git 活动源：${scopedRepos.value.length} 个 · 作者：${onlyMine.value ? `本人(${(state.config.identities || []).length}个账号)` : '全部作者'}`,
     commits: filteredCommits.value,
     stats: {
       commitCount: filteredCommits.value.length,
@@ -623,7 +611,7 @@ async function autoSave() {
       dateRange: rangeLabel.value,
       commitCount: filteredCommits.value.length,
       projectCount: filteredGroups.value.length,
-      projectId: currentProject.value?.id || '',
+      projectId: '',
     })
     loadHistory()
   } catch (e) {

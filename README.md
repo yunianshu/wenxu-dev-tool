@@ -199,7 +199,7 @@ npm test
 
 ```bash
 node scripts/report-empty-date-e2e.cjs          # 报告页空日期校验 + 关键页面挂载冒烟
-node scripts/report-project-switch-e2e.cjs      # 切换项目后活动报告数据区跟随改变（切回自动恢复）
+node scripts/report-all-projects-e2e.cjs        # 活动报告固定汇总全部项目（不随顶栏项目切换）
 node scripts/deploy-layout-e2e.cjs              # 部署页布局
 node scripts/deploy-history-switch-e2e.cjs      # 切换项目后发布历史跟随刷新
 node scripts/deploy-version-runstate-e2e.cjs    # 新版本保存后运行态复位
