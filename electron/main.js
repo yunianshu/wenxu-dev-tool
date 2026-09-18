@@ -529,11 +529,13 @@ function registerIpc() {
     }
   })
 
-  // 剪贴板（只写：渲染层无读取剪贴板的场景，不暴露读取面）
+  // 剪贴板（写：选区复制等；读：终端 Ctrl+V 粘贴 —— 无菜单 Electron 下浏览器
+  // 不派发原生 paste 事件，宿主要自己读剪贴板喂给 xterm，见 TerminalPane）
   ipcMain.handle('clipboard:write', (_e, text) => {
     if (text) clipboard.writeText(String(text))
     return true
   })
+  ipcMain.handle('clipboard:read', () => clipboard.readText())
 
   // 项目中心：项目是 AI、活动报告与部署共享的一等上下文
   ipcMain.handle('projects:list', () => projectService.list())

@@ -94,14 +94,39 @@ function copySelection() {
   window.gitReport.copyText(text).catch(() => {})
 }
 
+/** 终端粘贴：应用移除了菜单栏，Electron 无菜单时浏览器不会派发原生 paste 事件，
+ *  Ctrl+V 放行只会被 xterm 翻成 0x16 发给 pty（表现为粘贴毫无反应）。
+ *  这里自己读系统剪贴板喂给 term.paste —— 它与原生 paste 走同一链路，
+ *  会按程序请求的 bracketed paste mode 包裹 200~/201~（kimi 等 TUI 依赖此语义） */
+async function pasteFromClipboard() {
+  try {
+    const text = await window.gitReport.readText()
+    if (text && !props.pane.exited) term?.paste(text)
+  } catch { /* 剪贴板读取失败保持静默，不打断终端 */ }
+}
+
 /**
- * 复制键约定（对齐 Windows Terminal）：
+ * 复制/粘贴键约定（对齐 Windows Terminal）：
  * - Ctrl/Cmd+C 有选区 → 复制；无选区 → 照常发 ^C 中断进程
  * - Ctrl+Insert、Ctrl/Cmd+Shift+C → 无论有没有选区都执行复制
+ * - Ctrl/Cmd+V、Shift+Insert → 粘贴（无菜单 Electron 不派发原生 paste，必须拦截自绘）
  */
 function handleTermKey(ev) {
   if (!ev || ev.type !== 'keydown') return true
   const ctrl = ev.ctrlKey || ev.metaKey
+  // 拦截的键要显式 preventDefault：customKeyEventHandler 返回 false 只是让 xterm
+  // 短路（不会 preventDefault），放行默认动作会让 Chromium 再触发一次原生
+  // paste/copy（粘贴发两份、空剪贴板也发空 bracketed 包裹都源于此）
+  if (ev.code === 'KeyV' && ctrl && !ev.shiftKey && !ev.altKey) {
+    ev.preventDefault()
+    pasteFromClipboard()
+    return false
+  }
+  if (ev.code === 'Insert' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+    ev.preventDefault()
+    pasteFromClipboard()
+    return false
+  }
   if (ev.code === 'KeyC' && ctrl && !ev.altKey) {
     if (ev.shiftKey || term?.hasSelection()) {
       copySelection()
