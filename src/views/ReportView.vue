@@ -114,6 +114,11 @@
             <div class="detail-toolbar">
               <span class="detail-summary">{{ filteredCommits.length }} 条提交 · {{ filteredGroups.length }} 个项目</span>
               <div class="detail-actions">
+                <el-button
+                  v-if="filteredGroups.length > 1"
+                  size="small"
+                  @click="toggleAllGroups"
+                >{{ allCollapsed ? '全部展开' : '全部收起' }}</el-button>
                 <el-button size="small" :disabled="!filteredCommits.length || stale" @click="copyReport">
                   <el-icon style="margin-right: 4px"><CopyDocument /></el-icon>复制报告
                 </el-button>
@@ -123,23 +128,28 @@
               </div>
             </div>
             <div v-if="filteredGroups.length" class="report-detail-list">
-              <div v-for="g in filteredGroups" :key="g.repo" class="project-card">
-                <div class="project-header">
-                  <span class="project-name">{{ g.project }}</span>
-                  <div class="project-right">
+              <div v-for="g in filteredGroups" :key="g.repo" class="project-card" :class="{ 'is-collapsed': isCollapsed(g.repo) }">
+                <div class="project-header" @click="toggleCollapse(g.repo)">
+                  <div class="project-head-left">
+                    <el-icon class="fold-icon"><CaretRight /></el-icon>
+                    <span class="project-name">{{ g.project }}</span>
+                  </div>
+                  <div class="project-right" @click.stop>
                     <span class="project-count">{{ g.commits.length }} 条提交</span>
                     <el-button size="small" text type="primary" @click="copyProject(g)">
                       <el-icon style="margin-right: 3px"><CopyDocument /></el-icon>复制
                     </el-button>
                   </div>
                 </div>
-                <div class="commit-list">
-                  <div v-for="(c, i) in g.commits" :key="c.hash" class="commit-row">
-                    <span class="commit-no">{{ i + 1 }}</span>
-                    <span class="commit-date">{{ c.date.slice(5) }}</span>
-                    <span class="commit-subject">{{ c.subject }}</span>
+                <el-collapse-transition>
+                  <div v-show="!isCollapsed(g.repo)" class="commit-list">
+                    <div v-for="(c, i) in g.commits" :key="c.hash" class="commit-row">
+                      <span class="commit-no">{{ i + 1 }}</span>
+                      <span class="commit-date">{{ c.date.slice(5) }}</span>
+                      <span class="commit-subject">{{ c.subject }}</span>
+                    </div>
                   </div>
-                </div>
+                </el-collapse-transition>
               </div>
             </div>
             <div v-else-if="scopeMismatch" class="collect-hint">数据已过期，请重新生成报告</div>
@@ -389,6 +399,8 @@ async function doCollect() {
     state.report.collectedRange = { since: r.since, until: r.until, repoPaths: repos.slice() }
     // 新一轮数据里可能没有旧勾选的作者：残留筛选会静默隐藏提交，必须重置
     authorFilter.value = []
+    // 折叠状态同理：新数据的分组未必与旧数据一致，全部展开
+    collapsedRepos.value = new Set()
     state.report.phase = 'done'
     if (data.length) autoSave()
     if (!data.length) {
@@ -440,6 +452,23 @@ const filteredCommits = computed(() => {
 
 const filteredGroups = computed(() => groupByProject(filteredCommits.value))
 const authorCount = computed(() => new Set(filteredCommits.value.map((c) => c.authorName)).size)
+
+/** 项目卡片折叠状态（按 repo 记录；新一轮收集后重置，避免旧状态套在新数据上） */
+const collapsedRepos = ref(new Set())
+const isCollapsed = (repo) => collapsedRepos.value.has(repo)
+function toggleCollapse(repo) {
+  const next = new Set(collapsedRepos.value)
+  next.has(repo) ? next.delete(repo) : next.add(repo)
+  collapsedRepos.value = next
+}
+const allCollapsed = computed(() =>
+  filteredGroups.value.length > 0 && filteredGroups.value.every((g) => collapsedRepos.value.has(g.repo))
+)
+function toggleAllGroups() {
+  collapsedRepos.value = allCollapsed.value
+    ? new Set()
+    : new Set(filteredGroups.value.map((g) => g.repo))
+}
 
 const projectBarOption = computed(() => {
   const top = filteredGroups.value.slice(0, 12).reverse()

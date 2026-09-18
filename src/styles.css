@@ -315,7 +315,19 @@ body {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 8px;
+  cursor: pointer;
+  user-select: none;
 }
+.project-head-left { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.fold-icon {
+  color: #8a909c;
+  font-size: 14px;
+  transform: rotate(90deg);
+  transition: transform 0.15s ease;
+}
+.project-card.is-collapsed .fold-icon { transform: rotate(0deg); }
+.project-card.is-collapsed .project-header { margin-bottom: 0; }
+.project-header:hover .project-name { color: var(--brand-accent); }
 .project-name { font-weight: 600; color: var(--brand-text); }
 .project-right { display: flex; align-items: center; gap: 10px; }
 .project-count {

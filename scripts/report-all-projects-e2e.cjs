@@ -158,6 +158,51 @@ const EVAL = `(async () => {
   r.projectsAfterB = projectNames()
   r.staleAlertAfterB = (q('.stale-alert') || {}).textContent || ''
 
+  // ── A6-A9：项目卡片点击收缩/展开 ──
+  const cardAt = (idx) => qa('.project-card')[idx]
+  const listHeight = (idx) => {
+    const list = cardAt(idx)?.querySelector('.commit-list')
+    return list ? Math.round(list.getBoundingClientRect().height) : -1
+  }
+  const idxA = qa('.project-card').findIndex((c) =>
+    (c.querySelector('.commit-subject') || {}).textContent?.includes('A 项目'))
+  const headerA = qa('.project-card .project-header')[idxA]
+  r.idxOfA = idxA
+  r.collapseA = { before: listHeight(idxA) }
+
+  // 展开状态下点击右侧「复制」区不应触发收缩（stop 传播）
+  const rightA = cardAt(idxA)?.querySelector('.project-right')
+  if (rightA) {
+    rightA.querySelector('button')?.click()
+    await sleep(400)
+    r.clickCopyKeeps = listHeight(idxA)
+  }
+
+  headerA.click()
+  await sleep(600)
+  r.collapseA.after = listHeight(idxA)
+
+  headerA.click()
+  await sleep(600)
+  r.expandA = { back: listHeight(idxA) }
+
+  const allBtn = () => qa('.detail-actions button').find((b) =>
+    b.textContent.includes('全部收起') || b.textContent.includes('全部展开'))
+  const btnAll = allBtn()
+  if (btnAll) {
+    btnAll.click()
+    await sleep(600)
+    r.collapseAll = {
+      heights: qa('.project-card .commit-list').map((l) => Math.round(l.getBoundingClientRect().height)),
+      label: allBtn()?.textContent.trim() || '',
+    }
+    allBtn()?.click()
+    await sleep(600)
+    r.expandAllHeights = qa('.project-card .commit-list').map((l) => Math.round(l.getBoundingClientRect().height))
+  } else {
+    r.collapseAll = 'no-toggle-all-button'
+  }
+
   // ── A5：AI 助手页按单项目刷新活动 → 报告页旧数据必须归零 ──
   const aiItem = qa('.el-menu-item').find((e) => e.textContent.includes('AI 助手'))
   if (aiItem) {
@@ -243,6 +288,17 @@ child.stdout.on('data', (d) => {
   assert('A5 AI 页按单项目刷新后报告页归零并提示重新收集',
     !hasA(r.commitsAfterAi) && !hasB(r.commitsAfterAi) && String(r.staleAlertAfterAi || '').includes('重新收集'),
     `summary="${r.summaryAfterAi}" alert="${r.staleAlertAfterAi}" skipped=${r.aiRefreshSkipped || 'no'}`)
+  assert('A6 点击项目头部后提交列表收起（高度归零）',
+    r.collapseA && r.collapseA.before > 20 && r.collapseA.after === 0, JSON.stringify(r.collapseA))
+  assert('A7 点击复制区不触发收缩',
+    r.clickCopyKeeps > 20, `height=${r.clickCopyKeeps}`)
+  assert('A8 再点头部后列表恢复展开',
+    r.expandA && r.expandA.back > 20, JSON.stringify(r.expandA))
+  assert('A9 全部收起后所有列表隐藏且按钮切换，再点恢复',
+    Array.isArray(r.collapseAll?.heights) && r.collapseAll.heights.every((h) => h === 0)
+      && r.collapseAll.label === '全部展开'
+      && Array.isArray(r.expandAllHeights) && r.expandAllHeights.every((h) => h > 20),
+    `collapse=${JSON.stringify(r.collapseAll)} expand=${JSON.stringify(r.expandAllHeights)}`)
 
   console.log(`  活动源：${r.repoCountText} · 切B：${JSON.stringify(r.pickB)}`)
   if (failed) console.log('原始数据:', JSON.stringify(r, null, 1))
