@@ -329,12 +329,31 @@ class ZentaoClient {
     if (resp.status < 200 || resp.status >= 300) throw new Error(`禅道提交失败：HTTP ${resp.status}，请核对平台记录后重试`)
     let result
     try { result = parseJsonPrefix(body) } catch {
-      throw new Error('无法确认禅道提交结果，请先核对平台记录，避免重复提交')
+      // 响应异常 ≠ 写入失败（魔改版 recordEstimate 偶发返回非 JSON）。直接抛错会把
+      // 「首个任务已写入」误当中止点，剩余任务全部漏交；先回查当日工时核实，
+      // 与本次提交逐行匹配则按已写入继续，查无匹配才视为失败
+      let verified = false
+      try { verified = await this.verifyEfforts(taskId, rows) } catch { /* 回查也失败则按无法确认处理 */ }
+      if (verified) return { status: resp.status, verified: true, body: body.slice(0, 200) }
+      const err = new Error('无法确认禅道提交结果，请先核对平台记录，避免重复提交')
+      err.rawBody = body.slice(0, 200)
+      throw err
     }
     if (!result || result.result !== 'success') {
       throw new Error('禅道未确认提交成功，请核对平台记录及工时内容')
     }
     return { status: resp.status, body: body.slice(0, 200) }
+  }
+
+  /**
+   * 回查核实：当日已有工时记录与本次提交的每一行（work + consumed）均匹配 → 已写入。
+   * work 是当天唯一的编号列表，精确匹配即可；查询失败由调用方按「无法确认」处理。
+   */
+  async verifyEfforts(taskId, rows) {
+    const date = rows && rows[0] && rows[0].date
+    if (!date) return false
+    const today = (await this.getTaskEfforts(taskId)).filter((e) => e.date === date)
+    return rows.every((r) => today.some((e) => e.work === r.work && Number(e.consumed) === Number(r.consumed)))
   }
 }
 

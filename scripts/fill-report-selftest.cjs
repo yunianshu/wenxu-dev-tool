@@ -912,7 +912,7 @@ await test('submit：成功后 fill-log 留痕（含汉印结果）', async () =
   assert.strictEqual(entry.dryRun, false)
   assert.strictEqual(entry.ztTasks, 1)
   assert.strictEqual(entry.hpSent, 1)
-  assert.deepStrictEqual(entry.hp, { updated: 0, appended: 1 })
+  assert.deepStrictEqual(entry.hp, { sent: 1, updated: 0, appended: 1 })
   assert.strictEqual(entry.error, undefined)
 })
 
@@ -935,6 +935,110 @@ await test('submit：抛错时留痕 error 字段后原样抛出', async () => {
   const entry = lastLogEntry()
   assert.match(entry.error, /日期/)
   assert.strictEqual(entry.date, '2026-02-30')
+})
+
+// ═══════════ 响应异常回查核实 / 分项留痕 / 重新提交（2026-09-18 需求） ═══════════
+console.log('响应异常回查核实与重新提交:')
+await test('recordEfforts：响应非 JSON 但回查当日记录逐行匹配 → 按已写入继续（verified）', async () => {
+  const rows = [{ date: '2026-09-07', consumed: 2, left: 8, work: '1. 工作A' }]
+  const { client } = makeClient((url, opts) => {
+    if (url.includes('refreshRandom')) return { body: '"r1"' }
+    if (opts.method === 'POST' && url.includes('user&f=login')) return { body: '{"result":"success"}' }
+    if (opts.method === 'POST') return { body: '' } // 提交响应为空 body：无法解析
+    if (url.includes('recordEstimate')) {
+      return { body: JSON.stringify({ data: { efforts: [{ id: '900', date: '2026-09-07', work: '1. 工作A', consumed: '2', left: '8' }] } }) }
+    }
+    return { body: '' }
+  })
+  await client.login()
+  const r = await client.recordEfforts(66, rows)
+  assert.strictEqual(r.verified, true)
+})
+
+await test('recordEfforts：响应非 JSON 且回查无匹配 → 抛错并附响应原文（rawBody）', async () => {
+  const rows = [{ date: '2026-09-07', consumed: 2, left: 8, work: '1. 工作A' }]
+  const { client } = makeClient((url, opts) => {
+    if (url.includes('refreshRandom')) return { body: '"r1"' }
+    if (opts.method === 'POST' && url.includes('user&f=login')) return { body: '{"result":"success"}' }
+    if (opts.method === 'POST') return { body: '<html>oops</html>' }
+    if (url.includes('recordEstimate')) return { body: JSON.stringify({ data: { efforts: [] } }) }
+    return { body: '' }
+  })
+  await client.login()
+  let caught = null
+  try { await client.recordEfforts(66, rows) } catch (e) { caught = e }
+  assert.match(caught && caught.message, /无法确认禅道提交结果/)
+  assert.strictEqual(caught && caught.rawBody, '<html>oops</html>')
+})
+
+let lastFailAt = ''
+await test('submit：中途失败时错误带进度、留痕分项/断点/载荷', async () => {
+  await withStubClients(() => assert.rejects(
+    () => fill.submit({
+      date: '2026-09-07',
+      tasks: [
+        { taskId: 66, taskName: '任务A', rows: [{ date: '2026-09-07', work: '1. a', consumed: 2, left: 1 }] },
+        { taskId: 88, taskName: '任务B', rows: [{ date: '2026-09-07', work: '1. b', consumed: 3, left: 1 }] },
+      ],
+      hp: { items: [{ TaskId: '66', Percent: 100, WorkDate: '2026-09-07' }] },
+    }),
+    /已写入 1\/2 个禅道任务/,
+  ), {
+    zt: {
+      recordEfforts: async (taskId) => {
+        if (String(taskId) === '88') {
+          const e = new Error('无法确认禅道提交结果，请先核对平台记录，避免重复提交')
+          e.rawBody = '<html>gateway</html>'
+          throw e
+        }
+        return {}
+      },
+    },
+  })
+  const entry = lastLogEntry()
+  assert.strictEqual(entry.tasks.length, 1, '留痕只含已写入任务')
+  assert.strictEqual(entry.tasks[0].taskId, 66)
+  assert.strictEqual(entry.stage, 'zentao#88', '断点环节')
+  assert.strictEqual(entry.raw, '<html>gateway</html>', '响应原文')
+  assert.match(entry.error, /已写入 1\/2/)
+  assert.strictEqual(entry.payload.tasks.length, 2, '载荷含全部任务（重放用）')
+  assert.strictEqual(entry.payload.hp.items.length, 1)
+  lastFailAt = entry.at
+})
+
+await test('resubmit：按留痕载荷重放成功并重新留痕', async () => {
+  const before = JSON.parse(fs.readFileSync(logFile, 'utf8')).length
+  const { r } = await withStubClients(() => fill.resubmit(lastFailAt))
+  assert.strictEqual(r.results.length, 2)
+  const entries = JSON.parse(fs.readFileSync(logFile, 'utf8'))
+  assert.strictEqual(entries.length, before + 1)
+  const last = entries[entries.length - 1]
+  assert.ok(!last.error)
+  assert.strictEqual(last.tasks.length, 2)
+})
+
+await test('listLog：倒序最近记录 + 失败条目带重放标记与计划总数', async () => {
+  const list = fill.listLog(3)
+  assert.ok(list.length >= 2 && list.length <= 3)
+  const failed = list.find((e) => e.stage === 'zentao#88')
+  assert.ok(failed, '失败条目应在最近记录里')
+  assert.strictEqual(failed.resubmittable, true)
+  assert.strictEqual(failed.ztTotal, 2)
+  assert.strictEqual(failed.tasks.length, 1)
+})
+
+await test('resubmit：预览/无载荷记录拒绝重放；不存在的留痕报错', async () => {
+  await assert.rejects(() => fill.resubmit('1970-01-01 00:00:00'), /没有这条提交记录/)
+})
+
+await test('submit：dryRun 预览不留痕', async () => {
+  const before = JSON.parse(fs.readFileSync(logFile, 'utf8')).length
+  await withStubClients(() => fill.submit({
+    date: '2026-09-07',
+    tasks: [{ taskId: 66, taskName: '任务A', rows: [{ date: '2026-09-07', work: '1. x', consumed: 2, left: 1 }] }],
+    dryRun: true,
+  }))
+  assert.strictEqual(JSON.parse(fs.readFileSync(logFile, 'utf8')).length, before)
 })
 
 await test('getGroups：空结果不进 60s 缓存（重试必须真实重取）', async () => {
@@ -969,10 +1073,10 @@ await test('页面提交携带计划日期（执行真实 submitFill，截取 IP
   const fn = source.slice(source.indexOf('async function submitFill(preview)'), source.indexOf('function buildReportText()'))
   let sent
   const fixture = submitFixture()
-  const run = new Function('plan', 'unmatchedCount', 'state', 'window', 'toPlain', 'previewDialog', 'ElMessage', `${fn}; return submitFill(true)`)
+  const run = new Function('plan', 'unmatchedCount', 'state', 'window', 'toPlain', 'previewDialog', 'ElMessage', 'loadLogs', `${fn}; return submitFill(true)`)
   await run({ value: { ...fixture, hpItems: fixture.hp.items } }, { value: 0 }, { fillReport: {} }, {
     gitReport: { fillSubmit: async (payload) => { sent = payload; return { ok: true, results: [] } } },
-  }, (v) => v, { value: null }, { error: (message) => { throw new Error(message) } })
+  }, (v) => v, { value: null }, { error: (message) => { throw new Error(message) } }, async () => {})
   assert.strictEqual(sent.date, fixture.date)
 })
 

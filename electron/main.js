@@ -836,6 +836,21 @@ function registerIpc() {
       return { ok: false, error: (err && err.message) || String(err) }
     }
   })
+  // 提交记录（fill-log 留痕摘要）与按记录重新提交（重放存档载荷，已有记录按 ID 更新覆盖）
+  ipcMain.handle('fill:log', (_e, limit) => {
+    try {
+      return { ok: true, entries: fillService.listLog(limit) }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) }
+    }
+  })
+  ipcMain.handle('fill:resubmit', async (_e, at) => {
+    try {
+      return { ok: true, ...(await fillService.resubmit(at)) }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) }
+    }
+  })
   ipcMain.handle('fill:ztTasks', async () => {
     try {
       // 绑定任务用：进行中 + 近一个月完成的（完成后仍可能要补填工时）

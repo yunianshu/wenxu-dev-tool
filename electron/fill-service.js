@@ -649,66 +649,89 @@ async function submitCore(payload) {
   }
   const hpItems = hp && Array.isArray(hp.items) ? hp.items.filter((it) => Number(it.Percent) > 0).map((it) => ({ ...it, Id: 0 })) : []
   if (hpItems.some((it) => it.WorkDate !== date)) throw new Error('汉印工时日期与填报日期不一致')
-  const client = await zentao.ensureClient()
-  const latestTasks = await client.myTasks()
-  const prepared = []
-  // 所有查询在写入前完成；不能把查询失败当成「没有记录」。
-  for (const t of tasks) {
-    // myTasks 只列未完成任务：已完成/已转交的任务回退任务详情取最新剩余（完成时禅道已把 left 置 0）
-    let latest = latestTasks.find((item) => String(item.id) === String(t.taskId))
-    if (!latest) latest = await client.getTaskById(t.taskId) // eslint-disable-line no-await-in-loop
-    if (!latest || !Number.isFinite(latest.left)) throw new Error(`无法获取任务 #${t.taskId} 最新剩余工时，已停止提交`)
-    // eslint-disable-next-line no-await-in-loop
-    const today = (await client.getTaskEfforts(t.taskId)).filter((e) => e.date === date)
-    const consumed = round2(t.rows.reduce((s, row) => s + row.consumed, 0))
-    const replaced = today.slice(0, t.rows.length).reduce((s, row) => s + row.consumed, 0)
-    const left = Math.max(0, round2(latest.left + replaced - consumed))
-    const rows = t.rows.map((row, i) => {
-      const copy = { ...row, left }
-      delete copy.effortId
-      if (today[i]) copy.effortId = today[i].id
-      return copy
-    })
-    prepared.push({ ...t, rows, consumed, updated: Math.min(today.length, rows.length), appended: Math.max(0, rows.length - today.length) })
-  }
-  let hpClient = null
-  let hpUpdated = 0
-  if (hpItems.length) {
-    hpClient = await hanprint.ensureClient()
-    const saved = (await hpClient.getByDate(date)).filter((r) => r && r.ProjectType !== -2)
-    for (const item of hpItems) {
-      const hit = saved.find((s) => String(s.TaskId) === String(item.TaskId))
-      if (hit) { item.Id = hit.Id; hpUpdated += 1 }
+  // 分项进度：逐任务/汉印记录已写入的结果，失败时随错误带出（fill-log 分项留痕的数据源）
+  const progress = { tasks: [], hp: null, stage: 'prepare' }
+  try {
+    const client = await zentao.ensureClient()
+    progress.stage = 'zentao-query'
+    const latestTasks = await client.myTasks()
+    const prepared = []
+    // 所有查询在写入前完成；不能把查询失败当成「没有记录」。
+    for (const t of tasks) {
+      // myTasks 只列未完成任务：已完成/已转交的任务回退任务详情取最新剩余（完成时禅道已把 left 置 0）
+      let latest = latestTasks.find((item) => String(item.id) === String(t.taskId))
+      if (!latest) latest = await client.getTaskById(t.taskId) // eslint-disable-line no-await-in-loop
+      if (!latest || !Number.isFinite(latest.left)) throw new Error(`无法获取任务 #${t.taskId} 最新剩余工时，已停止提交`)
+      // eslint-disable-next-line no-await-in-loop
+      const today = (await client.getTaskEfforts(t.taskId)).filter((e) => e.date === date)
+      const consumed = round2(t.rows.reduce((s, row) => s + row.consumed, 0))
+      const replaced = today.slice(0, t.rows.length).reduce((s, row) => s + row.consumed, 0)
+      const left = Math.max(0, round2(latest.left + replaced - consumed))
+      const rows = t.rows.map((row, i) => {
+        const copy = { ...row, left }
+        delete copy.effortId
+        if (today[i]) copy.effortId = today[i].id
+        return copy
+      })
+      prepared.push({ ...t, rows, consumed, updated: Math.min(today.length, rows.length), appended: Math.max(0, rows.length - today.length) })
     }
-  }
-  const results = []
-  for (const t of prepared) {
-    // eslint-disable-next-line no-await-in-loop
-    const r = await client.recordEfforts(t.taskId, t.rows, !!dryRun)
-    results.push({
-      taskId: t.taskId,
-      taskName: t.taskName || '',
-      consumed: t.consumed,
-      updated: t.updated,
-      appended: t.appended,
-      ...r,
-    })
-  }
-  let hpResult = null
-  if (hpItems.length) {
-    // 禅道已写入后才走汉印：汉印失败不能抛整体异常掩盖禅道成功，以 hpError 回报
-    try {
-      hpResult = await hpClient.add(hpItems, !!dryRun)
-      hpResult.updated = hpUpdated
-      hpResult.appended = hpItems.length - hpUpdated
-    } catch (e) {
-      hpResult = { error: (e && e.message) || String(e), updated: hpUpdated, appended: hpItems.length - hpUpdated }
+    let hpClient = null
+    let hpUpdated = 0
+    if (hpItems.length) {
+      hpClient = await hanprint.ensureClient()
+      const saved = (await hpClient.getByDate(date)).filter((r) => r && r.ProjectType !== -2)
+      for (const item of hpItems) {
+        const hit = saved.find((s) => String(s.TaskId) === String(item.TaskId))
+        if (hit) { item.Id = hit.Id; hpUpdated += 1 }
+      }
     }
+    const results = []
+    for (const t of prepared) {
+      progress.stage = `zentao#${t.taskId}`
+      // eslint-disable-next-line no-await-in-loop
+      const r = await client.recordEfforts(t.taskId, t.rows, !!dryRun)
+      progress.tasks.push({
+        taskId: t.taskId,
+        taskName: t.taskName || '',
+        consumed: t.consumed,
+        verified: !!r.verified,
+        updated: t.updated,
+        appended: t.appended,
+      })
+      results.push({
+        taskId: t.taskId,
+        taskName: t.taskName || '',
+        consumed: t.consumed,
+        updated: t.updated,
+        appended: t.appended,
+        ...r,
+      })
+    }
+    let hpResult = null
+    if (hpItems.length) {
+      progress.stage = 'hanprint'
+      // 禅道已写入后才走汉印：汉印失败不能抛整体异常掩盖禅道成功，以 hpError 回报
+      try {
+        hpResult = await hpClient.add(hpItems, !!dryRun)
+        hpResult.updated = hpUpdated
+        hpResult.appended = hpItems.length - hpUpdated
+      } catch (e) {
+        hpResult = { error: (e && e.message) || String(e), updated: hpUpdated, appended: hpItems.length - hpUpdated }
+      }
+      progress.hp = hpResult.error
+        ? { sent: hpItems.length, error: hpResult.error }
+        : { sent: hpItems.length, updated: hpResult.updated || 0, appended: hpResult.appended || 0 }
+    }
+    return { dryRun: !!dryRun, results, hp: hpResult }
+  } catch (e) {
+    // 失败现场：已完成哪些任务、断在哪个环节、响应原文——随错误带出供日志留痕
+    e.fillProgress = { tasks: progress.tasks, hp: progress.hp, stage: progress.stage, raw: e.rawBody }
+    throw e
   }
-  return { dryRun: !!dryRun, results, hp: hpResult }
 }
 
-/** 提交留痕：无论成败追加一条到 userData/fill-log.json（上限 500 条，超出丢最旧）。
+/** 提交留痕：无论成败追加一条到 userData/fill-log.json（上限 200 条，超出丢最旧；
+ * 条目含分项结果与提交载荷，载荷用于失败后从「提交记录」重新提交）。
  * 汉印/禅道失败现场此前无法回溯（应用无日志、平台无失败记录），这里落明文 JSON 便于排查。 */
 function appendFillLog(entry) {
   try {
@@ -717,34 +740,107 @@ function appendFillLog(entry) {
     try { list = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { /* 首次或文件损坏则重建 */ }
     if (!Array.isArray(list)) list = []
     list.push(entry)
-    if (list.length > 500) list = list.slice(-500)
+    if (list.length > 200) list = list.slice(-200)
     fs.writeFileSync(file, JSON.stringify(list))
   } catch { /* 留痕失败不影响提交本身 */ }
+}
+
+function readFillLog() {
+  try {
+    const file = path.join(app.getPath('userData'), 'fill-log.json')
+    const list = JSON.parse(fs.readFileSync(file, 'utf8'))
+    return Array.isArray(list) ? list : []
+  } catch { return [] }
+}
+
+/**
+ * 提交记录（渲染层「提交记录」面板数据）：倒序最近 limit 条，不含提交载荷全文
+ * （载荷只在主进程按 at 索引取，重新提交用）；resubmittable=有载荷且非预览。
+ */
+function listLog(limit = 30) {
+  return readFillLog()
+    .slice(-Math.max(1, Number(limit) || 30))
+    .reverse()
+    .map((e) => ({
+      at: e.at,
+      date: e.date,
+      dryRun: !!e.dryRun,
+      tasks: Array.isArray(e.tasks) ? e.tasks : [],
+      // 计划提交的任务总数（失败条目的 tasks 只含已写入项，总数以存档载荷为准）
+      ztTotal: e.payload && Array.isArray(e.payload.tasks) ? e.payload.tasks.length : (Array.isArray(e.tasks) ? e.tasks.length : 0),
+      hp: e.hp || null,
+      ztTasks: e.ztTasks,
+      hpSent: e.hpSent,
+      error: e.error,
+      stage: e.stage,
+      resubmittable: !e.dryRun && !!(e.payload && Array.isArray(e.payload.tasks) && e.payload.tasks.length),
+    }))
+}
+
+/** 按留痕时间重新提交：取该条日志存档的提交载荷原样重放（复用 submit，重新留痕）。
+ * 载荷里的 left 是旧值，submit 会按平台最新剩余重算；禅道/汉印已有记录按 ID 复用
+ * 更新覆盖，不会重复写入。 */
+async function resubmit(at) {
+  const entry = readFillLog().find((e) => e && e.at === at)
+  if (!entry) throw new Error('没有这条提交记录')
+  if (entry.dryRun) throw new Error('预览记录不能重新提交')
+  if (!entry.payload || !Array.isArray(entry.payload.tasks) || !entry.payload.tasks.length) {
+    throw new Error('该记录没有存档提交载荷，请在填报页重新提交')
+  }
+  return submit({ ...entry.payload, dryRun: false })
 }
 
 function localStamp() {
   const d = new Date()
   const p = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  // 带毫秒：同一秒内可能连发多条留痕（失败后立刻重放），秒级时间戳会撞键导致
+  // resubmit 匹配到错误的条目；显示层自行截断到秒
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, '0')}`
 }
 
-/** submit 外壳：包住 submitCore 做成败留痕，失败原样抛出 */
+/** submit 外壳：包住 submitCore 做成败留痕（分项结果 + 提交载荷），失败原样抛出 */
 async function submit(payload) {
   const { date, dryRun, hp } = payload || {}
+  const tasksIn = Array.isArray(payload && payload.tasks) ? payload.tasks : []
   try {
     const r = await submitCore(payload)
-    const sent = hp && Array.isArray(hp.items) ? hp.items.filter((it) => Number(it.Percent) > 0).length : 0
-    appendFillLog({
-      at: localStamp(),
-      date,
-      dryRun: !!dryRun,
-      ztTasks: Array.isArray(r.results) ? r.results.length : 0,
-      hpSent: sent,
-      hp: r.hp ? (r.hp.error ? { error: r.hp.error } : { updated: r.hp.updated || 0, appended: r.hp.appended || 0 }) : null,
-    })
+    if (!dryRun) {
+      const sent = hp && Array.isArray(hp.items) ? hp.items.filter((it) => Number(it.Percent) > 0).length : 0
+      appendFillLog({
+        at: localStamp(),
+        date,
+        dryRun: false,
+        tasks: r.results.map((x) => ({ taskId: x.taskId, taskName: x.taskName, consumed: x.consumed, verified: !!x.verified, updated: x.updated, appended: x.appended })),
+        hp: r.hp && r.hp.error
+          ? { sent, error: r.hp.error }
+          : (r.hp ? { sent, updated: r.hp.updated || 0, appended: r.hp.appended || 0 } : (sent ? { sent, updated: 0, appended: sent } : null)),
+        ztTasks: r.results.length,
+        hpSent: sent,
+        payload: { date, tasks: tasksIn, hp: hp && Array.isArray(hp.items) ? { items: hp.items } : null },
+      })
+    }
     return r
   } catch (e) {
-    appendFillLog({ at: localStamp(), date, dryRun: !!dryRun, error: (e && e.message) || String(e) })
+    const prog = e.fillProgress || { tasks: [], hp: null, stage: '' }
+    if (!dryRun) {
+      const total = tasksIn.length
+      const done = prog.tasks.length
+      if (done > 0) e.message = `${e.message}（已写入 ${done}/${total} 个禅道任务，可在提交记录中重新提交）`
+      appendFillLog({
+        at: localStamp(),
+        date,
+        dryRun: false,
+        tasks: prog.tasks,
+        hp: prog.hp,
+        ztTasks: done,
+        hpSent: prog.hp ? prog.hp.sent : 0,
+        error: (e && e.message) || String(e),
+        stage: prog.stage,
+        raw: prog.raw,
+        payload: { date, tasks: tasksIn, hp: hp && Array.isArray(hp.items) ? { items: hp.items } : null },
+      })
+    }
+    delete e.fillProgress
     throw e
   }
 }
@@ -767,4 +863,6 @@ module.exports = {
   buildHpItems,
   plan,
   submit,
+  listLog,
+  resubmit,
 }

@@ -161,6 +161,8 @@ contextBridge.exposeInMainWorld('gitReport', {
   // ─── 一键填报模块（Git 提交 → 工时计划 → 禅道任务工时） ───
   fillPlan: (payload) => ipcRenderer.invoke('fill:plan', toPlain(payload)),
   fillSubmit: (payload) => ipcRenderer.invoke('fill:submit', toPlain(payload)),
+  fillLog: (limit) => ipcRenderer.invoke('fill:log', limit),
+  fillResubmit: (at) => ipcRenderer.invoke('fill:resubmit', at),
   fillZtTasks: () => ipcRenderer.invoke('fill:ztTasks'),
   fillTestLogin: (opts) => ipcRenderer.invoke('fill:testLogin', toPlain(opts)),
   fillHpTest: (opts) => ipcRenderer.invoke('fill:hpTest', toPlain(opts)),

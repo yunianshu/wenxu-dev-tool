@@ -250,6 +250,30 @@
       </el-card>
     </template>
 
+    <!-- 提交记录（fill-log 留痕）：失败/部分成功的记录可按存档载荷重新提交（已有记录按 ID 更新覆盖） -->
+    <el-card v-if="submitLogs.length" shadow="never" class="card">
+      <template #header>
+        <div class="card-header">
+          <span>提交记录</span>
+        </div>
+      </template>
+      <div v-for="log in submitLogs" :key="log.at" class="logline">
+        <span class="log-time">{{ (log.at || '').slice(0, 19) }}</span>
+        <el-tag :type="logStatus(log).type" size="small">{{ logStatus(log).text }}</el-tag>
+        <span class="log-sum">{{ logSummary(log) }}</span>
+        <span class="log-err" :title="log.error">{{ log.error }}</span>
+        <el-button
+          v-if="log.resubmittable"
+          size="small"
+          type="primary"
+          plain
+          :loading="resubmitting === log.at"
+          :disabled="!!resubmitting"
+          @click="doResubmit(log)"
+        >重新提交</el-button>
+      </div>
+    </el-card>
+
     <!-- 空状态引导（未生成时） -->
     <div v-if="!plan && !state.fillReport.running" class="fill-hint">
       <el-alert type="info" :closable="false" show-icon title="选好日期与上下班时间后点「生成报告」：自动汇总当天所有项目的提交，再勾选要填报的项目（工时与汉印占比按勾选结果计算）" />
@@ -326,6 +350,9 @@ const selectedProjectIds = computed({
 const bindings = ref({})
 const bindDialog = ref({ visible: false, projectId: '', projectName: '', taskId: null, boundTaskId: null, options: [], loading: false })
 const previewDialog = ref({ visible: false, content: '' })
+/** 提交记录（fill-log 留痕）与按记录重新提交 */
+const submitLogs = ref([])
+const resubmitting = ref('')
 /** 生成/重算进行中收到的重算请求：结束后补跑一次 */
 let pendingRecompute = false
 
@@ -483,10 +510,68 @@ onBeforeUnmount(() => clearTimeout(timeWatchTimer))
 
 onMounted(async () => {
   loadProjects()
+  loadLogs()
   try {
     bindings.value = await window.gitReport.fillBindings()
   } catch { /* noop */ }
 })
+
+/** 提交记录面板：时间 + 状态 + 分项计数 + 错误原文；失败/部分成功可按存档载荷重放 */
+async function loadLogs() {
+  try {
+    const r = await window.gitReport.fillLog(20)
+    if (r.ok) submitLogs.value = r.entries || []
+  } catch { /* 记录面板失败不影响填报 */ }
+}
+
+function logStatus(log) {
+  return log.error || (log.hp && log.hp.error) ? { type: 'danger', text: '失败' } : { type: 'success', text: '成功' }
+}
+
+function logSummary(log) {
+  const parts = []
+  if (log.tasks.length || log.ztTotal) parts.push(`禅道 ${log.tasks.length}/${log.ztTotal}`)
+  if (log.hp && log.hp.error) parts.push('汉印失败')
+  else if (log.hp && log.hp.sent) parts.push(`汉印 ${log.hp.sent} 条`)
+  return parts.join(' · ')
+}
+
+/** 按留痕记录重新提交：重放当时存档的载荷；禅道/汉印已有记录按 ID 复用更新覆盖，不重复写入 */
+async function doResubmit(log) {
+  try {
+    await ElMessageBox.confirm(
+      `重新提交 ${log.date} 的填报（禅道 ${log.ztTotal} 个任务${log.hp && log.hp.sent ? `、汉印 ${log.hp.sent} 条` : ''}）？已写入的部分会更新覆盖，不会重复。`,
+      '重新提交',
+      { type: 'warning', confirmButtonText: '提交', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  resubmitting.value = log.at
+  try {
+    const r = await window.gitReport.fillResubmit(log.at)
+    if (!r.ok) {
+      ElMessage.error(r.error || '重新提交失败')
+      return
+    }
+    const updated = r.results.reduce((s, x) => s + (x.updated || 0), 0)
+    const appended = r.results.reduce((s, x) => s + (x.appended || 0), 0)
+    const ztText = `禅道 ${r.results.length} 个任务（更新 ${updated} 行 / 新增 ${appended} 行）`
+    if (r.hp && r.hp.error) {
+      ElMessage.warning({ message: `禅道已提交（${ztText}）；汉印提交失败：${r.hp.error}。可再次重新提交，已写入部分只会更新覆盖`, duration: 8000 })
+    } else {
+      ElMessage.success(`已重新提交：${ztText}${r.hp ? `，汉印 ${r.hp.updated + r.hp.appended} 条（更新 ${r.hp.updated} / 新增 ${r.hp.appended}）` : ''}`)
+    }
+    if (plan.value && plan.value.date === log.date) {
+      state.fillReport.plan = { ...plan.value, submittedAt: new Date().toTimeString().slice(0, 5) }
+    }
+  } catch (e) {
+    ElMessage.error(`重新提交失败：${e?.message || e}`)
+  } finally {
+    resubmitting.value = ''
+    loadLogs()
+  }
+}
 
 /** 传给主进程的项目清单：全部可填报项目（生成阶段不再要求先勾选） */
 function allProjectsPayload() {
@@ -709,6 +794,7 @@ async function submitFill(preview) {
     ElMessage.error(`提交失败：${e?.message || e}`)
   } finally {
     state.fillReport.submitting = false
+    loadLogs()
   }
 }
 
@@ -893,6 +979,33 @@ async function copyReport() {
   font-size: 12px;
   color: #d64545;
 }
+.logline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 2px;
+  font-size: 12.5px;
+  border-top: 1px dashed var(--brand-card-border, #eef0f4);
+}
+.logline:first-of-type { border-top: none; }
+.log-time {
+  font-family: var(--brand-mono, monospace);
+  color: #4a5160;
+  flex-shrink: 0;
+}
+.log-sum {
+  color: #4a5160;
+  flex-shrink: 0;
+}
+.log-err {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #d64545;
+}
+.logline .el-button { flex-shrink: 0; }
 .bind-hint {
   margin-top: 10px;
   font-size: 12px;
