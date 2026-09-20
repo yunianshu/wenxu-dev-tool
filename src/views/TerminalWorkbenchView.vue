@@ -474,11 +474,27 @@ function focusProject(projectId) {
    radio 组与次要按钮高一截，工具栏里这三个控件应当齐平。
    radio 的内部节点不带本组件的 scope id，必须走 :deep() 才能命中 */
 .terminal-toolbar .el-button { min-height: 36px; }
+/* 分屏方式（分段控件）：
+   ① 选中态用浅底 + 主色字。原先是实心主色，与左侧「添加窗格」的实心主色块并排，
+      两个绿块互相抢焦点，反而看不出哪个才是主操作。
+      （不用 Element Plus 的 --el-radio-button-checked-* 变量：实测在 .el-radio-group
+      上覆盖不生效，这里直接命中选中态的 inner 元素）
+   ② 各按钮等宽。「左右」两字、「四宫格」三字，按文字长短排出来参差不齐，
+      统一最小宽度并收窄左右内边距后五段等宽。 */
+.terminal-toolbar :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
+  background-color: var(--accent-soft);
+  color: var(--accent-strong);
+  border-color: var(--brand-accent);
+  box-shadow: -1px 0 0 0 var(--brand-accent);
+}
 .terminal-toolbar :deep(.el-radio-button__inner) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-height: 36px;
+  min-width: 68px;
+  padding-left: 10px;
+  padding-right: 10px;
 }
 
 .terminal-hint,
