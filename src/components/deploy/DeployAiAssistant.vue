@@ -501,7 +501,21 @@ async function apply() {
 
 <style scoped>
 .ai-deploy { display: flex; flex-direction: column; gap: 12px; max-height: 74vh; overflow: auto; padding-right: 4px; }
-.ops { display: flex; align-items: center; gap: 10px; }
+/* flex 子项默认 flex-shrink: 1：内容超过 74vh 时浏览器会先压缩各区块，
+   把说明与卡片压成一条（这里要的是整体滚动）。逐个 pin 住，不参与压缩。 */
+.ai-deploy > * { flex-shrink: 0; }
+/* 操作栏吸顶：往下滚看结论时，「重新体检」与「结论来源」始终可见。
+   背景取对话框底色，否则滚动时下层内容会透出来。 */
+.ops {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 0;
+  background: var(--el-bg-color-overlay, #fff);
+}
 .ops .spacer { flex: 1; }
 .warn-text { color: var(--el-color-warning); font-size: 12px; }
 .ai-warn { font-size: 12px; color: var(--el-color-warning); }
