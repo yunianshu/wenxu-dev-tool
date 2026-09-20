@@ -511,14 +511,17 @@ function focusProject(projectId) {
   align-items: center;
   justify-content: center;
   min-height: 36px;
-  padding: 0 9px;
+  padding: 0 8px;
 }
-.grid-icon { display: block; width: 16px; height: 16px; }
+/* 图标在 16px 尺寸下 1.3px 的描边会被亚像素渲染冲淡（横线尤其明显，所以「上下」
+   那条最容易显虚），放大到 18px 并把描边加到 1.5px，线条才立得住 */
+.grid-icon { display: block; width: 18px; height: 18px; }
 .grid-icon rect, .grid-icon path {
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.3;
+  stroke-width: 1.5;
   stroke-linejoin: round;
+  stroke-linecap: round;
 }
 
 .terminal-hint,
