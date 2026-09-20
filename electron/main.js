@@ -124,7 +124,7 @@ function createTray() {
     const image = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
     if (image.isEmpty()) throw new Error(`托盘图标为空：${iconPath}`)
     tray = new Tray(image)
-    tray.setToolTip('开发项目管理（后台运行中）')
+    tray.setToolTip('文须项目管理（后台运行中）')
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: '显示主窗口', click: () => showMainWindow() },
       { type: 'separator' },
@@ -153,7 +153,7 @@ function createWindow() {
     frame: false, // 无边框：原生标题栏隐藏，最小化/最大化/关闭由顶栏自定义按钮承担
     minWidth: 1080,
     minHeight: 700,
-    title: '开发项目管理',
+    title: '文须项目管理',
     autoHideMenuBar: true,
     backgroundColor: '#f5f7fa',
     webPreferences: {

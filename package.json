@@ -1,7 +1,7 @@
 {
   "name": "dev-project-manager",
   "version": "1.4.82",
-  "description": "跨平台个人项目管理工作台：以项目为中心，集成 AI 助手、Git 活动报告与一键部署等可选能力（Windows / macOS / Linux）",
+  "description": "跨平台文须项目管理工作台：以项目为中心，集成 AI 助手、Git 活动报告与一键部署等可选能力（Windows / macOS / Linux）",
   "main": "electron/main.js",
   "author": {
     "name": "yunainshu",
@@ -42,7 +42,7 @@
   },
   "build": {
     "appId": "com.prt.devprojectmanager",
-    "productName": "开发项目管理",
+    "productName": "文须项目管理",
     "asar": true,
     "files": [
       "dist/**/*",

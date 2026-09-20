@@ -169,7 +169,7 @@ function showCloseAsk() {
         'onUpdate:modelValue': (v) => { remember.value = v },
       }, () => '记住我的选择，下次不再询问'),
     ]),
-    '关闭「开发项目管理」',
+    '关闭「文须项目管理」',
     {
       type: 'warning',
       confirmButtonText: '最小化到托盘',

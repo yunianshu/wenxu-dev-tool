@@ -23,7 +23,7 @@
  *
  * 前置：npm run build:renderer（驱动 dist/ 产物）
  * 用法：node scripts/terminal-workbench-interact-e2e.cjs
- *       E2E_EXE="release/<版本>/win-unpacked/开发项目管理.exe" node scripts/terminal-workbench-interact-e2e.cjs
+ *       E2E_EXE="release/<版本>/win-unpacked/文须项目管理.exe" node scripts/terminal-workbench-interact-e2e.cjs
  *       （带 E2E_EXE 跑打包产物，用于确认 asar 形态下交互同样正常）
  */
 const { spawn } = require('child_process')
@@ -161,7 +161,7 @@ async function pressEnter(cdp) {
 }
 
 // ─── 启动与连接 ───
-/** 指定则跑打包产物（win-unpacked/开发项目管理.exe），否则跑开发态 electron . */
+/** 指定则跑打包产物（win-unpacked/文须项目管理.exe），否则跑开发态 electron . */
 const EXE = process.env.E2E_EXE || ''
 
 function startApp(port = PORT) {

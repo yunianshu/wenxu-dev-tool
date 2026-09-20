@@ -29,6 +29,11 @@ const ROOT = path.resolve(__dirname, '..')
 const pkg = require(path.join(ROOT, 'package.json'))
 const productName = pkg.build.productName
 const appExeName = `${productName}.exe`
+// 改名前的 productName（曾用于 exe 名、卸载显示名、桌面快捷方式名）。旧进程要一并关掉
+// ——旧 exe 在安装目录里，/MIR 同步时被删除但被占用会失败；旧快捷方式/旧卸载项也要能认出来，
+// 否则更新后新旧两份并存。只列真正的历史产品名，不含仅作过界面文案的名字，
+// 免得误删用户自建的同类快捷方式。
+const LEGACY_PRODUCT_NAMES = ['开发项目管理'].filter((n) => n !== productName)
 const unpacked = path.join(ROOT, 'release', pkg.version, 'win-unpacked')
 const installDir = path.join(process.env.LOCALAPPDATA, 'Programs', pkg.name)
 const installedExe = path.join(installDir, appExeName)
@@ -50,12 +55,14 @@ if (!fs.existsSync(path.join(unpacked, appExeName))) {
 }
 console.log(`[install-local] 更新到 v${pkg.version}（源: release/${pkg.version}/win-unpacked）`)
 
-// ── 1. 关闭正在运行的应用（含残留的 GPU 子进程，按镜像名全杀）──
-for (let i = 0; i < 10; i++) {
-  const k = spawnSync('taskkill', ['/F', '/IM', appExeName], { encoding: 'utf8' })
-  if (k.status !== 0) break // 已无运行实例
-  if (i === 0) console.log('[install-local] 已关闭正在运行的应用')
-  sleep(600)
+// ── 1. 关闭正在运行的应用（含残留的 GPU 子进程，按镜像名全杀；旧产品名的实例一并关掉）──
+for (const exe of [appExeName, ...LEGACY_PRODUCT_NAMES.map((n) => `${n}.exe`)]) {
+  for (let i = 0; i < 10; i++) {
+    const k = spawnSync('taskkill', ['/F', '/IM', exe], { encoding: 'utf8' })
+    if (k.status !== 0) break // 已无运行实例
+    if (i === 0) console.log(`[install-local] 已关闭正在运行的应用（${exe}）`)
+    sleep(600)
+  }
 }
 
 // ── 2. 一次性迁移：卸载残留的「所有用户」安装（Program Files）──
@@ -63,7 +70,7 @@ const regQuery = ps(`
   Get-ItemProperty 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
     'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
     'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue |
-  Where-Object { $_.DisplayName -like '${productName}*' } |
+  Where-Object { ${[productName, ...LEGACY_PRODUCT_NAMES].map((n) => `($_.DisplayName -like '${n}*')`).join(' -or ')} } |
   Select-Object DisplayName, UninstallString | ConvertTo-Json -Compress`)
 const entries = (() => {
   const txt = (regQuery.stdout || '').trim()
@@ -99,10 +106,21 @@ const fileVersion = (ver.stdout || '').trim()
 if (fileVersion !== pkg.version) die(`版本不符：期望 ${pkg.version}，实际 ${fileVersion}`)
 console.log(`[install-local] 已就位 v${fileVersion} → ${installedExe}`)
 
-// ── 5. 桌面快捷方式（覆盖刷新，始终指向固定位置）──
-const desktop = path.join(process.env.USERPROFILE || process.env.HOME, 'Desktop', `${productName}.lnk`)
+// ── 5. 桌面快捷方式（覆盖刷新，始终指向固定位置；改名后清掉旧名字的死链）──
+const desktopDir = path.join(process.env.USERPROFILE || process.env.HOME, 'Desktop')
+const desktop = path.join(desktopDir, `${productName}.lnk`)
 ps(`$s = (New-Object -ComObject WScript.Shell).CreateShortcut('${desktop.replace(/'/g, "''")}'); $s.TargetPath = '${installedExe.replace(/'/g, "''")}'; $s.WorkingDirectory = '${installDir.replace(/'/g, "''")}'; $s.Save()`)
 console.log('[install-local] 桌面快捷方式已刷新')
+for (const legacy of LEGACY_PRODUCT_NAMES) {
+  const old = path.join(desktopDir, `${legacy}.lnk`)
+  if (!fs.existsSync(old)) continue
+  try {
+    fs.unlinkSync(old)
+    console.log(`[install-local] 已清理旧名快捷方式 ${legacy}.lnk（指向已删除的 exe）`)
+  } catch (e) {
+    console.warn(`[install-local] 旧名快捷方式清理失败（可手动删除）：${old} — ${e.message}`)
+  }
+}
 
 // ── 6. 清理旧版本产物：release/ 每个版本约 758MB，逐版本累积会把磁盘吃满。
 //      安装已经完成，清理失败（产物被占用等）只警告，不影响这次更新 ──

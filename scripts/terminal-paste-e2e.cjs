@@ -19,7 +19,7 @@
  *
  * 前置：npm run build:renderer（源码模式加载 dist/ 产物）
  * 用法：node scripts/terminal-paste-e2e.cjs
- *       E2E_EXE="release/<版本>/win-unpacked/开发项目管理.exe" node scripts/terminal-paste-e2e.cjs
+ *       E2E_EXE="release/<版本>/win-unpacked/文须项目管理.exe" node scripts/terminal-paste-e2e.cjs
  *
  * 副作用说明：会写系统剪贴板，结束时尽力恢复原先文本。
  */
