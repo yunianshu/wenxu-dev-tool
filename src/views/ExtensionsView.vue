@@ -23,12 +23,11 @@
               <el-tag size="small" :type="c.installed ? 'success' : 'info'" effect="plain">{{ c.platformName }}</el-tag>
               <el-icon class="ext-card-icon"><component :is="c.icon" /></el-icon>
             </div>
-            <div class="ext-card-title">{{ c.title }}</div>
             <template v-if="c.installed">
               <div class="ext-card-count">启用 {{ c.enabled }} / {{ c.total }}</div>
               <el-progress
                 :percentage="c.total ? Math.round((c.enabled / c.total) * 100) : 0"
-                :stroke-width="6"
+                :stroke-width="4"
                 :show-text="false"
                 class="ext-card-progress"
               />
@@ -52,12 +51,11 @@
               <el-tag size="small" :type="c.installed ? 'success' : 'info'" effect="plain">{{ c.platformName }}</el-tag>
               <el-icon class="ext-card-icon"><component :is="c.icon" /></el-icon>
             </div>
-            <div class="ext-card-title">{{ c.title }}</div>
             <template v-if="c.supported && c.installed">
               <div class="ext-card-count">启用 {{ c.enabled }} / {{ c.total }}</div>
               <el-progress
                 :percentage="c.total ? Math.round((c.enabled / c.total) * 100) : 0"
-                :stroke-width="6"
+                :stroke-width="4"
                 :show-text="false"
                 class="ext-card-progress"
               />
@@ -215,7 +213,6 @@ function makeCard(p, type) {
     platformId: p.id,
     type,
     platformName: p.name,
-    title: isSkill ? '技能 Skills' : '插件 Plugins',
     icon: isSkill ? 'MagicStick' : 'Box',
     installed: p.installed,
     supported: isSkill || p.pluginsSupported,
@@ -382,8 +379,8 @@ onMounted(loadExtensions)
   justify-content: space-between;
 }
 .ext-card-icon { font-size: 20px; color: var(--brand-text-sub); }
-.ext-card-title { font-size: 16px; font-weight: 600; color: var(--brand-text); }
-.ext-card-count { font-size: 13px; color: var(--brand-text-sub); }
+/* 卡片主数据：原先 13px 灰字，是卡片里最不显眼的一行，而它才是用户真正要读的数字 */
+.ext-card-count { font-size: 15px; font-weight: 600; color: var(--brand-text); font-variant-numeric: tabular-nums; }
 .ext-card-progress { width: 100%; }
 .ext-card-note {
   font-size: 12px;
