@@ -79,6 +79,18 @@ const PROBE = `(async () => {
     .map((el) => Math.round(el.getBoundingClientRect().width))
   // T2d：改为纯图标 + hover 提示后，按钮内不应再有可见文字
   out.radioTexts = [...toolbar.querySelectorAll('.el-radio-button__inner')].map((el) => el.textContent.trim())
+  // T2e：分段控件四边边框是否可见。Element Plus 2.9 用 outline 画 radio-button 边框
+  //      （不是 border），相邻段共享的竖线是两条 outline 叠加所以明显，上下只有单条、
+  //      颜色又浅，最容易「看不见上下框」。
+  out.radioBorder = (() => {
+    const el = toolbar.querySelector('.el-radio-button__inner')
+    if (!el) return null
+    const cs = getComputedStyle(el)
+    return {
+      outline: cs.outlineWidth + ' ' + cs.outlineStyle + ' ' + cs.outlineColor,
+      borderTop: cs.borderTopWidth + ' ' + cs.borderTopStyle,
+    }
+  })()
   out.radioIconCount = toolbar.querySelectorAll('.el-radio-button__inner .grid-icon').length
   out.radioAriaLabels = [...toolbar.querySelectorAll('.el-radio-button__inner')]
     .map((el) => el.closest('label')?.getAttribute('aria-label') || '')
@@ -152,6 +164,7 @@ async function run() {
   assert('T2 每段都画出图标', r.radioIconCount === 5, `实得 ${r.radioIconCount}`)
   assert('T2 保留可访问名（hover 提示的语义等价）',
     (r.radioAriaLabels || []).filter(Boolean).length === 5, JSON.stringify(r.radioAriaLabels))
+  console.log(`  INFO  分段控件边框：${JSON.stringify(r.radioBorder)}`)
   assert('T3 改动前窗格用偏好里的 14', r.xtermBefore === 14, `实得 ${r.xtermBefore}`)
   assert('T3 设置页 +1 后为 15', r.settingsAfter === r.settingsBefore + 1, `${r.settingsBefore} → ${r.settingsAfter}`)
   assert('T3 回到终端页窗格按新字号渲染', r.xtermAfter === r.settingsAfter, `xterm=${r.xtermAfter} 期望=${r.settingsAfter}`)

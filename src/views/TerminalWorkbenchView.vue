@@ -520,6 +520,10 @@ function focusProject(projectId) {
   justify-content: center;
   min-height: 36px;
   padding: 0 8px;
+  /* Element Plus 2.9 用 outline 画分段控件的边框（不是 border）。
+     默认 #DCDFE6 极浅：相邻段共享的竖线是两条 outline 略微错开叠出来的，看着像 2px
+     深灰；而上下只有单条 1px，在白底上几乎消失。这里加深到与竖线视觉重量相当。 */
+  outline-color: #b9c0ca;
 }
 /* 图标用实心块直接画格子：描边线条在这个尺寸下会被亚像素冲淡（横线尤其明显），
    实心块无论多小都清晰——VS Code / Windows 的分屏图标也是这个做法 */
