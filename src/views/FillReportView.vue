@@ -10,31 +10,34 @@
     <!-- 顶部工具条：选日期 → 选项目 → 生成报告 -->
     <el-card shadow="never" class="card">
       <div class="fill-toolbar">
-        <el-date-picker
-          v-model="fillDate"
-          type="date"
-          value-format="YYYY-MM-DD"
-          :clearable="false"
-          :disabled-date="(d) => d.getTime() > Date.now()"
-          :shortcuts="dateShortcuts"
-          style="width: 150px"
-        />
-        <el-time-select
-          v-model="startTime"
-          start="06:00" end="21:00" step="00:15"
-          :clearable="false"
-          placeholder="上班时间"
-          style="width: 108px"
-        />
-        <el-time-select
-          v-model="endTime"
-          start="00:00" end="23:45" step="00:15"
-          clearable
-          class="end-time-select"
-          :placeholder="endPlaceholder"
-          style="width: 138px"
-        />
-        <span class="fill-range-tip">{{ rangePreview }}</span>
+        <!-- 日期与上下班时间是一组时间条件，与后面的项目选择在间距上分开 -->
+        <div class="fill-group">
+          <el-date-picker
+            v-model="fillDate"
+            type="date"
+            value-format="YYYY-MM-DD"
+            :clearable="false"
+            :disabled-date="(d) => d.getTime() > Date.now()"
+            :shortcuts="dateShortcuts"
+            style="width: 150px"
+          />
+          <el-time-select
+            v-model="startTime"
+            start="06:00" end="21:00" step="00:15"
+            :clearable="false"
+            placeholder="上班时间"
+            style="width: 108px"
+          />
+          <el-time-select
+            v-model="endTime"
+            start="00:00" end="23:45" step="00:15"
+            clearable
+            class="end-time-select"
+            :placeholder="endPlaceholder"
+            style="width: 138px"
+          />
+          <span class="fill-range-tip">{{ rangePreview }}</span>
+        </div>
         <el-select
           v-model="selectedProjectIds"
           multiple
@@ -826,9 +829,15 @@ async function copyReport() {
 <style scoped>
 .fill-toolbar {
   display: flex;
-  gap: 10px;
+  /* 组间 16px、组内 8px：原先一律 10px，一排六个控件看不出哪几个是一伙的 */
+  gap: 16px;
   align-items: center;
   flex-wrap: wrap;
+}
+.fill-group {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 .fill-range-tip {
   font-size: 12px;
