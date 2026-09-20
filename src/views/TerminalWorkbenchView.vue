@@ -20,14 +20,24 @@
             </template>
           </el-dropdown>
 
-          <!-- 分屏方式：自动按窗格数排；也可手动锁定列/行。
+          <!-- 分屏方式：图标化（方框 + 分割线示意怎么切格子），文字挪到 hover 提示。
+               五个文字分段并排会横向吃掉一大片，而这里表达的本来就适合图形化。
                窗格多于一屏格子时行数会自动往下加，比例由 track 数对齐（见 layout） -->
           <el-radio-group v-model="gridMode">
-            <el-radio-button value="auto">自动</el-radio-button>
-            <el-radio-button value="1x2">左右</el-radio-button>
-            <el-radio-button value="2x1">上下</el-radio-button>
-            <el-radio-button value="2x2">四宫格</el-radio-button>
-            <el-radio-button value="3x1">三宫格</el-radio-button>
+            <el-tooltip
+              v-for="opt in GRID_OPTIONS"
+              :key="opt.value"
+              :content="opt.label"
+              placement="bottom"
+              :show-after="200"
+            >
+              <el-radio-button :value="opt.value" :aria-label="opt.label">
+                <svg class="grid-icon" viewBox="0 0 16 16" aria-hidden="true">
+                  <rect x="1.5" y="1.5" width="13" height="13" rx="2.5" />
+                  <path :d="opt.lines" />
+                </svg>
+              </el-radio-button>
+            </el-tooltip>
           </el-radio-group>
 
           <el-button v-if="panes.length" @click="closeAll">全部关闭</el-button>
@@ -104,6 +114,16 @@ const GRID_PRESETS = {
   '3x1': { cols: 3, rows: 1 },
 }
 const MIN_SHARE = 0.15
+
+/** 分屏方式选项：模板里统一画外框，这里只给各选项的分割线 */
+const GRID_OPTIONS = [
+  // 自动：内嵌小方框，示意「按窗格数自行排列」
+  { value: 'auto', label: '自动', lines: 'M6 6h4v4H6z' },
+  { value: '1x2', label: '左右', lines: 'M8 1.5v13' },
+  { value: '2x1', label: '上下', lines: 'M1.5 8h13' },
+  { value: '2x2', label: '四宫格', lines: 'M8 1.5v13M1.5 8h13' },
+  { value: '3x1', label: '三宫格', lines: 'M5.83 1.5v13M10.17 1.5v13' },
+]
 /** 最多同屏窗格数（与文档一致）；超过这个数就不再允许添加 */
 const MAX_PANES = 4
 
@@ -474,13 +494,12 @@ function focusProject(projectId) {
    radio 组与次要按钮高一截，工具栏里这三个控件应当齐平。
    radio 的内部节点不带本组件的 scope id，必须走 :deep() 才能命中 */
 .terminal-toolbar .el-button { min-height: 36px; }
-/* 分屏方式（分段控件）：
+/* 分屏方式（图标分段控件）：
    ① 选中态用浅底 + 主色字。原先是实心主色，与左侧「添加窗格」的实心主色块并排，
       两个绿块互相抢焦点，反而看不出哪个才是主操作。
       （不用 Element Plus 的 --el-radio-button-checked-* 变量：实测在 .el-radio-group
       上覆盖不生效，这里直接命中选中态的 inner 元素）
-   ② 各按钮等宽。「左右」两字、「四宫格」三字，按文字长短排出来参差不齐，
-      统一最小宽度并收窄左右内边距后五段等宽。 */
+   ② 图标随文字色走（stroke: currentColor），选中时整块图标一起变主色。 */
 .terminal-toolbar :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
   background-color: var(--accent-soft);
   color: var(--accent-strong);
@@ -492,9 +511,14 @@ function focusProject(projectId) {
   align-items: center;
   justify-content: center;
   min-height: 36px;
-  min-width: 68px;
-  padding-left: 10px;
-  padding-right: 10px;
+  padding: 0 9px;
+}
+.grid-icon { display: block; width: 16px; height: 16px; }
+.grid-icon rect, .grid-icon path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linejoin: round;
 }
 
 .terminal-hint,

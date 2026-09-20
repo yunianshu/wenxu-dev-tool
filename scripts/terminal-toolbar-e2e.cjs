@@ -77,6 +77,11 @@ const PROBE = `(async () => {
   // T2b：分屏方式各段等宽（原先按文字长短排成参差）
   out.radioWidths = [...toolbar.querySelectorAll('.el-radio-button__inner')]
     .map((el) => Math.round(el.getBoundingClientRect().width))
+  // T2d：改为纯图标 + hover 提示后，按钮内不应再有可见文字
+  out.radioTexts = [...toolbar.querySelectorAll('.el-radio-button__inner')].map((el) => el.textContent.trim())
+  out.radioIconCount = toolbar.querySelectorAll('.el-radio-button__inner .grid-icon').length
+  out.radioAriaLabels = [...toolbar.querySelectorAll('.el-radio-button__inner')]
+    .map((el) => el.closest('label')?.getAttribute('aria-label') || '')
   // T2c：选中段不是实心主色（否则与左侧主按钮撞成两个绿块）
   out.checkedBg = (() => {
     const el = toolbar.querySelector('.el-radio-button__original-radio:checked + .el-radio-button__inner')
@@ -143,6 +148,10 @@ async function run() {
   const ws = r.radioWidths || []
   assert('T2 分屏方式各段等宽', ws.length >= 5 && new Set(ws).size === 1, `宽度 ${JSON.stringify(ws)}`)
   assert('T2 选中段非实心主色', r.checkedBg !== 'rgb(14, 122, 109)', `实得 ${r.checkedBg}`)
+  assert('T2 按钮内无文字（纯图标）', (r.radioTexts || []).every((t) => t === ''), JSON.stringify(r.radioTexts))
+  assert('T2 每段都画出图标', r.radioIconCount === 5, `实得 ${r.radioIconCount}`)
+  assert('T2 保留可访问名（hover 提示的语义等价）',
+    (r.radioAriaLabels || []).filter(Boolean).length === 5, JSON.stringify(r.radioAriaLabels))
   assert('T3 改动前窗格用偏好里的 14', r.xtermBefore === 14, `实得 ${r.xtermBefore}`)
   assert('T3 设置页 +1 后为 15', r.settingsAfter === r.settingsBefore + 1, `${r.settingsBefore} → ${r.settingsAfter}`)
   assert('T3 回到终端页窗格按新字号渲染', r.xtermAfter === r.settingsAfter, `xterm=${r.xtermAfter} 期望=${r.settingsAfter}`)
