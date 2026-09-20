@@ -62,6 +62,8 @@ const props = defineProps({
   pane: { type: Object, required: true },        // { projectId, projectName, cwd, shellId, sessionId, shellLabel, exited, exitCode }
   focused: { type: Boolean, default: false },
   shellOptions: { type: Array, default: () => [] },
+  /** 终端字号（px），纯外观偏好，由 ui-prefs.json 持久化，在终端工作台工具栏调整 */
+  fontSize: { type: Number, default: 13 },
 })
 const emit = defineEmits(['focus', 'close', 'session', 'update:shell'])
 
@@ -152,6 +154,13 @@ function scheduleFit() {
   }, 60)
 }
 
+/** 字号变化：改 xterm 选项后重新适配，scheduleFit 会把新的行列数同步给 pty */
+watch(() => props.fontSize, (size) => {
+  if (!term || !size) return
+  term.options.fontSize = size
+  scheduleFit()
+})
+
 async function ensureSession() {
   const pane = props.pane
   if (pane.sessionId || !pane.cwd) return
@@ -219,7 +228,7 @@ function restartWith(shellId) {
 onMounted(async () => {
   term = new Terminal({
     cursorBlink: true,
-    fontSize: 13,
+    fontSize: props.fontSize,
     fontFamily: 'Consolas, "Cascadia Mono", "Sarasa Mono SC", Menlo, monospace',
     scrollback: 5000,
     allowProposedApi: true,

@@ -30,6 +30,14 @@
             <el-radio-button value="3x1">三宫格</el-radio-button>
           </el-radio-group>
 
+          <!-- 字号：同一块屏幕上每个人看着舒服的终端字号差别不小（有人要 13、有人要 16），
+               做成可调并持久化；没有窗格时这一组不出现 -->
+          <div v-if="panes.length" class="terminal-font-size">
+            <el-button size="small" :disabled="fontSize <= FONT_SIZE_MIN" title="缩小终端字号" @click="stepFontSize(-1)">A－</el-button>
+            <span class="font-size-value">{{ fontSize }}</span>
+            <el-button size="small" :disabled="fontSize >= FONT_SIZE_MAX" title="放大终端字号" @click="stepFontSize(1)">A＋</el-button>
+          </div>
+
           <el-button v-if="panes.length" size="small" @click="closeAll">全部关闭</el-button>
         </div>
       </div>
@@ -53,6 +61,7 @@
         :pane="pane"
         :focused="index === activeIndex"
         :shell-options="shellOptions"
+        :font-size="state.ui.terminalFontSize"
         @focus="activeIndex = index"
         @close="removePane(index)"
         @session="onSession"
@@ -94,6 +103,11 @@ import { ArrowDown, Plus } from '@element-plus/icons-vue'
 import TerminalPane from '../components/TerminalPane.vue'
 import { state } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
+import { saveUiPrefs } from '../utils/ui-prefs'
+
+/** 终端字号范围，与主进程 ui-prefs.js 的 normalize 边界保持一致 */
+const FONT_SIZE_MIN = 11
+const FONT_SIZE_MAX = 22
 
 /** 网格预设：列 × 行 */
 const GRID_PRESETS = {
@@ -103,6 +117,17 @@ const GRID_PRESETS = {
   '3x1': { cols: 3, rows: 1 },
 }
 const MIN_SHARE = 0.15
+
+const fontSize = computed(() => state.ui.terminalFontSize)
+
+/** 调字号：各窗格 watch 到变化后自行重排并同步 pty 行列数；落盘失败不阻断调整 */
+function stepFontSize(delta) {
+  const current = state.ui.terminalFontSize
+  const next = Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, current + delta))
+  if (next === current) return
+  state.ui.terminalFontSize = next
+  saveUiPrefs()?.catch((error) => console.error('终端字号保存失败', error))
+}
 /** 最多同屏窗格数（与文档一致）；超过这个数就不再允许添加 */
 const MAX_PANES = 4
 
@@ -468,6 +493,15 @@ function focusProject(projectId) {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.terminal-font-size { display: flex; align-items: center; gap: 4px; }
+.font-size-value {
+  min-width: 20px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .terminal-hint,

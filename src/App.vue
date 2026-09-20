@@ -65,6 +65,7 @@ import SettingsView from './views/SettingsView.vue'
 import { state } from './store'
 import { useProjects } from './composables/useProjects'
 import { toPlain } from './utils/ipc'
+import { saveUiPrefs } from './utils/ui-prefs'
 import { shortPath } from './utils/path'
 
 const view = ref('dashboard')
@@ -100,6 +101,8 @@ async function restoreSidebarPref() {
   // 主进程繁忙时这个回包可能晚于用户点击：用户已经点过就以用户为准，
   // 否则会把刚切换的状态倒回磁盘上的旧值（侧栏自己弹回去）
   if (!sidebarTouched) state.ui.sidebarCollapsed = saved?.sidebarCollapsed === true
+  // 终端字号只在终端工作台里调整，这里只管恢复（加载时序早于用户能进到那一页）
+  if (saved?.terminalFontSize) state.ui.terminalFontSize = saved.terminalFontSize
   await nextTick()
   sidebarAnimatable.value = true
 }
@@ -109,8 +112,7 @@ function toggleSidebar() {
   sidebarTouched = true
   state.ui.sidebarCollapsed = !state.ui.sidebarCollapsed
   // 落盘失败不阻断交互（下次启动回落到展开态），仅记录，不打扰用户
-  window.gitReport?.uiPrefsSave?.({ sidebarCollapsed: state.ui.sidebarCollapsed })
-    ?.catch((error) => console.error('侧栏偏好保存失败', error))
+  saveUiPrefs()?.catch((error) => console.error('侧栏偏好保存失败', error))
 }
 
 /** 将页面导航意图集中映射；活动源列表复用设置页的 Git 活动分区。 */
