@@ -22,7 +22,7 @@
 
           <!-- 分屏方式：自动按窗格数排；也可手动锁定列/行。
                窗格多于一屏格子时行数会自动往下加，比例由 track 数对齐（见 layout） -->
-          <el-radio-group v-model="gridMode" size="small">
+          <el-radio-group v-model="gridMode">
             <el-radio-button value="auto">自动</el-radio-button>
             <el-radio-button value="1x2">左右</el-radio-button>
             <el-radio-button value="2x1">上下</el-radio-button>
@@ -30,15 +30,7 @@
             <el-radio-button value="3x1">三宫格</el-radio-button>
           </el-radio-group>
 
-          <!-- 字号：同一块屏幕上每个人看着舒服的终端字号差别不小（有人要 13、有人要 16），
-               做成可调并持久化；没有窗格时这一组不出现 -->
-          <div v-if="panes.length" class="terminal-font-size">
-            <el-button size="small" :disabled="fontSize <= FONT_SIZE_MIN" title="缩小终端字号" @click="stepFontSize(-1)">A－</el-button>
-            <span class="font-size-value">{{ fontSize }}</span>
-            <el-button size="small" :disabled="fontSize >= FONT_SIZE_MAX" title="放大终端字号" @click="stepFontSize(1)">A＋</el-button>
-          </div>
-
-          <el-button v-if="panes.length" size="small" @click="closeAll">全部关闭</el-button>
+          <el-button v-if="panes.length" @click="closeAll">全部关闭</el-button>
         </div>
       </div>
     </Teleport>
@@ -103,7 +95,6 @@ import { ArrowDown, Plus } from '@element-plus/icons-vue'
 import TerminalPane from '../components/TerminalPane.vue'
 import { state } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
-import { FONT_SIZE_MIN, FONT_SIZE_MAX, stepTerminalFontSize } from '../utils/ui-prefs'
 
 /** 网格预设：列 × 行 */
 const GRID_PRESETS = {
@@ -113,11 +104,6 @@ const GRID_PRESETS = {
   '3x1': { cols: 3, rows: 1 },
 }
 const MIN_SHARE = 0.15
-
-const fontSize = computed(() => state.ui.terminalFontSize)
-
-/** 工具栏里的快捷调整；同一逻辑也挂在设置页「界面」分区 */
-const stepFontSize = stepTerminalFontSize
 /** 最多同屏窗格数（与文档一致）；超过这个数就不再允许添加 */
 const MAX_PANES = 4
 
@@ -484,14 +470,15 @@ function focusProject(projectId) {
   gap: 10px;
   flex-wrap: wrap;
 }
-
-.terminal-font-size { display: flex; align-items: center; gap: 4px; }
-.font-size-value {
-  min-width: 20px;
-  text-align: center;
-  font-size: 13px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
+/* 统一高度：主按钮的全局 min-height:40px（点击区域底线）会把它顶得比相邻的
+   radio 组与次要按钮高一截，工具栏里这三个控件应当齐平。
+   radio 的内部节点不带本组件的 scope id，必须走 :deep() 才能命中 */
+.terminal-toolbar .el-button { min-height: 36px; }
+.terminal-toolbar :deep(.el-radio-button__inner) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
 }
 
 .terminal-hint,
