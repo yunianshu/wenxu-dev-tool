@@ -43,11 +43,12 @@
 
 <script setup>
 /**
- * 终端窗格 —— 一个项目一个 xterm 视图
+ * 终端窗格 —— 一个窗格一个 xterm 视图
  *
  * 生命周期要点：
  * - 视图只订阅自己 sessionId 的数据；切页时本组件卸载（pty 会话留在主进程），
  *   切回来重新挂载 → attach 取回缓冲输出 → 画面恢复
+ * - 会话按 paneId 归属：同一个项目可以开多个窗格，各自认回自己的 pty
  * - 会话创建/附加在挂载时自动完成；退出后提供「重新打开」而不是自动重启，
  *   避免 dev server 崩溃后无限重启
  */
@@ -171,11 +172,16 @@ async function ensureSession() {
     // 上报可能早于 sessionId 落位被丢掉（见下方 watch），pty 就停在 80×24，
     // TUI 按旧列宽重绘全部错位（新加窗格显示乱的主因）
     try { fitAddon?.fit() } catch { /* 视图尚未就绪时按默认尺寸创建 */ }
-    // 先 attach 已有会话：应用切页前留下的会话要复用，而不是另开一个进程
+    // 先 attach 已有会话：应用切页前留下的会话要复用，而不是另开一个进程。
+    // 只认本窗格自己的会话（paneId 唯一）——一个项目可以开多个窗格，
+    // 若按「项目 + 目录」匹配，第二个窗格会 attach 到第一个的 pty，两个视图互串
     const existing = await window.gitReport.terminalList()
-    const hit = (existing?.sessions || []).find(
-      (s) => !s.exited && s.projectId === pane.projectId && s.cwd === pane.cwd,
-    )
+    const mine = (existing?.sessions || []).filter((s) => s.paneId && s.paneId === pane.paneId)
+    const hit = mine.find((s) => !s.exited && s.cwd === pane.cwd)
+    // 本窗格名下但目录已不是当前目录的会话（项目目录改过）：留在旧目录里的孤儿，先关掉
+    for (const stale of mine) {
+      if (stale.id !== hit?.id) await window.gitReport.terminalClose(stale.id).catch(() => {})
+    }
     if (hit) {
       pendingReplay = true
       const res = await window.gitReport.terminalAttach(hit.id)
@@ -188,6 +194,7 @@ async function ensureSession() {
       return
     }
     const res = await window.gitReport.terminalCreate({
+      paneId: pane.paneId,
       projectId: pane.projectId,
       projectName: pane.projectName,
       cwd: pane.cwd,

@@ -1,7 +1,8 @@
 /**
  * 终端工作台服务 —— 应用内嵌真实终端会话（node-pty）
  *
- * 定位：一窗格 = 一个项目会话，四宫格平铺同时盯多个项目的 CLI。
+ * 定位：一窗格 = 一个会话（同一个项目目录允许开多个窗格），
+ *      四宫格平铺同时盯多个项目的 CLI。
  * 与 electron/terminal-service.js 的区别：那个是「在项目目录弹一个外部窗口」，
  * 这个把 pty 会话放在**主进程**里常驻——渲染层切走页面只销毁 xterm 视图，
  * 进程与输出都还在，切回来 attach 即恢复画面（含最近输出回放）。
@@ -187,8 +188,11 @@ function appendOutput(session, data) {
 
 /**
  * 创建会话。
- * options: { projectId, projectName, cwd, cols, rows, shellId }
+ * options: { paneId, projectId, projectName, cwd, cols, rows, shellId }
  * 返回可结构化克隆的会话信息（pty 对象不可跨进程传递，只留 sessionId）。
+ *
+ * paneId 是渲染层窗格的标识（随布局落盘）：一个项目可以开多个窗格，
+ * 渲染层据此认回「自己那个」会话，而不是按项目 + 目录去猜（猜错就会两个窗格共用一个 pty）。
  */
 function create(options = {}) {
   if (sessions.size >= MAX_SESSIONS) {
@@ -223,6 +227,8 @@ function create(options = {}) {
 
   const session = {
     id,
+    // 窗格标识：同一项目多窗格时，渲染层靠它认回各自的会话
+    paneId: String(options.paneId || ''),
     projectId: String(options.projectId || ''),
     projectName: String(options.projectName || ''),
     cwd: dir,
@@ -261,6 +267,7 @@ function create(options = {}) {
 function info(session) {
   return {
     id: session.id,
+    paneId: session.paneId,
     projectId: session.projectId,
     projectName: session.projectName,
     cwd: session.cwd,

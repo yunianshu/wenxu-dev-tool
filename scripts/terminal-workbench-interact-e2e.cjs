@@ -335,9 +335,12 @@ async function main() {
     console.log('\n[I4] 切换分屏方式：每个窗格都必须留在可视区内')
     for (const mode of ['左右', '上下', '四宫格', '三宫格', '自动']) {
       const clicked = await cdp.eval(`(() => {
-        const btn = [...document.querySelectorAll('.terminal-toolbar .el-radio-button__inner')]
-          .find((el) => el.textContent.trim() === '${mode}')
-        if (btn) btn.click()
+        // 分段控件已图标化（文字只留在 hover 提示与 aria-label 上），按 aria-label 找按钮
+        const btn = [...document.querySelectorAll('.terminal-toolbar .el-radio-button')]
+          .find((el) => el.getAttribute('aria-label') === '${mode}')
+        const inner = btn?.querySelector('.el-radio-button__inner')
+        if (inner) inner.click()
+        else if (btn) btn.click()
         return !!btn
       })()`)
       await new Promise((r) => setTimeout(r, 900))

@@ -580,7 +580,7 @@ function registerIpc() {
     }
   })
 
-  // ─── 终端工作台（内嵌真终端：一窗格 = 一个项目会话） ───
+  // ─── 终端工作台（内嵌真终端：一窗格 = 一个会话，同一项目可开多窗格） ───
   ptyService.setEmitter((ch, payload) => broadcast(ch, payload))
   // 会话表在主进程常驻，渲染层切页只销毁视图，进程与输出都还在
   ipcMain.handle('terminal:shellOptions', () => {

@@ -81,9 +81,13 @@ export const state = reactive({
     busy: false,
     install: { status: 'idle', version: '', fetched: 0, packages: 0, elapsedMs: 0, error: '' },
   },
-  /** 终端工作台（内嵌多窗格终端）：跨视图只保留轻量标记，
-   *  窗格与会话列表在视图内维护，pty 进程本身在主进程常驻 */
+  /** 终端工作台（内嵌多窗格终端）：pane 进程在主进程常驻，窗格列表也必须跨视图保留——
+   *  切页只卸载终端视图，窗格身份（哪个窗格对应哪条会话）要活得和会话一样久。
+   *  只在视图内维护的话，切页回来窗格会认不回自己的会话；同一个项目可以开多个窗格，
+   *  认错就会两屏共用一条 pty（输出互串） */
   terminal: {
+    /** 窗格列表：{ paneId, projectId, projectName, cwd, shellId, sessionId, ... } */
+    panes: [],
     /** 当前聚焦窗格对应的项目（用于顶栏/其他页面展示上下文） */
     focusedProjectId: '',
     /** 从项目页跳转过来时要聚焦的项目（视图挂载时消费一次） */

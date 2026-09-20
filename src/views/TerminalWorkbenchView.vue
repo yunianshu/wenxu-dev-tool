@@ -14,7 +14,10 @@
             </el-button>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item v-for="p in addableProjects" :key="p.id" :command="p.id">{{ p.name }}</el-dropdown-item>
+                <el-dropdown-item v-for="p in addableProjects" :key="p.id" :command="p.id">
+                  {{ p.name }}
+                  <span v-if="openPaneCount[p.id]" class="pane-count">已开 {{ openPaneCount[p.id] }}</span>
+                </el-dropdown-item>
                 <el-dropdown-item v-if="!addableProjects.length" disabled>没有可添加的项目（需先关联本地目录）</el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -57,8 +60,8 @@
     </p>
 
     <div v-else-if="!panes.length" class="terminal-empty">
-      <p>从右上角「添加窗格」选择项目，最多四个项目同屏盯。</p>
-      <p class="terminal-empty-sub">上次的布局会自动记住，下次打开软件直接恢复。</p>
+      <p>从右上角「添加窗格」选择项目，最多四个同屏。</p>
+      <p class="terminal-empty-sub">同一个项目可以开多个窗格（例如一个跑 dev server、一个敲 git），上次的布局会自动记住。</p>
     </div>
 
     <!-- 平铺网格：列/行之间可拖拽调整比例（比例随布局一起落盘） -->
@@ -100,13 +103,16 @@
 
 <script setup>
 /**
- * 终端工作台 —— 多窗格平铺（一窗格 = 一个项目会话）
+ * 终端工作台 —— 多窗格平铺（一窗格 = 一个绑定了项目目录的会话，同一项目可开多个）
  *
- * 布局持久化：窗格顺序 / 绑定的项目 / shell 选择 / 分屏方式与列宽行高比例
+ * 窗格列表存在 store 里（跨视图保留）：切页只卸载视图，pty 会话留在主进程，
+ * 窗格身份（paneId）与它一一对应，必须活得一样久，切回来才认得回自己的会话。
+ *
+ * 布局持久化：窗格顺序 / 窗格标识 / 绑定的项目 / shell 选择 / 分屏方式与列宽行高比例
  * 全部写入 userData/terminal-layout.json，下次启动自动恢复同样排布。
  * 进程本身不跨应用重启（pty 随应用退出结束），恢复时按项目目录重新拉起会话。
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeMount, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown, Plus } from '@element-plus/icons-vue'
 import TerminalPane from '../components/TerminalPane.vue'
@@ -135,7 +141,16 @@ const GRID_OPTIONS = [
 /** 最多同屏窗格数（与文档一致）；超过这个数就不再允许添加 */
 const MAX_PANES = 4
 
-const panes = ref([])
+/** 窗格运行期字段的初值（不落盘）：会话 id / shell 展示名 / 退出状态。
+ *  切页回来时要靠它把窗格恢复成「尚未认领会话」的状态，才会重新 attach 自己的会话 */
+const IDLE_PANE = { sessionId: '', shellLabel: '', pid: 0, exited: false, exitCode: null }
+
+/** 窗格列表存在 store 里（跨视图保留）：切页只卸载视图，会话在主进程常驻，
+ *  窗格身份必须活得和会话一样久，否则切回来认不回自己的会话 */
+const panes = computed({
+  get: () => state.terminal.panes,
+  set: (list) => { state.terminal.panes = list },
+})
 const gridMode = ref('auto')
 const shellOptions = ref([])
 const activeIndex = ref(0)
@@ -226,28 +241,34 @@ function splitterStyle(index, horizontal = false) {
   return { gridColumn: `${(index % layout.value.cols) + 1}`, gridRow: `1 / span ${layout.value.rows}` }
 }
 
-/** 可添加的项目：有关联目录且尚未出现在窗格中 */
-const addableProjects = computed(() => {
-  const used = new Set(panes.value.map((p) => p.projectId))
-  return state.projects.items.filter((p) => p.localPath && !used.has(p.id))
+/** 可添加的项目：只要关联了本地目录就能开窗格。
+ *  同一个项目允许重复添加（一个项目开多个终端盯不同命令），所以不再排除已开的项目 */
+const addableProjects = computed(() => state.projects.items.filter((p) => p.localPath))
+
+/** 各项目已开的窗格数：下拉里标出来，让「已开过也还能再加一个」一眼可见 */
+const openPaneCount = computed(() => {
+  const counts = {}
+  for (const pane of panes.value) counts[pane.projectId] = (counts[pane.projectId] || 0) + 1
+  return counts
 })
 
-/** 还能不能再加：受窗格总数与可添加项目数双重限制 */
+/** 还能不能再加：只受窗格总数限制（同一项目重复开不算重复） */
 const canAddPane = computed(() => panes.value.length < MAX_PANES && addableProjects.value.length > 0)
+
+/** 窗格标识：随窗格落盘，切页/重启后据它认回自己的 pty 会话 */
+function newPaneId() {
+  return `pane-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+}
 
 function makePane(project, saved = {}) {
   return {
-    paneId: `pane-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    // 恢复时沿用上次的 id，新增时现生成：会话归属靠它，不能每次挂载都换
+    paneId: saved.paneId || newPaneId(),
     projectId: project.id,
     projectName: project.name,
     cwd: project.localPath,
     shellId: saved.shellId || '',
-    // 运行期字段（不落盘）：会话 id / shell 展示名 / 退出状态
-    sessionId: '',
-    shellLabel: '',
-    pid: 0,
-    exited: false,
-    exitCode: null,
+    ...IDLE_PANE,
   }
 }
 
@@ -359,6 +380,8 @@ function buildLayout() {
     columnWidths: [...columnWidths.value],
     rowHeights: [...rowHeights.value],
     panes: panes.value.map((p) => ({
+      // 会话归属：同一项目可以开多个窗格，恢复时靠这个 id 各自认回自己的 pty
+      paneId: p.paneId,
       projectId: p.projectId,
       shellId: p.shellId,
       title: '',
@@ -384,7 +407,8 @@ function scheduleSave() {
 
 watch(
   [
-    () => panes.value.map((p) => `${p.projectId}:${p.shellId}`).join('|'),
+    // paneId 也要进 key：同一个项目的两个窗格，项目与 shell 完全相同，只靠它们区分不出变化
+    () => panes.value.map((p) => `${p.paneId}:${p.projectId}:${p.shellId}`).join('|'),
     gridMode,
     columnWidths,
     rowHeights,
@@ -414,10 +438,12 @@ async function restoreLayout() {
     const seen = new Set()
     for (const item of saved.panes) {
       const project = state.projects.items.find((p) => p.id === item.projectId)
-      // 同一项目只恢复一个窗格：两个窗格绑同一项目会 attach 到同一个 pty，输出会互相串
-      if (!project?.localPath || seen.has(item.projectId)) { missing += 1; continue }
-      seen.add(item.projectId)
+      if (!project?.localPath) { missing += 1; continue }
       const pane = makePane(project, item)
+      // 同一项目可以有多个窗格，但 paneId 必须唯一：布局被改坏出现重复 id 时，
+      // 两个窗格会认回同一个 pty（输出互串），给后来者补一个新 id
+      if (seen.has(pane.paneId)) pane.paneId = newPaneId()
+      seen.add(pane.paneId)
       // 上次的 shell 选择也要恢复（该 id 在当前机器上不存在时回落自动）
       if (item.shellId && shellOptions.value.some((o) => o.id === item.shellId)) pane.shellId = item.shellId
       restored.push(pane)
@@ -436,10 +462,22 @@ async function restoreLayout() {
   }
 }
 
+/** 重新进入本视图：窗格对象还在 store 里（会话也在主进程活着），
+ *  只需把运行期字段清回初值——每个窗格会重新 attach 自己的会话并回放缓冲
+ *  （切走期间的输出都在，画面照旧连上）。
+ *  必须放在 onBeforeMount：子组件的挂载钩子早于父组件的 onMounted，
+ *  放到 onMounted 再清就来不及了（窗格会拿着过期的 sessionId 直接跳过 attach） */
+onBeforeMount(() => {
+  if (!panes.value.length) return
+  pruneMissingProjects()
+  for (const pane of panes.value) Object.assign(pane, IDLE_PANE)
+})
+
 onMounted(async () => {
   const opt = await window.gitReport.terminalShellOptions().catch(() => null)
   shellOptions.value = opt?.options || []
-  await restoreLayout()
+  // 首次进入才从磁盘恢复布局；切页回来直接复用内存里的窗格（id 不变才能认回会话）
+  if (!panes.value.length) await restoreLayout()
   await nextTick()
   activeIndex.value = 0
   // 从项目页「在终端工作台打开」跳转过来：优先聚焦该项目
@@ -454,8 +492,11 @@ onBeforeUnmount(() => {
   if (saveTimer) writeLayout()
 })
 
-/** 项目被删除时同步移除对应窗格，避免留一个死窗格 */
-watch(() => state.projects.items.map((p) => p.id).join('|'), () => {
+/** 项目被删除时同步移除对应窗格，避免留一个死窗格（切页回来时也要再剪一次：
+ *  本视图不在场时删掉的项目，没有 watcher 替它收尾） */
+function pruneMissingProjects() {
+  // 项目列表正在加载/尚未就绪时不能剪：此时 items 为空，会把窗格全部误删
+  if (state.projects.loading) return
   const ids = new Set(state.projects.items.map((p) => p.id))
   const kept = panes.value.filter((p) => ids.has(p.projectId))
   if (kept.length === panes.value.length) return
@@ -463,9 +504,12 @@ watch(() => state.projects.items.map((p) => p.id).join('|'), () => {
     if (!ids.has(pane.projectId) && pane.sessionId) window.gitReport.terminalClose(pane.sessionId).catch(() => {})
   }
   panes.value = kept
-})
+}
 
-/** 切到指定项目：已有窗格则聚焦，没有则新增一个 */
+watch(() => state.projects.items.map((p) => p.id).join('|'), pruneMissingProjects)
+
+/** 切到指定项目：已有窗格则聚焦第一个，没有则新增一个
+ *  （同一项目可以开多个窗格，但「从项目页切过来」的语义是定位，不再叠加新窗格） */
 function focusProject(projectId) {
   const project = state.projects.items.find((p) => p.id === projectId)
   if (!project?.localPath) {
@@ -547,6 +591,14 @@ function focusProject(projectId) {
    实心块无论多小都清晰——VS Code / Windows 的分屏图标也是这个做法 */
 .grid-icon { display: block; width: 16px; height: 16px; }
 .grid-icon rect { fill: currentColor; }
+
+/* 下拉里标注该项目已开的窗格数（弹层被 teleport 到 body，但本组件模板里的节点
+   仍带 scope id，样式照样命中） */
+.pane-count {
+  margin-left: 8px;
+  color: var(--brand-text-sub);
+  font-size: 12px;
+}
 
 .terminal-hint,
 .terminal-empty {

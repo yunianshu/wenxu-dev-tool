@@ -6,7 +6,7 @@
  * 布局如果混在里面，会被「保存设置」的旧快照覆盖；终端布局的写入时机
  * 完全不同（拖动分屏/换项目/加窗格时随时写），独立文件各自演进更安全。
  *
- * 存什么：窗格顺序、每个窗格绑定的项目、shell 选择、分屏尺寸。
+ * 存什么：窗格顺序、每个窗格的标识与绑定的项目、shell 选择、分屏尺寸。
  * 不存什么：pty 进程本身（进程不跨应用重启），下次启动按项目重开会话。
  */
 const { app } = require('electron')
@@ -28,6 +28,10 @@ function normalizePane(raw) {
   const width = Number(raw.width)
   return {
     projectId,
+    // 窗格标识：渲染层据此认回「自己那个」pty 会话。同一项目允许开多个窗格，
+    // 只按 projectId 匹配会让第二个窗格 attach 到第一个的会话上（两边互串）。
+    // 旧布局没有这个字段 → 留空，渲染层补发一个新 id（pty 本来就不跨应用重启）
+    paneId: String(raw.paneId || ''),
     // shellId：'' = 按优先级自动（pwsh 7 → 5.1）；具体 id 由 pty-service 校验
     shellId: String(raw.shellId || ''),
     // 用户自定的窗格标题（留空则显示项目名）

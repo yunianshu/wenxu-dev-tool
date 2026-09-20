@@ -96,7 +96,7 @@ contextBridge.exposeInMainWorld('gitReport', {
     ipcRenderer.invoke('extensions:readSkill', { platform, name }),
   // 终端（在项目目录打开 PowerShell / 系统终端）
   openTerminal: (dir) => ipcRenderer.invoke('terminal:open', dir),
-  // ─── 终端工作台（内嵌终端：一窗格 = 一个项目会话） ───
+  // ─── 终端工作台（内嵌终端：一窗格 = 一个会话，同一项目可开多个） ───
   terminalShellOptions: () => ipcRenderer.invoke('terminal:shellOptions'),
   terminalCreate: (options) => ipcRenderer.invoke('terminal:create', toPlain(options)),
   terminalList: () => ipcRenderer.invoke('terminal:list'),

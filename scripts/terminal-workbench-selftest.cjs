@@ -180,6 +180,33 @@ async function main() {
   ptyService.stop()
   check('stop 清空全部会话（应用退出不留残留进程）', ptyService.list().length === 0, `关闭了 ${a.id} / ${b.id}`)
 
+  // ─── 4b. 同一项目目录开多个窗格：各自独立会话，输入互不串 ───
+  const dupA = ptyService.create({ paneId: 'pane-dup-a', projectId: 'same-project', cwd: workDir, cols: 80, rows: 24 })
+  const dupB = ptyService.create({ paneId: 'pane-dup-b', projectId: 'same-project', cwd: workDir, cols: 80, rows: 24 })
+  check('同一项目与目录可以并存多个会话', dupA.id !== dupB.id && dupA.pid !== dupB.pid,
+    `${dupA.id}(pid=${dupA.pid}) / ${dupB.id}(pid=${dupB.pid})`)
+  check('会话信息带上窗格标识（渲染层据此认回自己的会话）',
+    dupA.paneId === 'pane-dup-a' && dupB.paneId === 'pane-dup-b',
+    `${dupA.paneId} / ${dupB.paneId}`)
+
+  const dupMarker = `DEVPM_DUP_${Date.now().toString(36)}`
+  const dupDeadline = Date.now() + 25000
+  let dupSent = 0
+  for (;;) {
+    if (dupSent < 4 && Date.now() < dupDeadline) {
+      try { ptyService.write(dupA.id, `Write-Output ${dupMarker}\r`); dupSent += 1 } catch { /* 会话已结束：由断言报出 */ }
+    }
+    const joined = stripAnsi(dataSeen.filter((p) => p.sessionId === dupA.id).map((p) => p.data).join(''))
+    if (joined.includes(dupMarker) || Date.now() > dupDeadline) break
+    await new Promise((r) => setTimeout(r, 500))
+  }
+  const bufA = stripAnsi(ptyService.attach(dupA.id).output)
+  const bufB = stripAnsi(ptyService.attach(dupB.id).output)
+  check('写入的标记进了目标会话的缓冲', bufA.includes(dupMarker), `A 缓冲 ${bufA.length} 字符`)
+  check('同项目的另一个窗格收不到该输入（不串会话）', !bufB.includes(dupMarker), `B 缓冲 ${bufB.length} 字符`)
+  ptyService.close(dupA.id)
+  ptyService.close(dupB.id)
+
   // ─── 5. 布局持久化 ───
   const saveRes = terminalLayout.save({
     gridMode: '2x2',
@@ -205,6 +232,29 @@ async function main() {
     && JSON.stringify(loaded.rowHeights) === '[0.5,0.5]',
     `${loaded.gridMode} ${JSON.stringify(loaded.columnWidths)} ${JSON.stringify(loaded.rowHeights)}`)
   check('布局文件落在 userData 目录', path.dirname(terminalLayout.file()) === tempRoot)
+
+  // 同一项目的多个窗格：paneId 必须各自保留（恢复时会话归属就靠它，
+  // 丢了这个 id 会让两个窗格认回同一个 pty）
+  terminalLayout.save({
+    panes: [
+      { paneId: 'pane-keep-1', projectId: 'proj-dup', shellId: '' },
+      { paneId: 'pane-keep-2', projectId: 'proj-dup', shellId: 'pwsh' },
+    ],
+  })
+  const dupLoaded = terminalLayout.load()
+  check('布局保留同一项目的多个窗格与各自 paneId',
+    dupLoaded.panes.length === 2
+    && dupLoaded.panes[0].projectId === 'proj-dup'
+    && dupLoaded.panes[1].projectId === 'proj-dup'
+    && dupLoaded.panes[0].paneId === 'pane-keep-1'
+    && dupLoaded.panes[1].paneId === 'pane-keep-2',
+    JSON.stringify(dupLoaded.panes.map((p) => `${p.projectId}/${p.paneId}`)))
+  // 旧布局（本版本之前）没有 paneId：归一化成空串，渲染层补发新 id，不能让脏值穿透
+  terminalLayout.save({ panes: [{ projectId: 'proj-a' }, { paneId: 42, projectId: 'proj-b' }] })
+  const legacy = terminalLayout.load()
+  check('缺失 paneId 归一化成空串（由渲染层补发新 id）', legacy.panes[0].paneId === '',
+    JSON.stringify(legacy.panes[0]))
+  check('非字符串 paneId 归一化成字符串', legacy.panes[1].paneId === '42', JSON.stringify(legacy.panes[1]))
 
   // 轨道比例随分屏方式变长：「上下」4 个窗格 = 4 行 4 个比例。
   // 不能按固定两位截断——被截掉的行会落到隐式 auto 轨道上，把窗格挤成几像素高
