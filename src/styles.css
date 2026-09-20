@@ -402,6 +402,8 @@ body {
 .ai-manager { width: 100%; }
 .ai-form { display: flex; flex-direction: column; gap: 12px; }
 .ai-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+/* 控件宽度统一由这里给：原先各字段内联 240/400/440/260 四种宽度，同一列里参差不齐 */
+.ai-form .el-input, .ai-form .el-select { width: 400px; }
 .ai-label {
   width: 84px;
   flex-shrink: 0;

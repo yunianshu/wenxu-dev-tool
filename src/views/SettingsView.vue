@@ -154,13 +154,13 @@
         <div class="ai-form">
           <div class="ai-row">
             <span class="ai-label">服务商</span>
-            <el-select v-model="provider" style="width: 240px" @change="applyPreset">
+            <el-select v-model="provider" @change="applyPreset">
               <el-option v-for="(p, key) in AI_PRESETS" :key="key" :value="key" :label="p.label" />
             </el-select>
           </div>
           <div class="ai-row">
             <span class="ai-label">接口地址</span>
-            <el-input v-model="state.config.ai.baseUrl" placeholder="http://ai.sysapp.prttech.com:18080/v1" style="width: 400px" />
+            <el-input v-model="state.config.ai.baseUrl" placeholder="http://ai.sysapp.prttech.com:18080/v1" />
           </div>
           <div class="ai-row">
             <span class="ai-label">API Key</span>
@@ -169,7 +169,6 @@
               type="password"
               show-password
               :placeholder="state.config.ai.keyConfigured ? `${state.config.ai.keyMasked}（留空保持不变，输入新 Key 替换）` : 'sk-...（未配置）'"
-              style="width: 440px"
             />
             <el-button v-if="state.config.ai.keyConfigured" size="small" text type="danger" @click="clearKey">
               <el-icon><Delete /></el-icon>清除密钥
@@ -184,7 +183,6 @@
               default-first-option
               :loading="loadingModels"
               placeholder="选择或输入模型名"
-              style="width: 260px"
             >
               <el-option v-for="m in modelOptions" :key="m" :label="m" :value="m" />
             </el-select>
