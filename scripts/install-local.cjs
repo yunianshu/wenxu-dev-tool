@@ -33,7 +33,7 @@ const appExeName = `${productName}.exe`
 // ——旧 exe 在安装目录里，/MIR 同步时被删除但被占用会失败；旧快捷方式/旧卸载项也要能认出来，
 // 否则更新后新旧两份并存。只列真正的历史产品名，不含仅作过界面文案的名字，
 // 免得误删用户自建的同类快捷方式。
-const LEGACY_PRODUCT_NAMES = ['开发项目管理'].filter((n) => n !== productName)
+const LEGACY_PRODUCT_NAMES = ['开发项目管理', '文须项目管理'].filter((n) => n !== productName)
 const unpacked = path.join(ROOT, 'release', pkg.version, 'win-unpacked')
 const installDir = path.join(process.env.LOCALAPPDATA, 'Programs', pkg.name)
 const installedExe = path.join(installDir, appExeName)

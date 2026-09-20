@@ -334,7 +334,7 @@
 
     <section v-show="activeSection === 'about'" class="workspace-panel settings-about">
       
-      <h2>文须项目管理</h2>
+      <h2>Personnel PLM</h2>
       <p>项目资料、报告记录和部署配置默认保存在本机。Git、AI 与部署都是按需启用的项目能力。</p>
       <dl class="project-facts">
         <div><dt>版本</dt><dd>{{ appVersion }} <el-button link type="primary" @click="$emit('show-changelog')">查看更新日志</el-button></dd></div>

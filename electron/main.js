@@ -124,7 +124,7 @@ function createTray() {
     const image = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
     if (image.isEmpty()) throw new Error(`托盘图标为空：${iconPath}`)
     tray = new Tray(image)
-    tray.setToolTip('文须项目管理（后台运行中）')
+    tray.setToolTip('Personnel PLM（后台运行中）')
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: '显示主窗口', click: () => showMainWindow() },
       { type: 'separator' },
@@ -153,7 +153,7 @@ function createWindow() {
     frame: false, // 无边框：原生标题栏隐藏，最小化/最大化/关闭由顶栏自定义按钮承担
     minWidth: 1080,
     minHeight: 700,
-    title: '文须项目管理',
+    title: 'Personnel PLM',
     autoHideMenuBar: true,
     backgroundColor: '#f5f7fa',
     webPreferences: {
@@ -363,8 +363,11 @@ function registerIpc() {
     const wasPending = pendingAskClose
     pendingAskClose = false
     const action = payload && payload.action
-    // 非 pending（超时兜底已执行 / 伪造回传）或非法动作一律忽略，不重复执行
-    if (!wasPending || (action !== 'minimize' && action !== 'quit')) return { ok: false }
+    // 非 pending（超时兜底已执行 / 伪造回传）一律忽略，不重复执行
+    if (!wasPending) return { ok: false }
+    // 取消（询问框 × / ESC）：只清掉上面的超时兜底，窗口原样保留
+    if (action === 'cancel') return { ok: true }
+    if (action !== 'minimize' && action !== 'quit') return { ok: false }
     if (payload.remember) {
       const cfg = store.load()
       cfg.closeAction = action

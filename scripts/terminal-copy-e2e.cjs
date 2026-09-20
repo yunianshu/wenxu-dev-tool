@@ -15,7 +15,7 @@
  *
  * 前置：npm run build:renderer（electron . 加载 dist/ 产物）
  * 用法：node scripts/terminal-copy-e2e.cjs
- *       E2E_EXE="release/<版本>/win-unpacked/文须项目管理.exe" node scripts/terminal-copy-e2e.cjs
+ *       E2E_EXE="release/<版本>/win-unpacked/Personnel PLM.exe" node scripts/terminal-copy-e2e.cjs
  *
  * 副作用说明：会写系统剪贴板，结束时尽力恢复原先文本（非文本格式无法恢复）。
  */

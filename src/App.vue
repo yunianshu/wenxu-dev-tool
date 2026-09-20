@@ -169,7 +169,7 @@ function showCloseAsk() {
         'onUpdate:modelValue': (v) => { remember.value = v },
       }, () => '记住我的选择，下次不再询问'),
     ]),
-    '关闭「文须项目管理」',
+    '关闭「Personnel PLM」',
     {
       type: 'warning',
       confirmButtonText: '最小化到托盘',
@@ -180,8 +180,11 @@ function showCloseAsk() {
     },
   ).then(() => window.gitReport.winCloseConfirm?.({ action: 'minimize', remember: remember.value }))
     .catch((act) => {
-      // cancel=退出程序；close（×/ESC）= 取消，窗口保留
+      // cancel=退出程序；close（×/ESC）= 取消，窗口保留。
+      // ×/ESC 也必须回传：主进程有 8s 兜底（渲染层无响应时按默认语义最小化），
+      // 不回传就清不掉它，会变成「点了取消、窗口 8s 后仍被收进托盘」
       if (act === 'cancel') window.gitReport.winCloseConfirm?.({ action: 'quit', remember: remember.value })
+      else window.gitReport.winCloseConfirm?.({ action: 'cancel' })
     })
     .finally(() => { closeAsking = false })
 }

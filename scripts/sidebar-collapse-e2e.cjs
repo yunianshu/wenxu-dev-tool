@@ -272,7 +272,7 @@ async function main() {
     a2 && a2.width === EXPANDED_WIDTH && a2.shellCollapsed === false && a2.menuCollapsed === false,
     JSON.stringify(a2 && { width: a2.width, shell: a2.shellCollapsed, menu: a2.menuCollapsed }))
   assert('S5 文案与品牌名全部回归',
-    a2 && a2.labels[0] === '工作台' && a2.labels[MENU_COUNT - 1] === '设置' && a2.brandNameShown === true && a2.brandText === '文须项目管理',
+    a2 && a2.labels[0] === '工作台' && a2.labels[MENU_COUNT - 1] === '设置' && a2.brandNameShown === true && a2.brandText === 'Personnel PLM',
     JSON.stringify(a2 && { first: a2.labels[0], last: a2.labels[MENU_COUNT - 1], brand: a2.brandText }))
   assert('S5 页脚「本地数据 · 更新日志」文案回归', a2 && a2.footerLabelShown === true && a2.versionLabelShown === true,
     JSON.stringify(a2 && { label: a2.footerLabelShown, vlabel: a2.versionLabelShown }))

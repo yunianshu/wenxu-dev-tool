@@ -1,9 +1,9 @@
 <template>
   <aside class="app-sidebar">
     <div class="brand-block">
-      <div class="brand-mark">项</div>
+      <div class="brand-mark">P</div>
       <div class="brand-text">
-        <div class="brand-name">文须项目管理</div>
+        <div class="brand-name">Personnel PLM</div>
         <div class="brand-subtitle">项目工作台</div>
       </div>
       <!-- 收起/展开侧栏：收起后只留图标，菜单项文案由 el-menu 自带的 tooltip 补上 -->
