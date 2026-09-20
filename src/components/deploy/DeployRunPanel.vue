@@ -84,7 +84,7 @@
         <el-button text size="small" @click="clearLogs">清屏</el-button>
       </div>
     </template>
-    <div ref="logBox" class="log-box">
+    <div ref="logBox" class="log-box" :class="{ 'is-empty': !state.deploy.logs.length }">
       <div v-if="!state.deploy.logs.length" class="log-empty">暂无日志，点击「发布」后此处实时显示服务器输出</div>
       <div v-for="(l, i) in state.deploy.logs" :key="i" class="log-line" :class="'log-' + l.level">
         <span class="log-ts">{{ l.ts }}</span>{{ l.text }}
@@ -525,12 +525,15 @@ defineExpose({ doRollback, resetSelection })
 .run-stat { font-size: 12.5px; color: var(--brand-text-sub); }
 .run-stat b { color: var(--brand-text); }
 
-.stages { display: flex; flex-wrap: wrap; gap: 8px; }
+/* 等宽网格：flex 自动换行时每个 chip 宽度由文字长短决定，9 个排成参差的 5+4；
+   等宽后即使最后一行不满，列也是对齐的 */
+.stages { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
 .stage-chip {
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 5px 10px;
+  padding: 5px 8px;
   border-radius: 7px;
   border: 1px solid #e2e6ed;
   font-size: 12.5px;
@@ -568,6 +571,9 @@ defineExpose({ doRollback, resetSelection })
   line-height: 1.65;
 }
 .log-empty { color: #5b6470; text-align: center; padding-top: 120px; }
+/* 空态不铺深色：300px 高的整块黑在空态时压过页面主体，而空态本来就没有输出可读 */
+.log-box.is-empty { background: var(--surface-subtle); border: 1px solid var(--line); }
+.log-box.is-empty .log-empty { color: var(--brand-text-sub); padding-top: 132px; }
 .log-line { white-space: pre-wrap; word-break: break-all; color: #b8c0ca; }
 .log-ts { color: #5b6470; margin-right: 10px; }
 .log-success { color: #7fd07f; }
