@@ -141,9 +141,10 @@ const GRID_OPTIONS = [
 /** 最多同屏窗格数（与文档一致）；超过这个数就不再允许添加 */
 const MAX_PANES = 4
 
-/** 窗格运行期字段的初值（不落盘）：会话 id / shell 展示名 / 退出状态。
- *  切页回来时要靠它把窗格恢复成「尚未认领会话」的状态，才会重新 attach 自己的会话 */
-const IDLE_PANE = { sessionId: '', shellLabel: '', pid: 0, exited: false, exitCode: null }
+/** 窗格运行期字段的初值（不落盘）：会话 id / shell 展示名 / 退出状态 / 会话实时目录。
+ *  切页回来时要靠它把窗格恢复成「尚未认领会话」的状态，才会重新 attach 自己的会话；
+ *  sessionCwd 清空后标题回落到项目目录，attach 成功再取会话的当前目录 */
+const IDLE_PANE = { sessionId: '', shellLabel: '', pid: 0, exited: false, exitCode: null, sessionCwd: '' }
 
 /** 窗格列表存在 store 里（跨视图保留）：切页只卸载视图，会话在主进程常驻，
  *  窗格身份必须活得和会话一样久，否则切回来认不回自己的会话 */

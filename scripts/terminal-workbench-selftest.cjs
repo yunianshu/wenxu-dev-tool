@@ -3,10 +3,13 @@
  *
  * 验证策略：**真实起 pty 进程**跑一条命令并校验回显，而不是 mock。
  * 覆盖：
- *   - shell 解析优先级（pwsh 7 → Windows PowerShell 5.1 → cmd）与选项列表
+ *   - shell 解析优先级（pwsh 7 → Windows PowerShell 5.1 → cmd）与选项列表，
+ *     以及 PowerShell 家族的目录上报 prompt 钩子（-EncodedCommand）注入
  *   - 目录参数校验（空/不存在/文件路径一律拒绝）
  *   - 会话创建 → 写入 → 真实输出 → attach 缓冲回放 → resize → close 全链路
  *   - 会话上限保护、过期 sessionId 报错
+ *   - 目录切换感知：OSC 提取器纯逻辑（跨块拼接/file:// 与带引号载荷/脏数据），
+ *     以及真实 pwsh 里 cd 后会话目录跟随并广播 terminal:cwd
  *   - 布局持久化：保存 → 读取 → 脏数据归一化 → 清空
  *
  * 说明：pty-service 通过 `require('node-pty')` 加载原生模块，
@@ -88,8 +91,17 @@ async function main() {
     const pwsh = options.find((o) => o.id === 'pwsh')
     check('Windows 上优先解析到 PowerShell 7', !!pwsh || !!options.find((o) => o.id === 'windows-powershell'),
       pwsh ? pwsh.path : `仅找到 ${options[0]?.label}`)
-    check('resolveShell 返回可执行文件且参数不含 -Command', fs.existsSync(shell.path) && !shell.args.includes('-Command'),
-      `${shell.label} ${shell.args.join(' ')}`)
+    // PowerShell 家族要注入「目录上报 prompt 钩子」（-EncodedCommand 下发）：
+    // 没有它窗格标题无法跟随 cd（pwsh/PS5.1 自己都不发 OSC 9;9，实测）
+    const encIdx = shell.args.indexOf('-EncodedCommand')
+    let hook = ''
+    try { hook = Buffer.from(shell.args[encIdx + 1] || '', 'base64').toString('utf16le') } catch { /* 断言里报出 */ }
+    check('resolveShell 返回可执行文件并注入目录上报钩子（-EncodedCommand）',
+      fs.existsSync(shell.path) && encIdx >= 0 && !!shell.args[encIdx + 1],
+      `${shell.label} ${shell.args.map((a) => (a.length > 40 ? '<hook>' : a)).join(' ')}`)
+    check('目录上报钩子只包 prompt（转发用户原有提示符，不执行用户命令）',
+      hook.includes('$__devpmPrompt = $function:prompt') && hook.includes('& $__devpmPrompt'))
+    check('目录上报钩子按 ConEmu 约定上报 OSC 9;9', hook.includes(']9;9;'))
     let badShell = null
     try { ptyService.resolveShell('C:\\definitely\\missing\\shell.exe') } catch (err) { badShell = err }
     check('指定不存在的 shell 明确报错', !!badShell && /不存在/.test(badShell.message))
@@ -108,8 +120,10 @@ async function main() {
   // ─── 3. 真实 pty：创建 → 写入 → 输出 → attach → resize → close ───
   const marker = `DEVPM_PTY_${Date.now().toString(36)}`
   const dataSeen = []
+  const cwdSeen = []
   ptyService.setEmitter((channel, payload) => {
     if (channel === 'terminal:data') dataSeen.push(payload)
+    if (channel === 'terminal:cwd') cwdSeen.push(payload)
   })
 
   const session = ptyService.create({
@@ -206,6 +220,95 @@ async function main() {
   check('同项目的另一个窗格收不到该输入（不串会话）', !bufB.includes(dupMarker), `B 缓冲 ${bufB.length} 字符`)
   ptyService.close(dupA.id)
   ptyService.close(dupB.id)
+
+  // ─── 4c. OSC 工作目录提取器（纯逻辑）：跨块拼接 / 两种载荷 / 脏数据 ───
+  {
+    const fake = { id: 'fake-cwd', cwd: 'D:\\start' }
+    const feed = ptyService.createCwdTracker(fake)
+    feed('随便一段正文 \x1b[2m暗色\x1b[0m 不带 OSC')
+    check('无 OSC 的输出不改变会话目录', fake.cwd === 'D:\\start')
+
+    feed('\x1b]9;9;"D:\\AiProject\\SecWatch"\x1b\\')
+    check('OSC 9;9（带引号的 Windows 路径）更新会话目录', fake.cwd === 'D:\\AiProject\\SecWatch')
+
+    // 序列被 pty 切成两半：前半块等着，后半块到了再拼
+    feed('\x1b]9;9;"D:\\Spl')
+    check('切一半的序列先挂起不改目录', fake.cwd === 'D:\\AiProject\\SecWatch')
+    feed('it"\x1b\\')
+    check('续块到达后拼出完整序列并更新', fake.cwd === 'D:\\Split', JSON.stringify(fake.cwd))
+
+    feed('\x1b]7;file:///D:/AiProject/Vantage\x07')
+    check('OSC 7（file:// URL，BEL 结尾）更新会话目录', fake.cwd === 'D:\\AiProject\\Vantage')
+
+    feed('\x1b]9;9;relative\\path\x1b\\')
+    check('相对路径不当作目录（防串改标题）', fake.cwd === 'D:\\AiProject\\Vantage')
+
+    feed('同一目录重复上报不产生变化')
+    feed('\x1b]9;9;"D:\\AiProject\\Vantage"\x1b\\')
+    check('重复上报同一目录不再广播（渲染层不被刷）', fake.cwd === 'D:\\AiProject\\Vantage')
+  }
+
+  // ─── 4d. 目录切换感知（真实 pwsh + 真实 pty）：shell 里 cd → 标题路径跟随 ───
+  if (process.platform === 'win32') {
+    const movedDir = path.join(tempRoot, 'moved-here')
+    fs.mkdirSync(movedDir, { recursive: true })
+    // 路径比较必须先过 realpath：mkdtemp 可能拿到 8.3 短名（ADMINI~1），而 shell
+    // 上报的一定是长名（Administrator），字符串/resolve 比对永远不相等
+    const realPath = (p) => {
+      try { return fs.realpathSync.native(String(p)).toLowerCase() } catch { return path.resolve(String(p)).toLowerCase() }
+    }
+    const samePath = (a, b) => realPath(a) === realPath(b)
+    const trackPane = ptyService.create({
+      paneId: 'pane-cwd-track', projectId: 'p-cwd', cwd: workDir, cols: 80, rows: 24,
+    })
+    try {
+      // shell 初始化完成前写入可能被吃掉（见第 3 节），失败就重发几次。
+      // 只认本次 cd 之后**新增**的事件：启动提示符上报过 workDir（长名），
+      // 按历史事件匹配会立刻误判成功
+      const cdTo = async (dir, label) => {
+        const startCount = cwdSeen.length
+        const deadline = Date.now() + 25000
+        let sent = 0
+        for (;;) {
+          if (sent < 4 && Date.now() < deadline) {
+            try { ptyService.write(trackPane.id, `Set-Location -LiteralPath '${dir}'\r`); sent += 1 } catch { /* 会话结束由断言报出 */ }
+          }
+          if (cwdSeen.some((e, i) => i >= startCount && e.sessionId === trackPane.id && samePath(e.cwd, dir))) return sent
+          if (Date.now() > deadline) throw new Error(`等待超时：${label}`)
+          await new Promise((r) => setTimeout(r, 500))
+        }
+      }
+      const sent1 = await cdTo(movedDir, 'cd 后的 terminal:cwd 事件')
+      check('shell 内 cd → 会话目录跟随为切换后的目录',
+        samePath(ptyService.getInfo(trackPane.id).cwd, movedDir), `发送 ${sent1} 次`)
+
+      const sent2 = await cdTo(workDir, 'cd 回原目录的事件')
+      check('cd 回原目录再次上报（反复切换持续生效）',
+        samePath(ptyService.getInfo(trackPane.id).cwd, workDir), `发送 ${sent2} 次`)
+
+      const attachInfo = ptyService.attach(trackPane.id)
+      check('attach 回传会话当前目录（切页恢复标题栏的依据）', samePath(attachInfo.cwd, workDir))
+
+      // 目录没变时不得刷事件：注入的钩子每次提示符都上报，重复值必须在主进程被滤掉
+      const countBefore = cwdSeen.filter((e) => e.sessionId === trackPane.id).length
+      const idleMarker = `DEVPM_IDLE_${Date.now().toString(36)}`
+      const idleDeadline = Date.now() + 25000
+      let idleSent = 0
+      for (;;) {
+        if (idleSent < 4 && Date.now() < idleDeadline) {
+          try { ptyService.write(trackPane.id, `Write-Output ${idleMarker}\r`); idleSent += 1 } catch { /* 同上 */ }
+        }
+        const joined = stripAnsi(dataSeen.filter((p) => p.sessionId === trackPane.id).map((p) => p.data).join(''))
+        if (joined.includes(idleMarker)) break
+        if (Date.now() > idleDeadline) throw new Error('等待超时：空闲探测输出')
+        await new Promise((r) => setTimeout(r, 500))
+      }
+      const countAfter = cwdSeen.filter((e) => e.sessionId === trackPane.id).length
+      check('目录未变化的提示符不重复广播 cwd 事件', countAfter === countBefore, `${countBefore} → ${countAfter}`)
+    } finally {
+      ptyService.close(trackPane.id)
+    }
+  }
 
   // ─── 5. 布局持久化 ───
   const saveRes = terminalLayout.save({

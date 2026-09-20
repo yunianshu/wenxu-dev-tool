@@ -4,7 +4,7 @@
       <span class="term-dot" :class="statusClass" />
       <div class="term-pane-title">
         <strong>{{ pane.projectName || '未命名项目' }}</strong>
-        <small :title="pane.cwd">{{ shortCwd }}</small>
+        <small :title="displayCwd">{{ shortCwd }}</small>
       </div>
       <div class="term-pane-actions">
         <el-dropdown v-if="shellOptions.length > 1" trigger="click" size="small" @command="restartWith">
@@ -60,7 +60,7 @@ import '@xterm/xterm/css/xterm.css'
 import { shortPath } from '../utils/path'
 
 const props = defineProps({
-  pane: { type: Object, required: true },        // { projectId, projectName, cwd, shellId, sessionId, shellLabel, exited, exitCode }
+  pane: { type: Object, required: true },        // { projectId, projectName, cwd, sessionCwd?, shellId, sessionId, shellLabel, exited, exitCode }
   focused: { type: Boolean, default: false },
   shellOptions: { type: Array, default: () => [] },
   /** 终端字号（px），纯外观偏好，由 ui-prefs.json 持久化，在终端工作台工具栏调整 */
@@ -71,7 +71,12 @@ const emit = defineEmits(['focus', 'close', 'session', 'update:shell'])
 const hostRef = ref(null)
 const fitHostRef = ref(null)
 const error = ref('')
-const shortCwd = computed(() => shortPath(props.pane.cwd || ''))
+// 会话的实时目录：shell 里 cd 后由主进程经 OSC 7 / OSC 9;9 上报（sessionCwd），
+// 没上报过就回落到窗格绑定的项目目录（pane.cwd）。两者分开存：pane.cwd 是窗格
+// 归属（项目目录改了要重开会话），不能被 cd 改写，否则挂载期的「目录变化→重开」
+// watch 会误判成项目目录变更把会话关掉
+const displayCwd = computed(() => props.pane.sessionCwd || props.pane.cwd || '')
+const shortCwd = computed(() => shortPath(displayCwd.value))
 const statusClass = computed(() => {
   if (error.value) return 'is-error'
   if (props.pane.exited) return 'is-dead'
@@ -174,11 +179,13 @@ async function ensureSession() {
     try { fitAddon?.fit() } catch { /* 视图尚未就绪时按默认尺寸创建 */ }
     // 先 attach 已有会话：应用切页前留下的会话要复用，而不是另开一个进程。
     // 只认本窗格自己的会话（paneId 唯一）——一个项目可以开多个窗格，
-    // 若按「项目 + 目录」匹配，第二个窗格会 attach 到第一个的 pty，两个视图互串
+    // 若按「项目 + 目录」匹配，第二个窗格会 attach 到第一个的 pty，两个视图互串。
+    // 也不能拿目录当匹配条件：会话可能被用户 cd 到别的目录（cwd 跟随 shell 实时变），
+    // 按目录匹配会把好好活着的会话误判成孤儿关掉
     const existing = await window.gitReport.terminalList()
     const mine = (existing?.sessions || []).filter((s) => s.paneId && s.paneId === pane.paneId)
-    const hit = mine.find((s) => !s.exited && s.cwd === pane.cwd)
-    // 本窗格名下但目录已不是当前目录的会话（项目目录改过）：留在旧目录里的孤儿，先关掉
+    const hit = mine.find((s) => !s.exited)
+    // 本窗格名下其余的只能是已退出未清走的残留，顺手清掉
     for (const stale of mine) {
       if (stale.id !== hit?.id) await window.gitReport.terminalClose(stale.id).catch(() => {})
     }
@@ -189,7 +196,8 @@ async function ensureSession() {
       term.reset()
       term.write(res.output || '')
       pendingReplay = false
-      reportSession({ sessionId: hit.id, shellLabel: hit.shellLabel, pid: hit.pid, exited: false, exitCode: null })
+      // sessionCwd 取会话当前目录：切页期间用户 cd 过的话，标题直接跟上
+      reportSession({ sessionId: hit.id, sessionCwd: hit.cwd, shellLabel: hit.shellLabel, pid: hit.pid, exited: false, exitCode: null })
       term.focus()
       return
     }
@@ -205,6 +213,7 @@ async function ensureSession() {
     if (!res?.ok) throw new Error(res?.error || '创建终端会话失败')
     reportSession({
       sessionId: res.session.id,
+      sessionCwd: res.session.cwd,
       shellLabel: res.session.shellLabel,
       pid: res.session.pid,
       exited: false,
@@ -220,7 +229,7 @@ async function ensureSession() {
 async function restart() {
   const sid = props.pane.sessionId
   if (sid) await window.gitReport.terminalClose(sid).catch(() => {})
-  reportSession({ sessionId: '', exited: false, exitCode: null })
+  reportSession({ sessionId: '', sessionCwd: '', exited: false, exitCode: null })
   error.value = ''
   if (term) term.reset()
   await ensureSession()
@@ -274,7 +283,12 @@ onMounted(async () => {
     if (!payload || payload.sessionId !== props.pane.sessionId) return
     reportSession({ sessionId: '', exited: true, exitCode: null })
   })
-  disposers = [offData, offExit, offClosed]
+  // shell 里 cd → 主进程从输出流解出新目录 → 标题栏路径实时跟上
+  const offCwd = window.gitReport.onTerminalCwd((payload) => {
+    if (!payload || payload.sessionId !== props.pane.sessionId) return
+    if (payload.cwd && payload.cwd !== props.pane.sessionCwd) reportSession({ sessionCwd: payload.cwd })
+  })
+  disposers = [offData, offExit, offClosed, offCwd]
 
   if (typeof ResizeObserver !== 'undefined') {
     observer = new ResizeObserver(() => scheduleFit())
@@ -291,12 +305,13 @@ watch(() => props.pane.sessionId, (sid) => {
   if (sid) scheduleFit()
 })
 
-/** 窗格换了项目/目录：旧会话作废，按新项目重开 */
+/** 窗格换了项目/目录（项目页改了本地目录）：旧会话作废，按新项目重开。
+ *  只盯 pane.cwd（窗格归属）；shell 里 cd 走的是 sessionCwd，不会触发这里 */
 watch(() => props.pane.cwd, async (next, prev) => {
   if (!term || !prev || next === prev) return
   const sid = props.pane.sessionId
   if (sid) await window.gitReport.terminalClose(sid).catch(() => {})
-  reportSession({ sessionId: '', exited: false, exitCode: null })
+  reportSession({ sessionId: '', sessionCwd: '', exited: false, exitCode: null })
   term.reset()
   await ensureSession()
 })

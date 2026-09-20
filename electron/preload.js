@@ -111,6 +111,8 @@ contextBridge.exposeInMainWorld('gitReport', {
   onTerminalData: (cb) => subscribe('terminal:data', cb),
   onTerminalExit: (cb) => subscribe('terminal:exit', cb),
   onTerminalClosed: (cb) => subscribe('terminal:closed', cb),
+  // shell 内 cd 后的工作目录上报（主进程从 OSC 7 / OSC 9;9 解出）
+  onTerminalCwd: (cb) => subscribe('terminal:cwd', cb),
   // 本地调试（项目根目录 start.bat 探测 / 运行 / 生成模板）
   debugStatus: (dir) => ipcRenderer.invoke('debug:status', dir),
   debugRun: (dir) => ipcRenderer.invoke('debug:run', dir),

@@ -14,7 +14,10 @@
  * - 输出经 setEmitter 注入的 broadcast 推给主窗口；会话仍在但窗口已销毁时不报错
  * - stop() 为同步整树终止，供 app 退出钩子使用（与 harness/git 服务同约定）
  * - 安全：pty 内的命令以当前用户权限直接执行，不经过 Harness 沙箱与审批；
- *   不注入任何自动执行的命令，只把工作目录设为项目目录
+ *   不注入任何用户命令，只把工作目录设为项目目录。PowerShell 家族额外注入一个
+ *   **prompt 包装钩子**（见 CWD_HOOK_PS）：每次出提示符前把当前目录以 OSC 9;9
+ *   发给终端，窗格标题栏才能跟着 cd 实时更新（pwsh/PS5.1 自己都不发这个序列，
+ *   实测连设 WT_SESSION 也不发；ConPTY 会原样放行该序列）
  */
 const { spawn } = require('child_process')
 const fs = require('fs')
@@ -108,12 +111,45 @@ function resolveShell(preferred) {
   return { path: found, args: ['-l'], label: path.basename(found) }
 }
 
-/** 各 shell 的启动参数：只抑制 banner/提示，不执行任何用户未输入的命令 */
+/**
+ * PowerShell 家族的终端集成钩子：包一层全局 prompt，在每次出提示符前把当前
+ * 文件系统目录以 OSC 9;9（ConEmu 约定）发给终端。要点：
+ * - 只包 prompt（先把用户/默认的 prompt 存起来再转发），不改用户提示符样式，
+ *   也不执行任何用户命令
+ * - 用 -EncodedCommand（UTF-16LE base64）下发而不是 -Command：base64 是无空格
+ *   单参数，不会被 node-pty 在 Windows 上拼命令行时的引号转义搞坏
+ * - 用户会话内再手动开嵌套 pwsh 时钩子不生效（嵌套层没有这些参数）——
+ *   标题停在进入嵌套前的目录，与 Windows Terminal 的 shell 集成同一局限
+ */
+const CWD_HOOK_PS = [
+  "$__devpmPrompt = $function:prompt",
+  'function global:prompt {',
+  '  $__e = [char]27',
+  "  $__p = ''",
+  '  try { $__p = [string]$executionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath } catch {}',
+  '  try {',
+  '    [Console]::Out.Write($__e + "]9;9;`"" + $__p + "`"" + $__e + "\\")',
+  '    [Console]::Out.Flush()',
+  '  } catch {}',
+  '  if ($__devpmPrompt) { & $__devpmPrompt } else { "PS $__p> " }',
+  '}',
+].join('\n')
+
+let cwdHookEncodedCache = ''
+/** 钩子的 -EncodedCommand 形态（惰性算一次） */
+function cwdHookEncoded() {
+  if (!cwdHookEncodedCache) cwdHookEncodedCache = Buffer.from(CWD_HOOK_PS, 'utf16le').toString('base64')
+  return cwdHookEncodedCache
+}
+
+/** 各 shell 的启动参数：只抑制 banner/提示；PowerShell 家族额外注入目录上报钩子 */
 function shellArgsFor(shellPath) {
   const base = path.basename(shellPath).toLowerCase()
   if (base.startsWith('pwsh') || base === 'powershell.exe') {
-    // -NoLogo 去掉版权横幅；保留用户 profile（他们熟悉的环境不能被剥夺）
-    return ['-NoLogo']
+    // -NoLogo 去掉版权横幅；保留用户 profile（他们熟悉的环境不能被剥夺）。
+    // -NoExit + -EncodedCommand：先跑上面那段 prompt 钩子再进入交互（profile 在
+    // 钩子之前加载，所以用户自定义的 prompt 会被包住而不是被覆盖）
+    return ['-NoLogo', '-NoExit', '-EncodedCommand', cwdHookEncoded()]
   }
   return []
 }
@@ -186,6 +222,66 @@ function appendOutput(session, data) {
   session.lastActivity = Date.now()
 }
 
+// ─── 工作目录感知：从 pty 输出流里挑出 OSC 7 / OSC 9;9 ───
+// OSC 7 的载荷是 file:// URL（macOS/Linux 的 zsh/bash 常用）；
+// OSC 9;9 的载荷是 Windows 路径，ConEmu 约定带引号：ESC]9;9;"D:\x"ESC\
+const OSC_CWD_SOURCE = '\\x1b\\](?:7;(file://[^\\x07\\x1b]*)|9;9;([^\\x07\\x1b]*))(?:\\x07|\\x1b\\\\)'
+
+/** file:// URL → 本地路径；盘符路径归一成反斜杠（展示口径与 OSC 9;9 一致）；解码失败返回 null */
+function decodeOscFileUrl(url) {
+  try {
+    let p = decodeURIComponent(String(url).replace(/^file:\/\/[^/]*/, ''))
+    if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1).replace(/\//g, '\\')
+    return p
+  } catch {
+    return null
+  }
+}
+
+/** OSC 9;9 载荷 → 路径（去 ConEmu 引号）；空串返回 null */
+function decodeOsc99Payload(raw) {
+  let p = String(raw).trim()
+  if (p.length >= 2 && p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1)
+  return p || null
+}
+
+/** 是否接受为窗格展示目录：只要「绝对路径且不含控制字符」即可，不做磁盘存在性
+ *  校验——存在性检查在死 UNC 上会拖住数据链路，而 shell 本身 cd 不进不存在的目录 */
+function plausibleCwd(p) {
+  return !!p && p.length <= 1024 && !/[\x00-\x1f]/.test(p) && path.isAbsolute(p)
+}
+
+/**
+ * 建一个跨数据块的工作目录提取器（绑定到会话）。
+ * 转义序列可能被 node-pty 的 onData 任意切块，所以匹配失败时保留「最后一个 ESC
+ * 之后的部分」到下一块再拼；保留超过单个合法 OSC 长度还没等到终结符，说明那是
+ * 正文里的其它转义序列，整段丢弃防积压。目录确实变化时更新 session.cwd 并广播。
+ */
+function createCwdTracker(session) {
+  let pending = ''
+  const re = new RegExp(OSC_CWD_SOURCE, 'g')
+  return function feed(chunk) {
+    if (!pending && !chunk.includes('\x1b')) return
+    pending += chunk
+    if (pending.length > 8192) pending = pending.slice(-2048)
+    re.lastIndex = 0
+    let match
+    let lastEnd = 0
+    while ((match = re.exec(pending))) {
+      const raw = match[1] ? decodeOscFileUrl(match[1]) : decodeOsc99Payload(match[2])
+      if (plausibleCwd(raw) && raw !== session.cwd) {
+        session.cwd = raw
+        emit('terminal:cwd', { sessionId: session.id, cwd: raw })
+      }
+      lastEnd = re.lastIndex
+    }
+    const rest = lastEnd ? pending.slice(lastEnd) : pending
+    const esc = rest.lastIndexOf('\x1b')
+    pending = esc === -1 ? '' : rest.slice(esc)
+    if (pending.length > 2048) pending = ''
+  }
+}
+
 /**
  * 创建会话。
  * options: { paneId, projectId, projectName, cwd, cols, rows, shellId }
@@ -248,7 +344,10 @@ function create(options = {}) {
   }
   sessions.set(id, session)
 
+  // 从输出流里跟踪工作目录（OSC 7 / OSC 9;9）：会话 cwd 与窗格标题因此能跟着 cd 走
+  const trackCwd = createCwdTracker(session)
   term.onData((data) => {
+    trackCwd(data)
     appendOutput(session, data)
     // 会话回放靠 attach；实时输出只推给已附加的会话（渲染层用同一 sessionId 区分窗格）
     emit('terminal:data', { sessionId: id, data })
@@ -399,6 +498,10 @@ module.exports = {
   resize,
   close,
   stop,
+  createCwdTracker,
+  decodeOscFileUrl,
+  decodeOsc99Payload,
+  CWD_HOOK_PS,
   OUTPUT_LIMIT,
   MAX_SESSIONS,
 }
