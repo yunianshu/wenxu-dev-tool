@@ -27,8 +27,14 @@ const CONTENT_RATIO = 944 / 1024
 const ICO_SIZES = [256, 128, 64, 48, 32, 24, 16]
 /** 圆角外颜色扩散层数：降采样最多取到边界外 2~3 像素，8 层留足余量 */
 const BLEED_LAYERS = 8
-/** 外围白色判定阈值 */
-const WHITE = 238
+/**
+ * 背景判定：高亮度 + 低饱和度。
+ * 不能只看「是否纯白」——3D 风格设计稿的图标外围常带投影/光晕，是浅灰而非纯白，
+ * 按纯白泛洪会在圆角外留下一圈灰白残留。图标本体是饱和的青绿，不会被误判；
+ * 图标内部的高亮低饱和区域（白色面板、浅灰文字条）则因不与画布边界连通而不受泛洪影响。
+ */
+const BG_BRIGHTNESS = 180
+const BG_SATURATION = 0.16
 
 function decode(file) {
   const img = nativeImage.createFromPath(file)
@@ -37,17 +43,25 @@ function decode(file) {
   return { w, h, buf: Buffer.from(img.toBitmap()) } // BGRA
 }
 
-function isWhite(buf, w, x, y) {
+/** 该像素是否属于图标之外的背景（纯白、浅灰投影、光晕） */
+function isBackground(buf, w, x, y) {
   const o = (y * w + x) * 4
-  return buf[o] > WHITE && buf[o + 1] > WHITE && buf[o + 2] > WHITE
+  const b = buf[o]
+  const g = buf[o + 1]
+  const r = buf[o + 2]
+  const max = r > g ? (r > b ? r : b) : (g > b ? g : b)
+  const min = r < g ? (r < b ? r : b) : (g < b ? g : b)
+  if (max === 0) return true
+  const brightness = 0.299 * r + 0.587 * g + 0.114 * b
+  return brightness > BG_BRIGHTNESS && (max - min) / max < BG_SATURATION
 }
 
-/** 非白内容包围盒。圆角矩形的首尾行仍是内容行，包围盒不会被圆角削掉 */
+/** 内容包围盒（背景之外的图标本体）。圆角矩形的首尾行仍是内容行，包围盒不会被圆角削掉 */
 function contentBox({ w, h, buf }) {
   let x0 = w; let y0 = h; let x1 = -1; let y1 = -1
   for (let y = 0; y < h; y += 1) {
     for (let x = 0; x < w; x += 1) {
-      if (isWhite(buf, w, x, y)) continue
+      if (isBackground(buf, w, x, y)) continue
       if (x < x0) x0 = x
       if (x > x1) x1 = x
       if (y < y0) y0 = y
@@ -69,7 +83,7 @@ function outsideMask(src, box) {
   const push = (lx, ly) => {
     const i = ly * S + lx
     if (outside[i]) return
-    if (!isWhite(buf, w, x0 + lx, y0 + ly)) return
+    if (!isBackground(buf, w, x0 + lx, y0 + ly)) return
     outside[i] = 1
     stack.push(i)
   }
