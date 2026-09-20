@@ -103,11 +103,7 @@ import { ArrowDown, Plus } from '@element-plus/icons-vue'
 import TerminalPane from '../components/TerminalPane.vue'
 import { state } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
-import { saveUiPrefs } from '../utils/ui-prefs'
-
-/** 终端字号范围，与主进程 ui-prefs.js 的 normalize 边界保持一致 */
-const FONT_SIZE_MIN = 11
-const FONT_SIZE_MAX = 22
+import { FONT_SIZE_MIN, FONT_SIZE_MAX, stepTerminalFontSize } from '../utils/ui-prefs'
 
 /** 网格预设：列 × 行 */
 const GRID_PRESETS = {
@@ -120,14 +116,8 @@ const MIN_SHARE = 0.15
 
 const fontSize = computed(() => state.ui.terminalFontSize)
 
-/** 调字号：各窗格 watch 到变化后自行重排并同步 pty 行列数；落盘失败不阻断调整 */
-function stepFontSize(delta) {
-  const current = state.ui.terminalFontSize
-  const next = Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, current + delta))
-  if (next === current) return
-  state.ui.terminalFontSize = next
-  saveUiPrefs()?.catch((error) => console.error('终端字号保存失败', error))
-}
+/** 工具栏里的快捷调整；同一逻辑也挂在设置页「界面」分区 */
+const stepFontSize = stepTerminalFontSize
 /** 最多同屏窗格数（与文档一致）；超过这个数就不再允许添加 */
 const MAX_PANES = 4
 

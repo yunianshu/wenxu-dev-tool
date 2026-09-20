@@ -1031,11 +1031,13 @@ body {
 .settings-about { max-width: 760px; padding: 28px 32px; }
 .settings-about h2 { margin: 4px 0 8px; }
 .settings-about > p { color: var(--text-muted); line-height: 1.7; }
-.close-behavior { margin: 22px 0 0; padding-top: 18px; border-top: 1px solid var(--line); }
-.close-behavior .cb-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
-.close-behavior .cb-head strong { color: #343c47; font-size: 13px; }
-.close-behavior .cb-head span { color: var(--brand-text-sub); font-size: 13px; }
-.close-behavior .field-hint { max-width: 620px; }
+/* 设置项：标题行 + 控件；项与项之间用细线分隔，首个不画线 */
+.settings-item { margin: 22px 0 0; padding-top: 18px; border-top: 1px solid var(--line); }
+.settings-item:first-of-type { margin-top: 0; padding-top: 0; border-top: 0; }
+.settings-item-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+.settings-item-head strong { color: #343c47; font-size: 13px; }
+.settings-item-head span { color: var(--brand-text-sub); font-size: 13px; }
+.settings-item .field-hint { max-width: 620px; }
 /* 关闭询问弹窗（ElMessageBox）：说明文字与「记住选择」复选框的排版 */
 .close-ask { margin-top: 2px; }
 .close-ask-text { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.7; }
@@ -1154,4 +1156,14 @@ button:focus-visible, [role='button']:focus-visible, .el-button:focus-visible, .
   --el-button-hover-text-color: var(--el-color-danger);
   --el-button-hover-border-color: var(--el-color-danger);
   --el-button-hover-bg-color: #fef0f0;
+}
+
+/* 字号调节控件（设置页「界面」分区用；终端工作台工具栏是更紧凑的同类控件） */
+.font-size-control { display: flex; align-items: center; gap: 8px; }
+.font-size-value {
+  min-width: 22px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }

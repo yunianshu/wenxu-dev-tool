@@ -330,17 +330,23 @@
       </div>
     </el-card>
 
-    <section v-show="activeSection === 'about'" class="workspace-panel settings-about">
-      
-      <h2>Personnel PLM</h2>
-      <p>项目资料、报告记录和部署配置默认保存在本机。Git、AI 与部署都是按需启用的项目能力。</p>
-      <dl class="project-facts">
-        <div><dt>版本</dt><dd>{{ appVersion }} <el-button link type="primary" @click="$emit('show-changelog')">查看更新日志</el-button></dd></div>
-        <div><dt>平台</dt><dd>Windows / macOS / Linux</dd></div>
-        <div><dt>数据方式</dt><dd>本地优先</dd></div>
-      </dl>
-      <div class="close-behavior">
-        <div class="cb-head">
+    <!-- 界面：全局外观与行为偏好（与业务无关，不随项目变化） -->
+    <section v-show="activeSection === 'ui'" class="workspace-panel settings-ui">
+      <div class="settings-item">
+        <div class="settings-item-head">
+          <strong>终端字号</strong>
+          <span>终端工作台里的文字大小（{{ FONT_SIZE_MIN }}–{{ FONT_SIZE_MAX }}px），改完立即生效</span>
+        </div>
+        <div class="font-size-control">
+          <el-button :disabled="fontSize <= FONT_SIZE_MIN" title="缩小终端字号" @click="stepFontSize(-1)">A－</el-button>
+          <span class="font-size-value">{{ fontSize }}</span>
+          <el-button :disabled="fontSize >= FONT_SIZE_MAX" title="放大终端字号" @click="stepFontSize(1)">A＋</el-button>
+          <el-button link type="primary" :disabled="fontSize === 13" @click="resetFontSize">恢复默认</el-button>
+        </div>
+      </div>
+
+      <div class="settings-item">
+        <div class="settings-item-head">
           <strong>窗口关闭行为</strong>
           <span>点击窗口右上角关闭按钮（×）时：</span>
         </div>
@@ -350,6 +356,17 @@
           @update:model-value="saveCloseAction"
         />
       </div>
+    </section>
+
+    <section v-show="activeSection === 'about'" class="workspace-panel settings-about">
+
+      <h2>Personnel PLM</h2>
+      <p>项目资料、报告记录和部署配置默认保存在本机。Git、AI 与部署都是按需启用的项目能力。</p>
+      <dl class="project-facts">
+        <div><dt>版本</dt><dd>{{ appVersion }} <el-button link type="primary" @click="$emit('show-changelog')">查看更新日志</el-button></dd></div>
+        <div><dt>平台</dt><dd>Windows / macOS / Linux</dd></div>
+        <div><dt>数据方式</dt><dd>本地优先</dd></div>
+      </dl>
     </section>
   </div>
 </template>
@@ -362,6 +379,7 @@ import { useTopbarReady } from '../composables/useTopbarReady'
 import { useProjects } from '../composables/useProjects'
 import { toPlain } from '../utils/ipc'
 import { shortPath, pathKey } from '../utils/path'
+import { FONT_SIZE_MIN, FONT_SIZE_MAX, stepTerminalFontSize, resetTerminalFontSize } from '../utils/ui-prefs'
 defineEmits(['show-changelog'])
 
 const topbarReady = useTopbarReady()
@@ -370,13 +388,19 @@ const props = defineProps({
   initialSection: {
     type: String,
     default: 'ai',
-    validator: (value) => ['ai', 'git', 'identity', 'fill', 'about'].includes(value),
+    validator: (value) => ['ai', 'git', 'identity', 'fill', 'ui', 'about'].includes(value),
   },
 })
 const { loadProjects } = useProjects()
 
 /** 由 vite define 从 package.json 注入（见 vite.config.js） */
 const appVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '—'
+
+// ---------- 界面 ----------
+/** 终端字号：与终端工作台工具栏共用同一份 state 与落盘逻辑，两处永远一致 */
+const fontSize = computed(() => state.ui.terminalFontSize)
+const stepFontSize = stepTerminalFontSize
+const resetFontSize = resetTerminalFontSize
 
 // ---------- 窗口关闭行为（主进程 close 拦截读取同一 closeAction 配置） ----------
 const CLOSE_ACTION_OPTIONS = [
@@ -403,6 +427,7 @@ const SETTING_SECTIONS = [
   { label: 'Git 活动', value: 'git' },
   { label: '个人身份', value: 'identity' },
   { label: '一键填报', value: 'fill' },
+  { label: '界面', value: 'ui' },
   { label: '应用信息', value: 'about' },
 ]
 const activeSection = ref(props.initialSection)
