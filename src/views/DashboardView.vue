@@ -2,14 +2,11 @@
   <div class="page dashboard-page">
     <!-- 页头上提到应用顶栏；标题固定为「工作台」（原先选中项目后标题会被项目名顶替），
          项目名放在标题旁的下拉里，既显示当前在看哪个项目，也保留了切换入口 -->
+    <!-- 工作台是整个应用的总览，不针对某个项目：这里不再放项目切换器与项目入口，
+         要看单个项目去「项目」页 -->
     <Teleport v-if="topbarReady" to="#app-topbar-slot">
       <div class="topbar-page">
-        <div class="topbar-title-group">
-          <h1 class="topbar-page-title">工作台</h1>
-          <TopbarProjectSelect />
-        </div>
-        <el-button v-if="currentProject" @click="$emit('navigate', 'projects')">查看项目资料</el-button>
-        <el-button v-else type="primary" @click="$emit('create-project')"><el-icon><Plus /></el-icon>创建项目</el-button>
+        <h1 class="topbar-page-title">工作台</h1>
       </div>
     </Teleport>
 
@@ -55,37 +52,15 @@
         </div>
       </section>
 
-      <div class="dashboard-grid">
-        <section class="workspace-panel focus-panel">
-          <div class="section-heading"><div><h2>{{ currentProject ? '当前项目' : '项目概览' }}</h2></div></div>
-          <template v-if="currentProject">
-            <div class="focus-project-title">{{ currentProject.name }}</div>
-            <dl class="focus-facts">
-              <div><dt>状态</dt><dd>{{ projectStatusLabel(currentProject.status) }}</dd></div>
-              <div><dt>本地目录</dt><dd :title="currentProject.localPath">{{ currentProject.localPath || '未关联' }}</dd></div>
-              <div><dt>项目备注</dt><dd>{{ currentProject.notes ? '已填写' : '待补充' }}</dd></div>
-            </dl>
-            <el-button class="full-button" @click="$emit('navigate', 'projects')">完善项目资料</el-button>
-          </template>
-          <template v-else>
-            <div class="project-mini-list">
-              <button v-for="project in state.projects.items.slice(0, 5)" :key="project.id" type="button" @click="selectProject(project.id)">
-                <span>{{ project.name }}</span><small>{{ projectStatusLabel(project.status) }}</small>
-              </button>
-            </div>
-          </template>
-        </section>
-
-        <section class="workspace-panel recent-panel">
-          <div class="section-heading"><div><h2>最近记录</h2></div></div>
-          <div v-if="recentItems.length" class="recent-list">
-            <div v-for="item in recentItems" :key="item.key" class="recent-row">
-              <span class="recent-type">{{ item.type }}</span><strong>{{ item.title }}</strong><span>{{ formatRecordTime(item.time) }}</span>
-            </div>
+      <section class="workspace-panel recent-panel">
+        <div class="section-heading"><div><h2>最近记录</h2></div></div>
+        <div v-if="recentItems.length" class="recent-list">
+          <div v-for="item in recentItems" :key="item.key" class="recent-row">
+            <span class="recent-type">{{ item.type }}</span><strong>{{ item.title }}</strong><span>{{ formatRecordTime(item.time) }}</span>
           </div>
-          <p v-else class="quiet-empty">暂无记录</p>
-        </section>
-      </div>
+        </div>
+        <p v-else class="quiet-empty">暂无记录</p>
+      </section>
     </template>
 
     <EmptyState
@@ -98,16 +73,12 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import TopbarProjectSelect from '../components/TopbarProjectSelect.vue'
 import EmptyState from '../components/EmptyState.vue'
 import { state } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
-import { useProjects } from '../composables/useProjects'
-import { projectStatusLabel } from '../utils/project-context'
 import { todayStr, addDays } from '../utils/date'
 
 defineEmits(['navigate', 'create-project'])
-const { currentProject, selectProject } = useProjects()
 /** 顶栏是否在位（沉浸全屏时整个顶栏被卸载，此时不投递页头） */
 const topbarReady = useTopbarReady()
 

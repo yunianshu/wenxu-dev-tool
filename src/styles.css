@@ -846,7 +846,6 @@ body {
 .section-heading h2, .section-heading h3 { margin: 0; color: #202631; font-size: 16px; }
 .section-note { color: var(--brand-text-sub); font-size: 13px; }
 .quiet-empty { margin: 0; color: var(--brand-text-sub); font-size: 14px; }
-.full-button { width: 100%; }
 
 /* 工作台 */
 .metric-strip {
@@ -900,31 +899,8 @@ body {
   50% { margin-left: 65% }
   100% { margin-left: 0 }
 }
-/* 工作台两栏：左「当前项目」窄、右「最近记录」宽（原为左能力列表宽、右项目窄） */
-.dashboard-grid { display: grid; grid-template-columns: minmax(280px, .85fr) minmax(0, 1.6fr); gap: 16px; margin-bottom: 16px; }
-.capability-panel, .focus-panel, .recent-panel { padding: 20px; }
-.capability-list { display: flex; flex-direction: column; }
-.capability-row {
-  width: 100%; min-height: 76px; padding: 15px 4px;
-  display: grid; grid-template-columns: 42px minmax(0, 1fr) auto 24px; align-items: center; gap: 12px;
-  border: 0; border-bottom: 1px solid #edf0f2; background: transparent; color: inherit; text-align: left; cursor: pointer;
-}
-.capability-row:last-child { border-bottom: 0; }
-.capability-row:hover { color: var(--brand-accent); }
-.capability-index { color: var(--brand-text-sub); font-family: var(--brand-mono); font-size: 12px; }
-.capability-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.capability-copy strong { color: #242b36; font-size: 14px; }
-.capability-copy small { color: var(--text-muted); font-size: 13px; }
-.capability-status { max-width: 170px; color: var(--brand-text-sub); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.focus-project-title { margin-top: 19px; font-size: 20px; font-weight: 700; color: #1d2630; }
-.focus-description { margin: 8px 0 18px; color: var(--text-muted); font-size: 14px; line-height: 1.65; }
-.focus-facts { margin: 0 0 18px; }
-.focus-facts div { padding: 9px 0; display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 10px; border-top: 1px solid #edf0f2; }
-.focus-facts dt { color: var(--brand-text-sub); font-size: 12px; }
-.focus-facts dd { margin: 0; overflow: hidden; color: var(--ink-soft); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.project-mini-list { display: flex; flex-direction: column; }
-.project-mini-list button { padding: 11px 0; display: flex; justify-content: space-between; border: 0; border-top: 1px solid #edf0f2; background: transparent; color: #343c48; cursor: pointer; }
-.project-mini-list small { color: #9299a4; }
+/* 工作台是应用级总览，各区块全宽排列，已无左右两栏 */
+.recent-panel { padding: 20px; }
 .recent-list { display: flex; flex-direction: column; }
 .recent-row { min-height: 44px; display: grid; grid-template-columns: 68px minmax(0, 1fr) auto; align-items: center; gap: 12px; border-bottom: 1px solid var(--line-soft); font-size: 13px; }
 .recent-row:last-child { border-bottom: 0; }
@@ -1078,7 +1054,6 @@ button:focus-visible, [role='button']:focus-visible, .el-button:focus-visible, .
 @media (max-width: 1180px) {
   :root { --sidebar-width: 198px; }
   .content-area { padding: 24px; }
-  .dashboard-grid { grid-template-columns: 1fr; }
   .metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .metric-item:nth-child(2) { border-right: 0; }
   .metric-item:nth-child(-n+2) { border-bottom: 1px solid #edf0f2; }
@@ -1093,7 +1068,7 @@ button:focus-visible, [role='button']:focus-visible, .el-button:focus-visible, .
 /* ---------- 点击区域底线：主要操作与菜单项不小于 40px ---------- */
 .el-button--large, .el-button--primary { min-height: 40px; }
 .app-menu .el-menu-item { min-height: 40px; }
-.project-list-item, .capability-row, .recent-row { min-height: var(--row-h); }
+.project-list-item, .recent-row { min-height: var(--row-h); }
 
 /* 报告页：未生成报告时只有「历史记录」一个页签，隐藏页签条避免孤立页签 */
 .report-tabs.tabs-lone > .el-tabs__header { display: none; }
@@ -1135,17 +1110,6 @@ button:focus-visible, [role='button']:focus-visible, .el-button:focus-visible, .
 }
 .metric-item { padding: 14px 32px; }
 .metric-item strong { font-size: 26px; }
-
-/* 能力列表：表格式行 */
-.capability-list { padding: 0; }
-.capability-row {
-  min-height: 44px;
-  padding: 11px 32px;
-  grid-template-columns: 44px minmax(0, 1fr) 160px 20px;
-}
-.capability-row:last-child { border-bottom: 0; }
-.capability-copy strong { font-size: 14px; }
-.capability-status { max-width: none; text-align: right; }
 
 /* 最近记录 */
 .recent-panel .section-heading { padding-bottom: 14px; }
