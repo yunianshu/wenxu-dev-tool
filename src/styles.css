@@ -900,7 +900,8 @@ body {
   50% { margin-left: 65% }
   100% { margin-left: 0 }
 }
-.dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(300px, .75fr); gap: 16px; margin-bottom: 16px; }
+/* 工作台两栏：左「当前项目」窄、右「最近记录」宽（原为左能力列表宽、右项目窄） */
+.dashboard-grid { display: grid; grid-template-columns: minmax(280px, .85fr) minmax(0, 1.6fr); gap: 16px; margin-bottom: 16px; }
 .capability-panel, .focus-panel, .recent-panel { padding: 20px; }
 .capability-list { display: flex; flex-direction: column; }
 .capability-row {
