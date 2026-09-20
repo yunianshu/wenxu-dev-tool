@@ -33,8 +33,15 @@
             >
               <el-radio-button :value="opt.value" :aria-label="opt.label">
                 <svg class="grid-icon" viewBox="0 0 16 16" aria-hidden="true">
-                  <rect x="1.5" y="1.5" width="13" height="13" rx="2.5" />
-                  <path :d="opt.lines" />
+                  <rect
+                    v-for="(cell, i) in opt.cells"
+                    :key="i"
+                    :x="cell[0]"
+                    :y="cell[1]"
+                    :width="cell[2]"
+                    :height="cell[3]"
+                    rx="1.5"
+                  />
                 </svg>
               </el-radio-button>
             </el-tooltip>
@@ -115,14 +122,15 @@ const GRID_PRESETS = {
 }
 const MIN_SHARE = 0.15
 
-/** 分屏方式选项：模板里统一画外框，这里只给各选项的分割线 */
+/** 分屏方式选项：图标用实心块直接画格子（cells 为 [x, y, w, h]），
+ *  描边线条在 16px 下会被亚像素冲淡，实心块无论多小都清晰 */
 const GRID_OPTIONS = [
-  // 自动：内嵌小方框，示意「按窗格数自行排列」
-  { value: 'auto', label: '自动', lines: 'M6 6h4v4H6z' },
-  { value: '1x2', label: '左右', lines: 'M8 1.5v13' },
-  { value: '2x1', label: '上下', lines: 'M1.5 8h13' },
-  { value: '2x2', label: '四宫格', lines: 'M8 1.5v13M1.5 8h13' },
-  { value: '3x1', label: '三宫格', lines: 'M5.83 1.5v13M10.17 1.5v13' },
+  // 自动：单块满格，示意「一个容器、布局自行决定」
+  { value: 'auto', label: '自动', cells: [[0, 0, 16, 16]] },
+  { value: '1x2', label: '左右', cells: [[0, 0, 7, 16], [9, 0, 7, 16]] },
+  { value: '2x1', label: '上下', cells: [[0, 0, 16, 7], [0, 9, 16, 7]] },
+  { value: '2x2', label: '四宫格', cells: [[0, 0, 7, 7], [9, 0, 7, 7], [0, 9, 7, 7], [9, 9, 7, 7]] },
+  { value: '3x1', label: '三宫格', cells: [[0, 0, 4, 16], [6, 0, 4, 16], [12, 0, 4, 16]] },
 ]
 /** 最多同屏窗格数（与文档一致）；超过这个数就不再允许添加 */
 const MAX_PANES = 4
@@ -513,16 +521,10 @@ function focusProject(projectId) {
   min-height: 36px;
   padding: 0 8px;
 }
-/* 图标在 16px 尺寸下 1.3px 的描边会被亚像素渲染冲淡（横线尤其明显，所以「上下」
-   那条最容易显虚），放大到 18px 并把描边加到 1.5px，线条才立得住 */
-.grid-icon { display: block; width: 18px; height: 18px; }
-.grid-icon rect, .grid-icon path {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linejoin: round;
-  stroke-linecap: round;
-}
+/* 图标用实心块直接画格子：描边线条在这个尺寸下会被亚像素冲淡（横线尤其明显），
+   实心块无论多小都清晰——VS Code / Windows 的分屏图标也是这个做法 */
+.grid-icon { display: block; width: 16px; height: 16px; }
+.grid-icon rect { fill: currentColor; }
 
 .terminal-hint,
 .terminal-empty {
