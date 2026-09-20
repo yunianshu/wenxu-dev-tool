@@ -70,25 +70,28 @@ const PROBE = `(async () => {
   item.click()
   await sleep(2600)
 
-  // T2：工具栏里各控件等高
+  // T2：工具栏里各控件等高（分屏分段控件的边框在 .el-radio-group 外壳上，量外壳）
   const toolbar = document.querySelector('.terminal-toolbar')
-  out.heights = [...toolbar.querySelectorAll('.el-button, .el-radio-button__inner')]
+  out.heights = [...toolbar.querySelectorAll('.el-button, .el-radio-group')]
     .map((el) => Math.round(el.getBoundingClientRect().height))
   // T2b：分屏方式各段等宽（原先按文字长短排成参差）
   out.radioWidths = [...toolbar.querySelectorAll('.el-radio-button__inner')]
     .map((el) => Math.round(el.getBoundingClientRect().width))
   // T2d：改为纯图标 + hover 提示后，按钮内不应再有可见文字
   out.radioTexts = [...toolbar.querySelectorAll('.el-radio-button__inner')].map((el) => el.textContent.trim())
-  // T2e：分段控件四边边框是否可见。Element Plus 2.9 用 outline 画 radio-button 边框
-  //      （不是 border），相邻段共享的竖线是两条 outline 叠加所以明显，上下只有单条、
-  //      颜色又浅，最容易「看不见上下框」。
+  // T2e：分段控件边框可见性。EP 2.9 给每段单独画 outline（上下单条 1px 浅灰看不见，
+  //      竖线两条叠加显得深），已改为整组 border 外框 + 段间 inset 分隔线。
+  //      外框必须画在 group 自身 border box 内：顶栏插槽 overflow:auto hidden 会裁掉
+  //      组外扩的上下边（box-shadow/outline 方案实测翻车）。
   out.radioBorder = (() => {
-    const el = toolbar.querySelector('.el-radio-button__inner')
-    if (!el) return null
-    const cs = getComputedStyle(el)
+    const group = toolbar.querySelector('.el-radio-group')
+    const inners = [...toolbar.querySelectorAll('.el-radio-button__inner')]
+    if (!group || !inners.length) return null
+    const cs = getComputedStyle(group)
     return {
-      outline: cs.outlineWidth + ' ' + cs.outlineStyle + ' ' + cs.outlineColor,
-      borderTop: cs.borderTopWidth + ' ' + cs.borderTopStyle,
+      border: cs.borderTopWidth + ' ' + cs.borderTopStyle + ' ' + cs.borderTopColor,
+      outlineStyle: getComputedStyle(inners[0]).outlineStyle,
+      secondInnerShadow: inners[1] ? getComputedStyle(inners[1]).boxShadow : null,
     }
   })()
   out.radioIconCount = toolbar.querySelectorAll('.el-radio-button__inner .grid-icon').length
@@ -165,6 +168,12 @@ async function run() {
   assert('T2 保留可访问名（hover 提示的语义等价）',
     (r.radioAriaLabels || []).filter(Boolean).length === 5, JSON.stringify(r.radioAriaLabels))
   console.log(`  INFO  分段控件边框：${JSON.stringify(r.radioBorder)}`)
+  const rb = r.radioBorder || {}
+  assert('T2 分段控件整组外框 1px 深灰', typeof rb.border === 'string'
+    && rb.border.startsWith('1px solid') && rb.border.includes('144, 147, 153'), JSON.stringify(rb))
+  assert('T2 不再依赖每段 outline 画边框', rb.outlineStyle === 'none', JSON.stringify(rb))
+  assert('T2 段间分隔线可见', typeof rb.secondInnerShadow === 'string'
+    && rb.secondInnerShadow.includes('rgb(144, 147, 153)'), JSON.stringify(rb))
   assert('T3 改动前窗格用偏好里的 14', r.xtermBefore === 14, `实得 ${r.xtermBefore}`)
   assert('T3 设置页 +1 后为 15', r.settingsAfter === r.settingsBefore + 1, `${r.settingsBefore} → ${r.settingsAfter}`)
   assert('T3 回到终端页窗格按新字号渲染', r.xtermAfter === r.settingsAfter, `xterm=${r.xtermAfter} 期望=${r.settingsAfter}`)

@@ -507,23 +507,41 @@ function focusProject(projectId) {
       两个绿块互相抢焦点，反而看不出哪个才是主操作。
       （不用 Element Plus 的 --el-radio-button-checked-* 变量：实测在 .el-radio-group
       上覆盖不生效，这里直接命中选中态的 inner 元素）
-   ② 图标随文字色走（stroke: currentColor），选中时整块图标一起变主色。 */
+   ② 图标随文字色走（stroke: currentColor），选中时整块图标一起变主色。
+   ③ 边框自绘：Element Plus 2.9 给每段单独画 outline，相邻段两条错开叠成 2px 深竖线，
+      上下却只有单条 1px 浅灰，白底上直接消失（#b9c0ca 也救不回来，实测）。
+      改成整组 border 外框 + 段间内侧分隔线，四边同粗同色。
+      注意外框不能用 box-shadow/outline 画在组外——顶栏插槽 topbar-slot 是
+      overflow:auto hidden（横向滚动条），组外扩 1px 的上下两条边正好被纵向 hidden
+      裁掉（像素级实测过）；border 画在自身 border box 内，不受祖先裁剪影响。
+      border 占掉的 2px 用 inner 高度 36→34 补回，外壳总高与相邻按钮保持 36 齐平。 */
+.terminal-toolbar :deep(.el-radio-group) {
+  border: 1px solid #909399;
+  border-radius: var(--el-border-radius-base);
+}
+.terminal-toolbar :deep(.el-radio-button__inner) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 8px;
+  outline: none;
+}
+/* 段间分隔线：inset 画在非首段左内侧，不用 border 以免各段宽度差 1px。
+   先于选中态声明——选中段的左侧主色线（下条规则）按同特异性后者胜出盖掉它 */
+.terminal-toolbar :deep(.el-radio-button + .el-radio-button .el-radio-button__inner) {
+  box-shadow: inset 1px 0 0 #909399;
+}
 .terminal-toolbar :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
   background-color: var(--accent-soft);
   color: var(--accent-strong);
   border-color: var(--brand-accent);
   box-shadow: -1px 0 0 0 var(--brand-accent);
 }
-.terminal-toolbar :deep(.el-radio-button__inner) {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 36px;
-  padding: 0 8px;
-  /* Element Plus 2.9 用 outline 画分段控件的边框（不是 border）。
-     默认 #DCDFE6 极浅：相邻段共享的竖线是两条 outline 略微错开叠出来的，看着像 2px
-     深灰；而上下只有单条 1px，在白底上几乎消失。这里加深到与竖线视觉重量相当。 */
-  outline-color: #b9c0ca;
+/* outline 移除后保留键盘焦点指示 */
+.terminal-toolbar :deep(.el-radio-button__original-radio:focus-visible + .el-radio-button__inner) {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: -2px;
 }
 /* 图标用实心块直接画格子：描边线条在这个尺寸下会被亚像素冲淡（横线尤其明显），
    实心块无论多小都清晰——VS Code / Windows 的分屏图标也是这个做法 */
