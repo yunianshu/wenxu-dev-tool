@@ -3,6 +3,16 @@
 按版本从新到旧排列。标题里的时间是该版本发布的时刻（本地时区，精确到分钟），
 取自仓库里对应的发布提交。历史记录依据仓库提交整理，自 1.4.43 起收录；更早版本未整理。
 
+## 1.4.87 · 2026-09-21 11:17
+
+- 终端工作台：Ctrl+Enter / Shift+Enter 现在插入换行，不再把消息直接提交出去（claude
+  等 TUI 场景）。根因：xterm 的 Enter 分支只区分 Alt，这两组修饰回车也被翻成 \r，
+  claude 解析 \r 即提交；改发 LF（\n），即 claude 官方 Ctrl+J 的换行序列，任何 TUI
+  无需配置。Alt+Enter 保持 xterm 默认 ESC+\r（同为 claude 认可的换行键，/terminal-setup
+  给 VSCode 配的就是该序列）。顺带补齐 Ctrl+Shift+V 粘贴（对齐 Windows Terminal）。
+  中文输入法选词回车（isComposing / keyCode 229）不受影响；裸 Enter、Ctrl+C、Ctrl+J、
+  Shift+Tab 等原有行为经真实链路回归无变化。
+
 ## 1.4.86 · 2026-09-20 18:03
 
 - 终端工作台：在终端里 cd 之后，窗格标题栏的路径现在实时跟随。实现：PowerShell 家族
