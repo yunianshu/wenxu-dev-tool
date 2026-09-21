@@ -17,6 +17,7 @@ export const state = reactive({
     collecting: false,  // 启动预热：预收集今日提交进行中
     collectDone: 0,
     collectTotal: 0,
+    warmupDone: false,  // 启动预热已完成（失败也置位）：仓库列表自此权威
   },
   /** 应用配置 */
   config: {

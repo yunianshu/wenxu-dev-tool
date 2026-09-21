@@ -314,9 +314,13 @@ onMounted(async () => {
       state.scan.collecting = false
       // 预热结果为权威列表：按路径合并（保留已有项的 info，补齐事件流可能漏掉的）
       syncDiscoveredRepos(repos)
+      // 权威标记放列表替换之后：工作台据此发起今日提交收集，读到的必是完整列表
+      state.scan.warmupDone = true
     }).catch(() => {
       warmupActive = false
       state.scan.collecting = false
+      // 失败同样放行：不让工作台的「今日提交」永远等在加载态
+      state.scan.warmupDone = true
     })
   } catch (error) {
     console.error('初始化应用失败', error)

@@ -168,8 +168,19 @@ async function loadTodayCommits() {
   }
 }
 
-// 仓库列表由启动预热异步填充，扫描到之后才能算今日提交
-watch(() => state.discoveredRepos.length, (n) => { if (n) loadTodayCommits() })
+/**
+ * 收集必须等仓库列表权威（预热已完成且当前不在扫描）才发起：扫描是流式发现仓库的，
+ * 部分列表与预热收集的缓存 key 不同，逐次发起会各自全量跑 git log，
+ * 把 N 个仓库放大成 O(N²) 次 git 子进程（实测 78 仓库 → 3000+ 次，分钟级卡顿）。
+ * 手动重新扫描会经历 scanning true→false，同样在此收敛为一次完整收集。
+ */
+const reposAuthoritative = computed(() => state.scan.warmupDone && !state.scan.scanning)
+
+watch(reposAuthoritative, (ready) => {
+  if (!ready) return
+  if (state.discoveredRepos.length) loadTodayCommits()
+  else commitsLoading.value = false
+}, { immediate: true })
 
 onMounted(async () => {
   const [reportRows, deployRows, fillRows] = await Promise.all([
@@ -180,8 +191,6 @@ onMounted(async () => {
   reports.value = Array.isArray(reportRows) ? reportRows : []
   deployments.value = Array.isArray(deployRows) ? deployRows : []
   fillLogs.value = fillRows && fillRows.ok ? (fillRows.entries || []) : []
-  if (state.discoveredRepos.length) loadTodayCommits()
-  else commitsLoading.value = false
 })
 </script>
 
