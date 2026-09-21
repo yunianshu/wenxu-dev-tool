@@ -91,6 +91,93 @@ let fitTimer = null
 /** attach 回放到达前先清屏，避免「实时数据 + 缓冲快照」重复显示 */
 let pendingReplay = false
 
+// ─── 输出合并批写（防 TUI 帧被拆碎渲染） ───
+// ConPTY 会把 TUI（codex 等 ratatui 应用）的一帧重绘拆成多个小包送来，实测帧内
+// 间隔 p50=14ms / p90=34ms / 最长 78ms。逐包 write 会让 xterm 在包与包之间把
+// 「帧中间的过渡态」真实画出来：codex 每帧多次 hide/show 光标，部分包以
+// 「光标停在跳板位置（如行首左边缘）+ 显示」结尾，要等 3~80ms 后的下一个包
+// 才落回输入框——被渲染出来就是用户看到的「光标漂移闪烁」（codex 上游
+// #9081/#21828 每帧翻转可见性放大了它，Windows Terminal 同样受影响）。
+// 这里把输出攒起来批写：TUI 帧滚动合并，一帧只解析/渲染一次，光标只呈现帧末
+// 的合法状态（输入框插入点，与 Windows Terminal 的观感一致）。窗口按节奏自适应：
+// 距上一帧 ≤300ms 是机器连发（spinner/流式重绘，帧距实测 12~80ms），用 120ms
+// 滚动窗口把帧内撕裂全部吸收；孤立帧是人的打字回显（codex 输入框每键一帧），
+// 只合并 25ms，回显手感不变。普通日志/回显不含可见性序列，12ms 快速刷。
+const FLUSH_IDLE_MS = 12
+const TUI_BURST_GAP_MS = 300
+const TUI_BURST_HOLD_MS = 120
+const TUI_LONE_HOLD_MS = 25
+const FLUSH_HOLD_CAP_MS = 250
+const FLUSH_MAX_BYTES = 256 * 1024
+/** TUI 帧成分：光标可见性翻转 / 同步输出开关 / DECSCUSR。同步块若被当成普通
+ *  内容走 12ms 快速通道，会在帧内提前切批，把「光标停在跳板位」的 A 块单独
+ *  渲染出来（实测 38.9% 样本闪跳），必须与可见性序列同等待遇 */
+const TUI_FRAME_RE = /\x1b\[\?(?:25[hl]|2026[hl])|\x1b\[\d* q/
+let pendingChunks = []
+let pendingBytes = 0
+let flushAt = 0
+let flushTimer = null
+let holdStart = 0
+let lastTuiChunkAt = 0
+
+function flushPendingOutput() {
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
+  flushAt = 0
+  if (!pendingChunks.length || !term) return
+  const batch = pendingChunks.join('')
+  pendingChunks = []
+  pendingBytes = 0
+  if (pendingReplay) { term.reset(); pendingReplay = false }
+  term.write(batch)
+}
+
+/** 丢弃未渲染的输出：会话重开/换绑时调用，避免旧会话的残尾印到新画面上 */
+function discardPendingOutput() {
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
+  flushAt = 0
+  pendingChunks = []
+  pendingBytes = 0
+}
+
+function queueOutput(data) {
+  if (!data || !term) return
+  // 帧边界：新的同步输出块 = 上一帧已完整发出，先刷出上一批（批尾 = 上一帧的
+  // 帧末状态 = 光标落位），当前帧从空批开始攒。若按纯时间上限切批，切分点会
+  // 锁相落在「帧间过渡态」（光标停在跳板位）之后，批尾 junk 被照常渲染——
+  // 实测 8Hz 帧流下 100% 的批次都以 junk 块收尾，时间上限必须让位于帧边界。
+  // 边界可能不在 chunk 头部：ConPTY 实测会把「上一帧落位块 + 下一帧 2026h」
+  // 合并成一个 chunk 送达，所以在 chunk 内部找边界切开，界前归上一帧
+  if (pendingChunks.length) {
+    const idx = data.indexOf('\x1b[?2026h')
+    if (idx > 0) {
+      pendingChunks.push(data.slice(0, idx))
+      pendingBytes += idx
+      flushPendingOutput()
+      data = data.slice(idx)
+    } else if (idx === 0) {
+      flushPendingOutput()
+    }
+  }
+  const now = Date.now()
+  if (!pendingChunks.length) holdStart = now
+  pendingChunks.push(data)
+  pendingBytes += data.length
+  // 日志洪水不等合并窗口，立即落给 xterm（上限只可能被无渲染的极端场景触发）
+  if (pendingBytes >= FLUSH_MAX_BYTES) { flushPendingOutput(); return }
+  // 含 TUI 帧成分（可见性翻转/同步块/DECSCUSR）→ 整帧重绘的一部分：burst 节奏
+  // 下延长合并窗口等帧的后续块到齐；持续帧流最多推到 holdStart+CAP，保证画面
+  // 总会跟上。帧的收尾由上面的帧边界 junction 保证（批尾 = 帧末落位）
+  if (TUI_FRAME_RE.test(data)) {
+    const burst = lastTuiChunkAt && now - lastTuiChunkAt <= TUI_BURST_GAP_MS
+    flushAt = Math.min(Math.max(flushAt, now + (burst ? TUI_BURST_HOLD_MS : TUI_LONE_HOLD_MS)), holdStart + FLUSH_HOLD_CAP_MS)
+    lastTuiChunkAt = now
+  } else {
+    flushAt = flushAt || now + FLUSH_IDLE_MS
+  }
+  if (flushTimer) clearTimeout(flushTimer)
+  flushTimer = setTimeout(flushPendingOutput, Math.max(1, flushAt - Date.now()))
+}
+
 function reportSession(patch) {
   emit('session', { paneId: props.pane.paneId, ...patch })
 }
@@ -242,6 +329,7 @@ async function restart() {
   if (sid) await window.gitReport.terminalClose(sid).catch(() => {})
   reportSession({ sessionId: '', sessionCwd: '', exited: false, exitCode: null })
   error.value = ''
+  discardPendingOutput()
   if (term) term.reset()
   await ensureSession()
 }
@@ -283,8 +371,7 @@ onMounted(async () => {
 
   const offData = window.gitReport.onTerminalData((payload) => {
     if (!payload || payload.sessionId !== props.pane.sessionId) return
-    if (pendingReplay) { term.reset(); pendingReplay = false }
-    term.write(payload.data || '')
+    queueOutput(payload.data || '')
   })
   const offExit = window.gitReport.onTerminalExit((payload) => {
     if (!payload || payload.sessionId !== props.pane.sessionId) return
@@ -323,6 +410,7 @@ watch(() => props.pane.cwd, async (next, prev) => {
   const sid = props.pane.sessionId
   if (sid) await window.gitReport.terminalClose(sid).catch(() => {})
   reportSession({ sessionId: '', sessionCwd: '', exited: false, exitCode: null })
+  discardPendingOutput()
   term.reset()
   await ensureSession()
 })
@@ -330,6 +418,7 @@ watch(() => props.pane.cwd, async (next, prev) => {
 onBeforeUnmount(() => {
   // 只销毁视图，不关闭会话：切页后 CLI 继续在后台跑
   if (fitTimer) clearTimeout(fitTimer)
+  discardPendingOutput()
   observer?.disconnect()
   for (const off of disposers) { try { off() } catch { /* noop */ } }
   try { term?.dispose() } catch { /* noop */ }
