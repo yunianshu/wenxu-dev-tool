@@ -259,6 +259,102 @@ function buildSummaryPrompt({ projectName, version, anchorLabel, commits }) {
   ]
 }
 
+// ─────────────────────── 发布说明文件（打包脚本约定） ───────────────────────
+//
+// 部分项目的打包脚本要求「发布说明随版本提供」——如 Vantage 的 package.sh：
+// docs/release-notes-<版本>.md 缺失即中止打包。工具要完成「版本升级 → 打包」
+// 的闭环，就得在打包前把缺失的文件按约定补出来。约定探测：项目根或 docs/ 下
+// 已存在 release-notes-*.md 即认定项目遵循该约定；没有该约定的项目不做任何事。
+
+/** release-notes-<版本>.md 文件名解析（v 前缀也认，如 release-notes-v2.0.0.md）；不匹配返回 null */
+function parseNotesFileName(name) {
+  const m = /^release-notes-(v)?([\w][\w.+-]*)\.md$/.exec(String(name || ''))
+  if (!m) return null
+  return { vPrefixed: !!m[1], version: m[2] }
+}
+
+/**
+ * 探测「发布说明随版本提供」约定：先 docs/，其次项目根。
+ * 返回 { dir, relDir, vPrefixed }（relDir 为相对项目根的显示路径，根目录为空串）；
+ * vPrefixed 取该目录下所有既有文件的写法（全部带 v 才带 v），项目没有该约定时返回 null。
+ */
+function detectNotesConvention(projectDir) {
+  if (!projectDir || !fs.existsSync(projectDir)) return null
+  for (const relDir of ['docs', '']) {
+    const dir = relDir ? path.join(projectDir, relDir) : projectDir
+    let names = []
+    try {
+      if (!fs.statSync(dir).isDirectory()) continue
+      names = fs.readdirSync(dir)
+    } catch { continue }
+    const parsed = names.map(parseNotesFileName).filter(Boolean)
+    if (!parsed.length) continue
+    const vPrefixed = parsed.every((p) => p.vPrefixed)
+    return { dir, relDir, vPrefixed }
+  }
+  return null
+}
+
+/** 组装发布说明 Markdown 初稿（纯函数）：标题 + 生成说明 + 提交整理清单 */
+function buildNotesMarkdown({ appName, version, anchorLabel, commits, generatedAt }) {
+  const list = []
+  const seen = new Set()
+  for (const c of Array.isArray(commits) ? commits : []) {
+    const t = cleanSubject(c && c.subject)
+    if (!t || seen.has(t)) continue
+    seen.add(t)
+    list.push(`- ${t}`)
+  }
+  const when = String(generatedAt || '').trim()
+  const scope = `改动范围：${anchorLabel || '最近的代码提交'}，共收录 ${list.length} 条提交。`
+  return [
+    `# ${String(appName || '项目').trim()} ${version} 发布说明`,
+    '',
+    `> 本文件由 project-tool 于 ${when} 自动生成初稿，可人工润色后随代码提交。`,
+    `> ${scope}${list.length ? '' : '未采集到代码提交记录，请人工补写本次更新内容。'}`,
+    '',
+    '## 本次更新内容',
+    '',
+    ...(list.length ? list : ['（待补充）']),
+    '',
+  ].join('\n')
+}
+
+/**
+ * 确保目标版本的发布说明文件存在：项目遵循该约定且文件缺失时写一份初稿。
+ * 任何失败都不抛错（不能拖垮发布流程；约定存在但没写成功时，打包脚本会自己报缺文件）。
+ * @returns {{ convention: boolean, wrote: boolean, file: string, error: string }}
+ *          file 为相对项目根的显示路径（如 docs/release-notes-0.1.12.md）
+ */
+function ensureNotesFile(projectDir, version, opts = {}) {
+  const none = { convention: false, wrote: false, file: '', error: '' }
+  try {
+    const conv = detectNotesConvention(projectDir)
+    if (!conv) return none
+    const v = String(version || '').trim()
+    if (!v || !/^[\w][\w.+-]*$/.test(v)) return { ...none, convention: true, error: `版本号不合法：${v}` }
+    const name = `release-notes-${conv.vPrefixed ? 'v' : ''}${v}.md`
+    const relFile = conv.relDir ? `${conv.relDir}/${name}` : name
+    if (fs.existsSync(path.join(conv.dir, name))) {
+      return { convention: true, wrote: false, file: relFile, error: '' }
+    }
+    fs.writeFileSync(path.join(conv.dir, name), buildNotesMarkdown({
+      appName: opts.appName,
+      version: v,
+      anchorLabel: opts.anchorLabel || '',
+      commits: opts.commits,
+      generatedAt: opts.generatedAt || (() => {
+        const d = new Date()
+        const p = (n) => String(n).padStart(2, '0')
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+      })(),
+    }), 'utf8')
+    return { convention: true, wrote: true, file: relFile, error: '' }
+  } catch (e) {
+    return { convention: true, wrote: false, file: '', error: (e && e.message) || String(e) }
+  }
+}
+
 // ─────────────────────── 结合历史记录的编排 ───────────────────────
 
 /** 生成默认标签名：v + 版本号（去掉已有的 v 前缀与非法字符） */
@@ -417,6 +513,7 @@ module.exports = {
   isGitRepo, headCommit, headTag, latestTag, listCommits, collect,
   anchorFromRecords, cleanSubject, localSummary, sanitizePlainChinese,
   buildSummaryPrompt, hasLatin, defaultTagName,
+  parseNotesFileName, detectNotesConvention, buildNotesMarkdown, ensureNotesFile,
   // 需要历史/项目/AI 配置的编排
   captureFor, summarizeRecord, enrichRecord, createTag, toRecordFields,
 }

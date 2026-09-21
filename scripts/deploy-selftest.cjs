@@ -496,7 +496,7 @@ test('自定义：前导 / 锚定项目根，不误伤深层同名目录', () =>
       artifactDir: 'dist/pkg', upgradeScript: 'upgrade.sh',
       bootstrapJava: false, bootstrapPgdump: false,
       packageCommand: '', packageTimeoutSec: 900,
-      autoBumpVersion: true,
+      autoBumpVersion: true, autoReleaseNotes: true,
     })
     deployProjects.remove(r.id)
   })

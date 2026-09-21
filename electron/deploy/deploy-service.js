@@ -304,6 +304,26 @@ function syncProjectVersionForPackage(project, ver) {
 }
 
 /**
+ * 打包前补齐发布说明文件：部分项目的打包脚本要求发布说明随版本提供
+ * （如 Vantage 的 package.sh：docs/release-notes-<版本>.md 缺失即中止打包）。
+ * 项目遵循该约定而目标版本文件缺失时，依据本次发布采集到的提交自动生成初稿，
+ * 让「版本升级 → 打包」在工具内闭环，不必先回项目手工准备。返回日志文本（无需生成时为空）。
+ */
+function ensureReleaseNotesForPackage(project, ver, gitInfo) {
+  if ((project.scriptMode || {}).autoReleaseNotes === false) return ''
+  const ok = !!(gitInfo && gitInfo.ok && gitInfo.info)
+  const commits = ok && Array.isArray(gitInfo.info.commits) ? gitInfo.info.commits : []
+  const anchorLabel = ok ? gitInfo.info.anchorLabel : ''
+  const r = releaseNotes.ensureNotesFile(project.localPath, ver.version, {
+    appName: project.name, anchorLabel, commits,
+  })
+  if (!r.convention) return ''
+  if (r.error) return `发布说明初稿生成失败：${r.error}（打包脚本可能因缺文件中止，可手工补写后重试）`
+  if (!r.wrote) return ''
+  return `已生成发布说明 ${r.file}（依据 ${commits.length} 条提交自动整理的初稿${anchorLabel ? `，${anchorLabel}` : ''}；文件尚未提交，可润色后随代码提交）`
+}
+
+/**
  * 执行项目打包命令（script 形态产物缺失时自动构建）：
  * 在项目根以 shell 运行 packageCommand，输出按行流到发布日志（[打包] 前缀）；
  * 超时杀整棵进程树；用户取消时同样终止。返回 { ok, problem? }。
@@ -575,6 +595,8 @@ async function run(projectId, targetId) {
       if (!artifact) {
         const syncNote = syncProjectVersionForPackage(project, ver)
         if (syncNote) log('warn', syncNote)
+        const rnNote = ensureReleaseNotesForPackage(project, ver, gitInfo)
+        if (rnNote) log('warn', rnNote)
         const pc = await runPackageCommand(project)
         if (!pc.ok) {
           log('error', pc.problem)
@@ -1093,5 +1115,5 @@ module.exports = {
   setEmitter, STAGES, resolveVersion, buildDeployArgs,
   resolveCompose, resolveArtifact, sha256File, releaseDirNameOf, deployModeOf, runPackageCommand,
   getDataSync, validateDataSync, buildDataSyncCommand,
-  getDataImport, renderImportCommand,
+  getDataImport, renderImportCommand, ensureReleaseNotesForPackage,
 }

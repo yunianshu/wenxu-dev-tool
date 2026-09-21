@@ -558,6 +558,133 @@ async function main() {
     passed += 1
     console.log('  ✓ CURRENT 指针由工具兜底写入：项目脚本不写指针时线上版本仍可识别、同版本守卫生效')
 
+    // ── 13. 发布说明约定：打包前自动生成缺失的 docs/release-notes-<版本>.md（Vantage package.sh 契约） ──
+    // 项目背景完全对应用户现场：VERSION 已到新版本、docs/ 里有旧版说明、打包脚本缺同版本说明即中止
+    const writeNotesAwareMkPkg = (dir, requireNotes) => fs.writeFileSync(path.join(dir, 'mkpkg.sh'), [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'cd -- "$(dirname -- "${BASH_SOURCE[0]}")"',
+      'ver="$(tr -d \'[:space:]\' < VERSION)"',
+      ...(requireNotes ? [
+        'notes="docs/release-notes-${ver}.md"',
+        '[ -f "$notes" ] || { echo "ERROR: 缺少发布说明 $notes（发版须随 VERSION 提供同名文件）" >&2; exit 1; }',
+      ] : []),
+      'name="app-v${ver}-601"',
+      'echo "[mkpkg] building v${ver} ..."',
+      'd=".staging/$name"; rm -rf -- "$d"; mkdir -p -- "$d"',
+      'cat > "$d/upgrade.sh" <<\'EOS\'',
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'SD="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"; IR="$INSTALL_ROOT"',
+      'echo "[fake-upgrade] $(cat "$IR/CURRENT" 2>/dev/null || echo none) -> $(basename -- "$SD")"',
+      'if [ -f "$IR/CURRENT" ]; then old="$(cat "$IR/CURRENT")"; [ -f "$IR/releases/$old/stop.sh" ] && INSTALL_ROOT="$IR" bash "$IR/releases/$old/stop.sh" || true; fi',
+      'printf \'%s\\n\' "$(basename -- "$SD")" > "$IR/CURRENT"',
+      'INSTALL_ROOT="$IR" bash "$SD/start.sh"',
+      'EOS',
+      'printf "%s\\n" \'#!/usr/bin/env bash\' \'SD="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"\' \'echo $$ > "$SD/app.pid"; touch "$SD/.started"\' > "$d/start.sh"',
+      'printf "%s\\n" \'#!/usr/bin/env bash\' \'SD="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"\' \'rm -f "$SD/.started"\' > "$d/stop.sh"',
+      'mkdir -p release',
+      '( cd -- .staging && tar -czf "../release/$name.tar.gz" "$name" )',
+      'echo "[mkpkg] done"',
+    ].join('\n'))
+    const notesTarget = () => [{
+      id: 't1', name: '生产', remotePath: REMOTE_HOME,
+      server: { host: '203.0.113.10', port: 22, username: 'root', authType: 'password' },
+      health: { enabled: false, url: '', timeout: 90, interval: 3 },
+    }]
+
+    // 13a. 约定存在 + 目标版本说明缺失 → 自动生成初稿 → 打包通过 → 发布成功
+    const proj7Dir = path.join(tmpRoot, 'proj-notes')
+    fs.mkdirSync(path.join(proj7Dir, 'docs'), { recursive: true })
+    fs.writeFileSync(path.join(proj7Dir, 'VERSION'), '8.0.0\n')
+    const oldNotesText = '# 上一版发布说明（内容不得被改动）\n'
+    fs.writeFileSync(path.join(proj7Dir, 'docs', 'release-notes-7.5.0.md'), oldNotesText)
+    const git7 = (...args) => {
+      const r = spawnSync('git', ['-C', proj7Dir, ...args], { encoding: 'utf8' })
+      assert.strictEqual(r.status, 0, `git ${args.join(' ')} 失败: ${r.stderr}`)
+    }
+    git7('init'); git7('config', 'user.email', 't@example.com'); git7('config', 'user.name', 'tester')
+    fs.writeFileSync(path.join(proj7Dir, 'a.txt'), 'a'); git7('add', 'a.txt')
+    git7('commit', '-q', '-m', 'feat(web): 落库提示一键切换真正生效')
+    fs.writeFileSync(path.join(proj7Dir, 'b.txt'), 'b'); git7('add', 'b.txt')
+    git7('commit', '-q', '-m', 'fix: 统计周期新增近半年/近一年/全部')
+    writeNotesAwareMkPkg(proj7Dir, true)
+    const proj7 = deployProjects.save(deployProjects.normalizeProject({
+      name: '发布说明项目', localPath: proj7Dir, deployMode: 'script',
+      scriptMode: { artifactDir: 'release', upgradeScript: 'upgrade.sh', packageCommand: 'bash mkpkg.sh', packageTimeoutSec: 60 },
+      version: { strategy: 'auto', manual: '' },
+      targets: notesTarget(),
+    }))
+    const { record: recNotes, events: evNotes } = await runDeploy(proj7.id)
+    assert.strictEqual(recNotes.status, 'success', `自动生成发布说明后应发布成功: ${recNotes.message}\n${evNotes.logs.map((l) => l.text).join('\n')}`)
+    assert.ok(
+      evNotes.logs.some((l) => l.text.includes('已生成发布说明 docs/release-notes-8.0.0.md')),
+      `日志应说明生成了哪个文件: ${evNotes.logs.map((l) => l.text).join('\n')}`)
+    const genNotesPath = path.join(proj7Dir, 'docs', 'release-notes-8.0.0.md')
+    assert.ok(fs.existsSync(genNotesPath), '目标版本的发布说明应真实落盘')
+    const genNotesText = fs.readFileSync(genNotesPath, 'utf8')
+    assert.ok(genNotesText.includes('# 发布说明项目 8.0.0 发布说明'), `标题应含应用名与版本: ${genNotesText}`)
+    assert.ok(genNotesText.includes('- 落库提示一键切换真正生效'), '真实 git 提交应清洗后进入清单')
+    assert.ok(genNotesText.includes('- 统计周期新增近半年/近一年/全部'))
+    assert.ok(!/feat|fix/.test(genNotesText), '约定式前缀不得残留')
+    assert.strictEqual(fs.readFileSync(path.join(proj7Dir, 'docs', 'release-notes-7.5.0.md'), 'utf8'), oldNotesText, '旧版说明不得被改动')
+    assert.strictEqual(fs.readFileSync(path.join(SERVER_ROOT, 'CURRENT'), 'utf8').trim(), 'app-v8.0.0-601', '打包产物版本应与发布版本一致')
+    // 同版本说明已存在：编排层不再生成（幂等门直接断言）
+    assert.strictEqual(
+      deployService.ensureReleaseNotesForPackage(
+        { name: '发布说明项目', localPath: proj7Dir, scriptMode: {} },
+        { version: '8.0.0' }, { ok: false }),
+      '', '同版本说明已存在 → 无需生成，返回空')
+    deployProjects.remove(proj7.id)
+    passed += 1
+    console.log('  ✓ 发布说明约定：打包前自动生成初稿→真实打包通过→发布成功；旧版说明零改动、同版本幂等')
+
+    // 13b. 关闭自动生成 → 打包脚本因缺发布说明中止，整单失败且文件保持缺失
+    const proj8Dir = path.join(tmpRoot, 'proj-notes-off')
+    fs.mkdirSync(path.join(proj8Dir, 'docs'), { recursive: true })
+    fs.writeFileSync(path.join(proj8Dir, 'VERSION'), '9.0.0\n')
+    fs.writeFileSync(path.join(proj8Dir, 'docs', 'release-notes-8.9.0.md'), '# 旧版\n')
+    writeNotesAwareMkPkg(proj8Dir, true)
+    const proj8 = deployProjects.save(deployProjects.normalizeProject({
+      name: '关闭发布说明项目', localPath: proj8Dir, deployMode: 'script',
+      scriptMode: { artifactDir: 'release', upgradeScript: 'upgrade.sh', packageCommand: 'bash mkpkg.sh', packageTimeoutSec: 60, autoReleaseNotes: false },
+      version: { strategy: 'auto', manual: '' },
+      targets: notesTarget(),
+    }))
+    const { record: recOff, events: evOff } = await runDeploy(proj8.id)
+    assert.strictEqual(recOff.status, 'failed')
+    assert.strictEqual(recOff.stages.package.status, 'failed')
+    assert.ok(recOff.message.includes('退出码 1'), `消息应含打包退出码: ${recOff.message}`)
+    assert.ok(evOff.logs.some((l) => l.text.includes('缺少发布说明')), '打包脚本的缺文件报错应流入日志')
+    assert.ok(!fs.existsSync(path.join(proj8Dir, 'docs', 'release-notes-9.0.0.md')), '关闭开关时不得生成')
+    deployProjects.remove(proj8.id)
+    passed += 1
+    console.log('  ✓ 关闭自动生成：打包脚本缺文件报错如实上抛、文件保持缺失')
+
+    // 13c. 无约定项目零打扰：没有 release-notes-*.md → 不生成任何文件，打包照常成功
+    const proj9Dir = path.join(tmpRoot, 'proj-noconv')
+    fs.mkdirSync(proj9Dir, { recursive: true })
+    fs.writeFileSync(path.join(proj9Dir, 'VERSION'), '9.5.0\n')
+    writeNotesAwareMkPkg(proj9Dir, false)
+    const proj9 = deployProjects.save(deployProjects.normalizeProject({
+      name: '无约定项目', localPath: proj9Dir, deployMode: 'script',
+      scriptMode: { artifactDir: 'release', upgradeScript: 'upgrade.sh', packageCommand: 'bash mkpkg.sh', packageTimeoutSec: 60 },
+      version: { strategy: 'auto', manual: '' },
+      targets: notesTarget(),
+    }))
+    const { record: recConv, events: evConv } = await runDeploy(proj9.id)
+    assert.strictEqual(recConv.status, 'success', `无约定项目应照常发布: ${recConv.message}\n${evConv.logs.map((l) => l.text).join('\n')}`)
+    assert.ok(!fs.existsSync(path.join(proj9Dir, 'docs')), '无约定时不得创建 docs/ 或任何说明文件')
+    assert.ok(!evConv.logs.some((l) => l.text.includes('发布说明')), '无约定时日志不得出现发布说明动作')
+    assert.strictEqual(
+      deployService.ensureReleaseNotesForPackage(
+        { name: '无约定项目', localPath: proj9Dir, scriptMode: {} },
+        { version: '9.5.0' }, { ok: false }),
+      '', '无约定 → 零打扰')
+    deployProjects.remove(proj9.id)
+    passed += 1
+    console.log('  ✓ 无约定项目零打扰：不建目录、不写文件、日志无动作')
+
     console.log(`\n脚本部署形态编排自测通过（${passed} 组断言）`)
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true })

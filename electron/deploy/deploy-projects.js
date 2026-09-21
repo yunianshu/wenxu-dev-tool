@@ -87,8 +87,9 @@ function defaultProject() {
     // 脚本部署：产物目录（相对项目根，放 tar.gz/tgz/zip 发布包）与升级入口脚本名；
     // 环境引导开关：服务器缺 Java17 / pg_dump 时自动装用户态环境（不动系统）；
     // 打包命令：产物目录没有匹配版本的发布包时，在项目根自动执行（如 bash package.sh）；
-    // 版本同步：手动发布版本与项目版本文件不一致时，打包前自动升级项目版本声明
-    scriptMode: { artifactDir: 'release', upgradeScript: 'upgrade.sh', bootstrapJava: false, bootstrapPgdump: false, packageCommand: '', packageTimeoutSec: 900, autoBumpVersion: true },
+    // 版本同步：手动发布版本与项目版本文件不一致时，打包前自动升级项目版本声明；
+    // 发布说明：项目遵循「release-notes-<版本>.md 随版本提供」约定而目标版本缺失时，打包前自动生成初稿
+    scriptMode: { artifactDir: 'release', upgradeScript: 'upgrade.sh', bootstrapJava: false, bootstrapPgdump: false, packageCommand: '', packageTimeoutSec: 900, autoBumpVersion: true, autoReleaseNotes: true },
     // 项目级发布策略：跨环境统一的开关与保留份数；数据库备份配置按环境存放于 targets[].db
     deploy: {
       backupCode: true,
@@ -153,6 +154,8 @@ function normalizeProject(p) {
   c.scriptMode.packageTimeoutSec = Number.isFinite(t) && t >= 30 ? Math.min(Math.floor(t), 3600) : 900
   // 打包前自动同步项目版本号（手动版本与项目版本文件不一致时升级版本声明），默认开
   c.scriptMode.autoBumpVersion = c.scriptMode.autoBumpVersion !== false
+  // 打包前自动生成缺失的发布说明初稿（项目有 release-notes-*.md 约定时），默认开
+  c.scriptMode.autoReleaseNotes = c.scriptMode.autoReleaseNotes !== false
   c.name = String(c.name || '').trim()
   c.description = String(c.description || '')
   c.localPath = String(c.localPath || '')

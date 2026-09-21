@@ -53,6 +53,7 @@
           </div>
           <div class="f-row check-row">
             <el-checkbox v-model="form.scriptMode.autoBumpVersion">打包前自动同步项目版本号</el-checkbox>
+            <el-checkbox v-model="form.scriptMode.autoReleaseNotes">缺失发布说明时自动生成初稿</el-checkbox>
           </div>
                     <div class="f-row check-row">
             <el-checkbox v-model="form.scriptMode.bootstrapJava">缺 Java 17 时自动安装</el-checkbox>

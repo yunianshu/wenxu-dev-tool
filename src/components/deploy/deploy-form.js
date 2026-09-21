@@ -35,7 +35,7 @@ export function emptyProject() {
     // 部署形态：docker = Compose 编排；script = 项目自带脚本（发布包 + upgrade.sh）
     deployMode: 'docker',
     composeFile: 'docker-compose.yml',
-    scriptMode: { artifactDir: 'release', upgradeScript: 'upgrade.sh', bootstrapJava: false, bootstrapPgdump: false, packageCommand: '', packageTimeoutSec: 900, autoBumpVersion: true },
+    scriptMode: { artifactDir: 'release', upgradeScript: 'upgrade.sh', bootstrapJava: false, bootstrapPgdump: false, packageCommand: '', packageTimeoutSec: 900, autoBumpVersion: true, autoReleaseNotes: true },
     deploy: {
       backupCode: true, autoRollback: true, deleteUploadAfterSuccess: true,
       keepReleases: 10, keepBackups: 10,

@@ -332,6 +332,64 @@ assert.strictEqual(head, shaC)
   const fullRange = await notes.collect(repo, { anchor: { value: shaE, kind: 'commit', label: '上版之后' } })
   assert.strictEqual(fullRange.commits.length, 61, '版本间提交不能截断为60条')
 
+  // ── 发布说明文件：约定探测 + 缺失自动生成初稿（Vantage package.sh「缺文件即中止」契约） ──
+  assert.deepStrictEqual(notes.parseNotesFileName('release-notes-0.1.12.md'), { vPrefixed: false, version: '0.1.12' })
+  assert.deepStrictEqual(notes.parseNotesFileName('release-notes-v2.0.0.md'), { vPrefixed: true, version: '2.0.0' })
+  assert.strictEqual(notes.parseNotesFileName('CHANGELOG.md'), null)
+  assert.strictEqual(notes.parseNotesFileName('release-notes-.md'), null)
+
+  // 约定探测：docs/ 优先，其次项目根；全带 v 前缀则沿用；一个都没有视为无约定
+  const dirDocs = path.join(tmpRoot, 'notes-docs')
+  fs.mkdirSync(path.join(dirDocs, 'docs'), { recursive: true })
+  fs.writeFileSync(path.join(dirDocs, 'docs', 'release-notes-1.0.0.md'), '# 旧版\n')
+  let conv = notes.detectNotesConvention(dirDocs)
+  assert.strictEqual(conv.relDir, 'docs')
+  assert.strictEqual(conv.vPrefixed, false)
+  const dirRoot = path.join(tmpRoot, 'notes-root')
+  fs.mkdirSync(dirRoot, { recursive: true })
+  fs.writeFileSync(path.join(dirRoot, 'release-notes-v9.9.0.md'), '# 根目录约定\n')
+  conv = notes.detectNotesConvention(dirRoot)
+  assert.strictEqual(conv.relDir, '')
+  assert.strictEqual(conv.vPrefixed, true, '既有文件全带 v 前缀时生成也应带 v')
+  assert.strictEqual(notes.detectNotesConvention(path.join(tmpRoot, 'notes-none')), null, '无任何发布说明文件 → 无约定')
+
+  // 缺失 → 生成初稿：标题/生成说明/改动范围/清洗后的提交清单；再次调用幂等不覆盖
+  const commits = [
+    { hash: 'a', date: '2026-09-21', subject: 'feat(web): 落库提示一键切换真正生效' },
+    { hash: 'b', date: '2026-09-21', subject: 'fix: 统计周期新增近半年/近一年/全部' },
+  ]
+  let gen = notes.ensureNotesFile(dirDocs, '2.0.0', {
+    appName: '演示系统', anchorLabel: '上次发布 1.9.0 之后', commits, generatedAt: '2026-09-21 13:30',
+  })
+  assert.ok(gen.wrote, `应生成: ${JSON.stringify(gen)}`)
+  assert.strictEqual(gen.file, 'docs/release-notes-2.0.0.md')
+  const genPath = path.join(dirDocs, 'docs', 'release-notes-2.0.0.md')
+  const genText = fs.readFileSync(genPath, 'utf8')
+  assert.ok(genText.startsWith('# 演示系统 2.0.0 发布说明\n'), `标题应含应用名与版本: ${genText}`)
+  assert.ok(genText.includes('> 本文件由 project-tool 于 2026-09-21 13:30 自动生成初稿，可人工润色后随代码提交。'))
+  assert.ok(genText.includes('改动范围：上次发布 1.9.0 之后，共收录 2 条提交。'))
+  assert.ok(genText.includes('- 落库提示一键切换真正生效'), '提交标题应去掉约定式前缀')
+  assert.ok(genText.includes('- 统计周期新增近半年/近一年/全部'))
+  assert.ok(genText.includes('## 本次更新内容'))
+  assert.ok(!genText.includes('feat') && !genText.includes('fix'), '英文前缀不得残留')
+  const genText2 = genText
+  gen = notes.ensureNotesFile(dirDocs, '2.0.0', { appName: '演示系统', commits, generatedAt: 'x' })
+  assert.ok(!gen.wrote, '同版本说明已存在 → 不得重新生成')
+  assert.strictEqual(fs.readFileSync(genPath, 'utf8'), genText2, '既有内容必须原样保留')
+
+  // v 前缀约定沿用；无提交记录时留「待补充」而不是空清单
+  gen = notes.ensureNotesFile(dirRoot, '10.0.0', { appName: '根目录系统', commits: [], generatedAt: '2026-09-21 13:31' })
+  assert.ok(gen.wrote && gen.file === 'release-notes-v10.0.0.md', `应沿用 v 前缀: ${JSON.stringify(gen)}`)
+  const noCommitText = fs.readFileSync(path.join(dirRoot, 'release-notes-v10.0.0.md'), 'utf8')
+  assert.ok(noCommitText.includes('（待补充）') && noCommitText.includes('请人工补写'), '无提交时应明确留待人工补写')
+
+  // 版本号非法 → 报错而不写文件；无约定 → 明确返回 convention:false 且零改动
+  gen = notes.ensureNotesFile(dirDocs, '../evil', { appName: 'x', commits: [] })
+  assert.ok(gen.convention && !gen.wrote && gen.error, '非法版本号应返回错误')
+  assert.strictEqual(fs.readdirSync(path.join(dirDocs, 'docs')).length, 2, '非法请求不得落任何文件')
+  gen = notes.ensureNotesFile(path.join(tmpRoot, 'notes-none'), '3.0.0', { appName: 'x', commits: [] })
+  assert.deepStrictEqual(gen, { convention: false, wrote: false, file: '', error: '' }, '无约定项目零打扰')
+
   console.log('发布更新内容自测全部通过')
 })().then(() => {
   fs.rmSync(tmpRoot, { recursive: true, force: true })

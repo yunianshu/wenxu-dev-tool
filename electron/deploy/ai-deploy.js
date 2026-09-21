@@ -833,6 +833,7 @@ function buildHeuristicPlan(project, target, local, remote) {
       bootstrapJava: !!(project.scriptMode && project.scriptMode.bootstrapJava),
       bootstrapPgdump: local.stack.some((s) => s.kind === 'java') || !!(project.scriptMode && project.scriptMode.bootstrapPgdump),
       autoBumpVersion: true,
+      autoReleaseNotes: true,
     },
     version: local.version.version
       ? { strategy: 'auto', manual: '' }
@@ -1021,7 +1022,7 @@ function buildPrompt({ project, target, local, remote, heuristic, compressed, om
   "deployMode": "script 或 docker",
   "deployModeReason": "选择该形态的理由（结合项目文件与服务器现状）",
   "composeFile": "docker 形态使用的 compose 相对路径",
-  "scriptMode": {"artifactDir":"发布包目录（相对项目根）","upgradeScript":"升级脚本名","packageCommand":"本地打包命令，无则空串","bootstrapJava":false,"bootstrapPgdump":false,"autoBumpVersion":true},
+  "scriptMode": {"artifactDir":"发布包目录（相对项目根）","upgradeScript":"升级脚本名","packageCommand":"本地打包命令，无则空串","bootstrapJava":false,"bootstrapPgdump":false,"autoBumpVersion":true,"autoReleaseNotes":true},
   "version": {"strategy":"auto 或 manual","manual":"manual 时的版本号，否则空串"},
   "health": {"enabled":true,"url":"http://127.0.0.1:端口/路径","timeout":180,"interval":5},
   "db": {"enabled":false,"type":"postgres 或 mysql","container":"容器名","name":"库名","user":"用户名"},
@@ -1154,6 +1155,7 @@ function mergePlan(heuristic, ai) {
       bootstrapJava: ai.scriptMode.bootstrapJava === true,
       bootstrapPgdump: ai.scriptMode.bootstrapPgdump === true,
       autoBumpVersion: ai.scriptMode.autoBumpVersion !== false,
+      autoReleaseNotes: ai.scriptMode.autoReleaseNotes !== false,
     }
     if (!/^[\w./-]+$/.test(out.scriptMode.artifactDir) || out.scriptMode.artifactDir.includes('..')) {
       out.scriptMode.artifactDir = heuristic.scriptMode.artifactDir
