@@ -117,7 +117,8 @@ async function pasteFromClipboard() {
  * 复制/粘贴键约定（对齐 Windows Terminal）：
  * - Ctrl/Cmd+C 有选区 → 复制；无选区 → 照常发 ^C 中断进程
  * - Ctrl+Insert、Ctrl/Cmd+Shift+C → 无论有没有选区都执行复制
- * - Ctrl/Cmd+V、Shift+Insert → 粘贴（无菜单 Electron 不派发原生 paste，必须拦截自绘）
+ * - Ctrl/Cmd+V、Ctrl+Shift+V、Shift+Insert → 粘贴（无菜单 Electron 不派发原生 paste，必须拦截自绘）
+ * - Ctrl+Enter、Shift+Enter → 发 LF 换行（见下）
  */
 function handleTermKey(ev) {
   if (!ev || ev.type !== 'keydown') return true
@@ -125,7 +126,7 @@ function handleTermKey(ev) {
   // 拦截的键要显式 preventDefault：customKeyEventHandler 返回 false 只是让 xterm
   // 短路（不会 preventDefault），放行默认动作会让 Chromium 再触发一次原生
   // paste/copy（粘贴发两份、空剪贴板也发空 bracketed 包裹都源于此）
-  if (ev.code === 'KeyV' && ctrl && !ev.shiftKey && !ev.altKey) {
+  if (ev.code === 'KeyV' && ctrl && !ev.altKey) {
     ev.preventDefault()
     pasteFromClipboard()
     return false
@@ -143,6 +144,16 @@ function handleTermKey(ev) {
   }
   if (ev.code === 'Insert' && ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey) {
     copySelection()
+    return false
+  }
+  // Ctrl+Enter / Shift+Enter 换行：xterm 的 Enter 分支只区分 altKey，这两组
+  // 修饰回车也被翻成 \r，TUI（claude 等）收到 \r 只会提交消息而不是换行。
+  // 改发 LF（\n）——即 Claude Code 官方 Ctrl+J 的换行序列，任何 TUI 无需配置；
+  // Alt+Enter 不拦，xterm 自带发 ESC+CR，同为 claude 认可的换行键。
+  // isComposing 排除中文输入法选词回车（keyCode 229）
+  if (ev.code === 'Enter' && !ev.altKey && !ev.metaKey && (ev.ctrlKey || ev.shiftKey) && !ev.isComposing && ev.keyCode !== 229) {
+    ev.preventDefault()
+    if (!props.pane.exited) term?.input('\n')
     return false
   }
   return true
