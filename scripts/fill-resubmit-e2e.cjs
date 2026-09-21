@@ -1,10 +1,11 @@
 /**
  * E2E（真实 Electron + 沙箱主目录 + 真实 Git 仓库 + 本地 fake 禅道/汉印网关）：
- * 一键填报「提交留痕与重新提交」+「禅道响应异常回查核实」
+ * 一键填报「提交留痕与重新提交」+「仅失败记录可重提」+「删除记录」+「禅道响应异常回查核实」
  *
  * 起因（2026-09-18 用户报障）：当天 4 项（禅道 2 任务 + 汉印 2 条）只成功 1 项——
  * 禅道 recordEstimate POST 实际已写入但响应体非 JSON，旧实现直接抛错中止，
  * 剩余任务与汉印全部漏交，且无日志可回溯、无安全的补交入口。
+ * 后续需求（2026-09-21）：成功记录不需要重新提交（只留失败记录的重放入口），且记录可删除。
  *
  * 验收标准（源自需求，非按实现反推）：
  *   R1 响应异常不中止：POST 返回空 body（非 JSON）但服务端已写入时，回查当日工时
@@ -14,11 +15,16 @@
  *   R3 提交记录面板：页面展示最近提交（状态/分项计数/错误），失败条目提供「重新提交」
  *   R4 重新提交补全：按留痕载荷重放，此前已写入的任务更新覆盖（复用已有记录 ID），
  *      失败任务补写入，汉印照常提交；重放自身也留痕
+ *   R5 只有失败记录才需要重新提交：成功记录（禅道全部写入并核实 + 汉印已写入）不显示
+ *      「重新提交」，服务层同样拒绝重放成功记录且不产生任何平台写入
+ *   R6 删除记录：每条记录可删除（只清本机留痕，不动平台已写入的工时），删除后记录面板
+ *      与 fill-log.json 同步移除该条，其余记录（含失败条目的载荷）不受影响
  *
  * 场景（fake 禅道按「该任务第 N 次 POST」分流，无需外部模式切换）：
  *   第 1 轮（今天）：两任务 POST 均返回空 body 但照常写入 → 全部 verified → 成功
  *   第 2 轮（昨天补填）：任务 A 正常成功；任务 B 返回 HTML 且不写入 → 真失败（1/2）
  *   第 3 轮（重新提交）：全部正常 → A 复用已有记录 ID 更新、B 补写入、汉印 add
+ *   第 4 轮（面板操作）：成功记录无「重新提交」→ 服务层拒绝重放 → 删除今天那条留痕
  *
  * 边界：真实内网平台不可达且不可写，禅道/汉印均以本地 fake 网关替代（协议同形）；
  *       写入路径由真实 fill-service/zentao-service 客户端经真实 HTTP 发起。
@@ -217,10 +223,14 @@ const helpers = `
   const submitBtn = () => [...document.querySelectorAll('.fill-actions button')].find((b) => norm(b.textContent).includes('一键提交') || norm(b.textContent).includes('已提交'))
   const submitEnabled = () => { const b = submitBtn(); return !!(b && !b.disabled) }
   const rowOf = (name) => [...document.querySelectorAll('.prow')].find((r) => norm(r.textContent).includes(name))
-  const confirmBtn = () => { const box = q('.el-message-box'); return box ? [...box.querySelectorAll('button')].find((b) => norm(b.textContent) === '提交') : null }
+  const boxBtn = (text) => { const box = q('.el-message-box'); return box ? [...box.querySelectorAll('button')].find((b) => norm(b.textContent) === text) : null }
+  const confirmBtn = () => boxBtn('提交')
   const toasts = () => [...document.querySelectorAll('.el-message')].map((x) => norm(x.textContent))
   const waitToasts = async (ms) => { const seen = new Set(); const t0 = Date.now(); while (Date.now() - t0 < ms) { toasts().forEach((t) => seen.add(t)); await sleep(150) } return [...seen] }
   const logLines = () => [...document.querySelectorAll('.logline')].map((x) => norm(x.textContent))
+  const logLineEls = () => [...document.querySelectorAll('.logline')]
+  const lineBtn = (el, text) => [...el.querySelectorAll('button')].find((b) => norm(b.textContent).includes(text))
+  const logTime = (el) => norm(el.querySelector('.log-time')?.textContent || '')
   const dateShortcuts = () => [...document.querySelectorAll('.el-picker-panel__shortcut')]
   const pickYesterday = async () => {
     const inp = q('.fill-toolbar .el-date-editor input'); if (!inp) return false
@@ -243,7 +253,7 @@ const helpers = `
   const done = () => setTimeout(() => window.close(), 400)
 `
 
-/** 三轮：今天成功（回查核实）→ 昨天部分失败（留痕）→ 重新提交补全 */
+/** 四轮：今天成功（回查核实）→ 昨天部分失败（留痕）→ 重新提交补全 → 仅失败可重提 + 删除记录 */
 const EVAL = `(async () => {
   ${helpers}
   const r = {}
@@ -275,7 +285,7 @@ const EVAL = `(async () => {
   const failLine = [...document.querySelectorAll('.logline')].reverse()
     .find((l) => l.querySelector('.el-tag--danger'))
   r.failLineText = failLine ? norm(failLine.textContent) : ''
-  const rebtn = failLine && [...failLine.querySelectorAll('button')].find((b) => norm(b.textContent).includes('重新提交'))
+  const rebtn = failLine && lineBtn(failLine, '重新提交')
   r.rebtnFound = !!rebtn
   if (rebtn) {
     rebtn.click()
@@ -284,6 +294,48 @@ const EVAL = `(async () => {
   r.round3Toasts = await waitToasts(20000)
   r.round3Done = await waitFor(() => norm(submitBtn()?.textContent).includes('已提交'), 25000)
   r.logsAfter = logLines()
+
+  // ── R5：只有失败记录显示「重新提交」（成功记录不再提供）
+  const lines = logLineEls()
+  r.lineTags = lines.map((l) => (l.querySelector('.el-tag--danger') ? 'fail' : 'ok'))
+  r.successWithResub = lines.filter((l) => l.querySelector('.el-tag--success') && lineBtn(l, '重新提交')).length
+  r.failWithResub = lines.filter((l) => l.querySelector('.el-tag--danger') && lineBtn(l, '重新提交')).length
+  r.successCount = lines.filter((l) => l.querySelector('.el-tag--success')).length
+  r.failCount = lines.filter((l) => l.querySelector('.el-tag--danger')).length
+  const svc = await window.gitReport.fillLog(20)
+  r.svcFlags = (svc.entries || []).map((e) => ({
+    at: e.at,
+    date: e.date,
+    failed: !!e.failed,
+    resubmittable: !!e.resubmittable,
+    ztTasks: (e.tasks || []).length,
+    verifiedAll: (e.tasks || []).length > 0 && (e.tasks || []).every((t) => t.verified === true),
+    ztTotal: e.ztTotal,
+    hpSent: e.hp && e.hp.sent ? e.hp.sent : 0,
+    hpError: (e.hp && e.hp.error) || '',
+    error: e.error || '',
+  }))
+  const okEntry = (svc.entries || []).find((e) => !e.failed)
+  // 服务层同样拒绝重放成功记录（若守卫失效会真重放，平台写入次数与留痕条数断言会一并暴露）
+  const refuse = okEntry ? await window.gitReport.fillResubmit(okEntry.at) : null
+  r.resubmitRefused = refuse ? refuse.ok === false : null
+  r.refuseError = refuse ? (refuse.error || '') : ''
+  r.logsAfterRefuse = logLines()
+
+  // ── R6：删除记录（删今天那条成功留痕，昨日两条保留）
+  const delTarget = lines.filter((l) => l.querySelector('.el-tag--success')).pop()
+  r.delTargetTime = delTarget ? logTime(delTarget) : ''
+  const dbtn = delTarget && lineBtn(delTarget, '删除')
+  r.delBtnFound = !!dbtn
+  if (dbtn) {
+    dbtn.click()
+    if (await waitFor(() => !!boxBtn('删除'), 8000)) boxBtn('删除').click()
+  }
+  r.delToastSeen = await waitFor(() => toasts().some((t) => t.includes('已删除')), 10000)
+  r.delSettled = await waitFor(() => logLineEls().length === lines.length - 1, 12000, 150)
+  r.logsAfterDelete = logLines()
+  r.timesAfterDelete = logLineEls().map(logTime)
+  r.failKept = logLineEls().filter((l) => l.querySelector('.el-tag--danger')).length
   done()
   return r
 })()`
@@ -331,7 +383,7 @@ function assert(name, cond, detail) {
 }
 
 async function main() {
-  console.log('=== 一键填报：提交留痕与重新提交（R1–R4）===')
+  console.log('=== 一键填报：提交留痕、重新提交与删除记录（R1–R6）===')
   const zt = await startFakeZentao()
   const hp = await startFakeHanprint()
   preseed(zt.port, hp.port)
@@ -342,7 +394,7 @@ async function main() {
     console.log('页面结果:', JSON.stringify(ev, null, 1))
 
     if (!ev || ev.fatal) {
-      assert('一键填报页就绪并完成三轮交互', false, (ev && ev.fatal) || 'EVAL 未返回结果')
+      assert('一键填报页就绪并完成四轮交互', false, (ev && ev.fatal) || 'EVAL 未返回结果')
     } else {
       // R1 响应异常不中止：整体成功（按钮变「已提交」），无失败提示
       assert('R1 第 1 轮提交整体成功（回查核实后继续）', ev.round1 === 'sent' && ev.round1Done === true,
@@ -360,6 +412,36 @@ async function main() {
       assert('R3 失败条目提供「重新提交」按钮', ev.rebtnFound === true, ev.failLineText)
       assert('R4 重新提交补全（按钮变「已提交」）', ev.round3Done === true,
         JSON.stringify({ toasts: ev.round3Toasts, logs: ev.logsAfter }))
+
+      // R5 只有失败记录才需要重新提交（删前快照：成功/失败/成功 三条）
+      const flags = ev.svcFlags || []
+      assert('R5 删前留痕三条且仅一条失败', flags.length === 3 && flags.filter((f) => f.failed).length === 1,
+        JSON.stringify(flags))
+      assert('R1 成功条目：2 任务均标记 verified（回查核实）+ 汉印 2 条',
+        flags[2] && flags[2].failed === false && flags[2].ztTasks === 2 && flags[2].verifiedAll === true && flags[2].hpSent === 2,
+        JSON.stringify(flags[2]))
+      assert('R2 失败条目：分项 1/2 + 错误原文 + 可重提',
+        flags[1] && flags[1].failed === true && flags[1].resubmittable === true && flags[1].ztTasks === 1 && flags[1].ztTotal === 2 && /1\/2/.test(flags[1].error),
+        JSON.stringify(flags[1]))
+      assert('R4 重放条目：整体成功（2 任务、无错误、汉印 2 条）',
+        flags[0] && flags[0].failed === false && flags[0].ztTasks === 2 && !flags[0].error && flags[0].hpSent === 2,
+        JSON.stringify(flags[0]))
+      assert('R5 成功记录不标记可重提（界面上 2 条成功均无「重新提交」）',
+        flags.filter((f) => !f.failed).every((f) => f.resubmittable === false) && ev.successCount === 2 && ev.successWithResub === 0,
+        JSON.stringify({ flags, successCount: ev.successCount, successWithResub: ev.successWithResub }))
+      assert('R5 失败记录仍带「重新提交」', ev.failCount === 1 && ev.failWithResub === 1,
+        JSON.stringify({ failCount: ev.failCount, failWithResub: ev.failWithResub }))
+      assert('R5 服务层拒绝重放成功记录', ev.resubmitRefused === true && /已提交成功/.test(String(ev.refuseError || '')),
+        JSON.stringify({ refused: ev.resubmitRefused, error: ev.refuseError }))
+
+      // R6 删除记录：删除今天那条成功留痕，其余记录与失败条目不受影响
+      assert('R6 每条记录都有「删除」按钮', ev.delBtnFound === true, String(ev.delTargetTime))
+      assert('R6 删除后记录面板只剩 2 条', ev.delSettled === true && (ev.logsAfterDelete || []).length === 2,
+        JSON.stringify({ settled: ev.delSettled, logs: ev.logsAfterDelete }))
+      assert('R6 被删记录不再显示（时间戳消失）',
+        ev.delTargetTime && !(ev.timesAfterDelete || []).includes(ev.delTargetTime),
+        JSON.stringify({ deleted: ev.delTargetTime, times: ev.timesAfterDelete }))
+      assert('R6 失败记录保留（仍可重新提交）', ev.failKept === 1, String(ev.failKept))
     }
   } finally {
     zt.server.close()
@@ -382,26 +464,21 @@ async function main() {
     const rec = ztA.find((e) => e.date === yesterdayStr)
     return !!rec && zt.state.posts.some((p) => p.taskId === String(TASK_A) && p.keys.includes(`dates[${rec.id}]`))
   })(), JSON.stringify({ ztA, posts: zt.state.posts }))
-  assert('汉印 add 恰好 2 次（失败轮不写汉印，重放轮补写）', hp.state.addBodies.length === 2,
-    String(hp.state.addBodies.length))
+  assert('R5 拒绝重放成功记录未产生额外平台写入（汉印 add 恰好 2 次：成功轮 + 重放轮）',
+    hp.state.addBodies.length === 2, String(hp.state.addBodies.length))
 
+  // 删除落盘：今天的成功留痕已移除，昨日两条（失败 + 重放成功）保留
   let entries = []
   try { entries = JSON.parse(fs.readFileSync(LOG_FILE, 'utf8')) } catch { /* 无日志则按空断言 */ }
-  assert('fill-log 留痕 3 条（成功 / 部分失败 / 重放成功）', entries.length === 3, JSON.stringify(entries.map((e) => e.error || 'ok')))
-  const e1 = entries[0] || {}
-  const e2 = entries[1] || {}
-  const e3 = entries[2] || {}
-  assert('R1 成功条目：2 任务均标记 verified（回查核实）', e1.tasks && e1.tasks.length === 2 && e1.tasks.every((t) => t.verified === true),
-    JSON.stringify(e1.tasks))
-  assert('R1 成功条目：汉印 2 条', e1.hp && e1.hp.sent === 2, JSON.stringify(e1.hp))
-  assert('R2 失败条目：分项（仅任务 A）+ 断点环节 + 响应原文 + 完整载荷',
-    e2.tasks && e2.tasks.length === 1 && String(e2.tasks[0].taskId) === String(TASK_A)
-      && e2.stage === `zentao#${TASK_B}` && !!e2.raw && e2.payload && e2.payload.tasks.length === 2,
-    JSON.stringify({ tasks: e2.tasks, stage: e2.stage, raw: e2.raw }))
-  assert('R2 失败条目：错误含进度 1/2', /1\/2/.test(String(e2.error || '')), e2.error)
-  assert('R4 重放条目：整体成功（2 任务、无错误、汉印 2 条）',
-    e3.tasks && e3.tasks.length === 2 && !e3.error && e3.hp && e3.hp.sent === 2,
-    JSON.stringify({ tasks: e3.tasks && e3.tasks.length, error: e3.error, hp: e3.hp }))
+  assert('R6 删除已落盘：剩昨日两条（今天那条已移除）',
+    entries.length === 2 && entries.every((e) => e.date === yesterdayStr && e.date !== todayStr),
+    JSON.stringify(entries.map((e) => ({ at: e.at, date: e.date, error: e.error || '' }))))
+  const keptFail = entries.find((e) => e.error) || {}
+  assert('R6 删除只动留痕：失败条目及其存档载荷保留',
+    !!keptFail.at && keptFail.payload && keptFail.payload.tasks.length === 2 && String(keptFail.tasks[0].taskId) === String(TASK_A),
+    JSON.stringify({ error: keptFail.error, tasks: keptFail.tasks, payload: keptFail.payload && keptFail.payload.tasks.length }))
+  assert('R2 失败条目：断点环节 + 响应原文保留', keptFail.stage === `zentao#${TASK_B}` && !!keptFail.raw,
+    JSON.stringify({ stage: keptFail.stage, raw: keptFail.raw }))
 
   console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)
   process.exit(failed === 0 ? 0 : 1)

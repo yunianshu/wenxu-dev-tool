@@ -253,7 +253,7 @@
       </el-card>
     </template>
 
-    <!-- 提交记录（fill-log 留痕）：失败/部分成功的记录可按存档载荷重新提交（已有记录按 ID 更新覆盖） -->
+    <!-- 提交记录（fill-log 留痕）：失败记录可按存档载荷重新提交（已有记录按 ID 更新覆盖），记录可删除（只清本机留痕） -->
     <el-card v-if="submitLogs.length" shadow="never" class="card">
       <template #header>
         <div class="card-header">
@@ -271,9 +271,17 @@
           type="primary"
           plain
           :loading="resubmitting === log.at"
-          :disabled="!!resubmitting"
+          :disabled="!!resubmitting || !!deleting"
           @click="doResubmit(log)"
         >重新提交</el-button>
+        <el-button
+          size="small"
+          type="danger"
+          plain
+          :loading="deleting === log.at"
+          :disabled="!!resubmitting || !!deleting"
+          @click="doDeleteLog(log)"
+        >删除</el-button>
       </div>
     </el-card>
 
@@ -353,9 +361,10 @@ const selectedProjectIds = computed({
 const bindings = ref({})
 const bindDialog = ref({ visible: false, projectId: '', projectName: '', taskId: null, boundTaskId: null, options: [], loading: false })
 const previewDialog = ref({ visible: false, content: '' })
-/** 提交记录（fill-log 留痕）与按记录重新提交 */
+/** 提交记录（fill-log 留痕）与按记录重新提交 / 删除记录 */
 const submitLogs = ref([])
 const resubmitting = ref('')
+const deleting = ref('')
 /** 生成/重算进行中收到的重算请求：结束后补跑一次 */
 let pendingRecompute = false
 
@@ -519,7 +528,7 @@ onMounted(async () => {
   } catch { /* noop */ }
 })
 
-/** 提交记录面板：时间 + 状态 + 分项计数 + 错误原文；失败/部分成功可按存档载荷重放 */
+/** 提交记录面板：时间 + 状态 + 分项计数 + 错误原文；失败记录可按存档载荷重放，记录可删除 */
 async function loadLogs() {
   try {
     const r = await window.gitReport.fillLog(20)
@@ -528,7 +537,7 @@ async function loadLogs() {
 }
 
 function logStatus(log) {
-  return log.error || (log.hp && log.hp.error) ? { type: 'danger', text: '失败' } : { type: 'success', text: '成功' }
+  return log.failed ? { type: 'danger', text: '失败' } : { type: 'success', text: '成功' }
 }
 
 function logSummary(log) {
@@ -572,6 +581,33 @@ async function doResubmit(log) {
     ElMessage.error(`重新提交失败：${e?.message || e}`)
   } finally {
     resubmitting.value = ''
+    loadLogs()
+  }
+}
+
+/** 删除一条提交记录：只清本机留痕，平台上已写入的工时不受影响 */
+async function doDeleteLog(log) {
+  try {
+    await ElMessageBox.confirm(`删除 ${(log.at || '').slice(0, 19)} 这条提交记录？`, '删除记录', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  deleting.value = log.at
+  try {
+    const r = await window.gitReport.fillLogDelete(log.at)
+    if (!r.ok) {
+      ElMessage.error(r.error || '删除记录失败')
+      return
+    }
+    ElMessage.success('已删除这条提交记录')
+  } catch (e) {
+    ElMessage.error(`删除记录失败：${e?.message || e}`)
+  } finally {
+    deleting.value = ''
     loadLogs()
   }
 }

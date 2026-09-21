@@ -753,9 +753,21 @@ function readFillLog() {
   } catch { return [] }
 }
 
+/** 写回留痕（删除记录用）；文件写失败必须让调用方知道，不能静默当成功 */
+function writeFillLog(list) {
+  const file = path.join(app.getPath('userData'), 'fill-log.json')
+  fs.writeFileSync(file, JSON.stringify(list))
+}
+
+/** 失败记录：禅道中断（error）或汉印未写入（hp.error）。成功记录整体写入且已核实，
+ * 重放只会原样覆盖，没有补交意义——「重新提交」只对失败记录开放。 */
+function isFailedLog(e) {
+  return !!(e && (e.error || (e.hp && e.hp.error)))
+}
+
 /**
  * 提交记录（渲染层「提交记录」面板数据）：倒序最近 limit 条，不含提交载荷全文
- * （载荷只在主进程按 at 索引取，重新提交用）；resubmittable=有载荷且非预览。
+ * （载荷只在主进程按 at 索引取，重新提交用）；resubmittable=失败且有存档载荷。
  */
 function listLog(limit = 30) {
   return readFillLog()
@@ -773,17 +785,29 @@ function listLog(limit = 30) {
       hpSent: e.hpSent,
       error: e.error,
       stage: e.stage,
-      resubmittable: !e.dryRun && !!(e.payload && Array.isArray(e.payload.tasks) && e.payload.tasks.length),
+      failed: isFailedLog(e),
+      resubmittable: isFailedLog(e) && !e.dryRun && !!(e.payload && Array.isArray(e.payload.tasks) && e.payload.tasks.length),
     }))
+}
+
+/** 删除一条提交记录（仅移除留痕，不动已写入平台的工时）：按 at 唯一定位 */
+function removeLog(at) {
+  if (!at) throw new Error('缺少提交记录标识')
+  const list = readFillLog()
+  const next = list.filter((e) => !e || e.at !== at)
+  if (next.length === list.length) throw new Error('没有这条提交记录')
+  writeFillLog(next)
+  return { removed: list.length - next.length, remaining: next.length }
 }
 
 /** 按留痕时间重新提交：取该条日志存档的提交载荷原样重放（复用 submit，重新留痕）。
  * 载荷里的 left 是旧值，submit 会按平台最新剩余重算；禅道/汉印已有记录按 ID 复用
- * 更新覆盖，不会重复写入。 */
+ * 更新覆盖，不会重复写入。仅失败记录可重放（成功的已写入并核实，重放无意义）。 */
 async function resubmit(at) {
   const entry = readFillLog().find((e) => e && e.at === at)
   if (!entry) throw new Error('没有这条提交记录')
   if (entry.dryRun) throw new Error('预览记录不能重新提交')
+  if (!isFailedLog(entry)) throw new Error('该记录已提交成功，无需重新提交')
   if (!entry.payload || !Array.isArray(entry.payload.tasks) || !entry.payload.tasks.length) {
     throw new Error('该记录没有存档提交载荷，请在填报页重新提交')
   }
@@ -865,4 +889,5 @@ module.exports = {
   submit,
   listLog,
   resubmit,
+  removeLog,
 }

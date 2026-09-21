@@ -857,6 +857,14 @@ function registerIpc() {
       return { ok: false, error: (err && err.message) || String(err) }
     }
   })
+  // 删除一条提交记录（仅移除留痕，已写入平台的工时不受影响）
+  ipcMain.handle('fill:log:delete', (_e, at) => {
+    try {
+      return { ok: true, ...fillService.removeLog(at) }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) }
+    }
+  })
   ipcMain.handle('fill:ztTasks', async () => {
     try {
       // 绑定任务用：进行中 + 近一个月完成的（完成后仍可能要补填工时）

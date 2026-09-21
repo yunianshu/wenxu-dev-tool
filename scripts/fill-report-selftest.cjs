@@ -1023,8 +1023,41 @@ await test('listLog：倒序最近记录 + 失败条目带重放标记与计划�
   const failed = list.find((e) => e.stage === 'zentao#88')
   assert.ok(failed, '失败条目应在最近记录里')
   assert.strictEqual(failed.resubmittable, true)
+  assert.strictEqual(failed.failed, true)
   assert.strictEqual(failed.ztTotal, 2)
   assert.strictEqual(failed.tasks.length, 1)
+})
+
+await test('listLog：成功记录不带重放标记（已写入并核实，重放无意义）', async () => {
+  const list = fill.listLog(10)
+  const ok = list.filter((e) => !e.failed)
+  assert.ok(ok.length >= 1, '最近记录里应有成功条目')
+  assert.ok(ok.every((e) => e.resubmittable === false), '成功条目不得标记可重放')
+  assert.ok(list.filter((e) => e.failed).every((e) => e.resubmittable === true), '失败条目应可重放')
+  // 汉印未写入也算失败（禅道成功、汉印失败的部分成功记录仍要能补交）
+  const hpFail = fill.listLog(10).find((e) => e.hp && e.hp.error)
+  if (hpFail) assert.strictEqual(hpFail.failed, true, '汉印失败的部分成功记录应标为失败')
+})
+
+await test('resubmit：拒绝重放成功记录（只对失败记录开放）', async () => {
+  const ok = fill.listLog(10).find((e) => !e.failed)
+  assert.ok(ok, '最近记录里应有成功条目')
+  await assert.rejects(() => fill.resubmit(ok.at), /已提交成功，无需重新提交/)
+})
+
+await test('removeLog：按 at 删除留痕（其余记录不受影响），缺参/不存在报错', async () => {
+  const before = JSON.parse(fs.readFileSync(logFile, 'utf8'))
+  const target = fill.listLog(10).find((e) => e.failed)
+  assert.ok(target, '应有可删的失败条目')
+  const r = fill.removeLog(target.at)
+  assert.strictEqual(r.removed, 1)
+  assert.strictEqual(r.remaining, before.length - 1)
+  const after = JSON.parse(fs.readFileSync(logFile, 'utf8'))
+  assert.deepStrictEqual(after.map((e) => e.at), before.filter((e) => e.at !== target.at).map((e) => e.at),
+    '只删目标条目，顺序与其余记录不变')
+  assert.ok(!fill.listLog(50).some((e) => e.at === target.at), '删除后列表不再含该条')
+  assert.throws(() => fill.removeLog(target.at), /没有这条提交记录/)
+  assert.throws(() => fill.removeLog(''), /缺少提交记录标识/)
 })
 
 await test('resubmit：预览/无载荷记录拒绝重放；不存在的留痕报错', async () => {
