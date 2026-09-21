@@ -605,13 +605,8 @@ body {
   width: 30px;
   height: 30px;
   flex-shrink: 0;
-  display: grid;
-  place-items: center;
-  color: #fff;
-  background: var(--brand-accent);
-  border-radius: 8px;
-  font-weight: 700;
-  font-size: 14px;
+  display: block;
+  object-fit: contain;
 }
 /* 品牌文案占据剩余宽度并可截断：窄窗口下先压缩文字，收起按钮不被挤出侧栏 */
 .brand-text { flex: 1; min-width: 0; }

@@ -1,7 +1,7 @@
 <template>
   <aside class="app-sidebar">
     <div class="brand-block">
-      <div class="brand-mark">P</div>
+      <img class="brand-mark" :src="appIcon" alt="Personnel PLM 图标" />
       <div class="brand-text">
         <div class="brand-name">Personnel PLM</div>
         <div class="brand-subtitle">项目工作台</div>
@@ -92,6 +92,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import appIcon from '../../build/icon.png'
 import { state } from '../store'
 
 defineProps({

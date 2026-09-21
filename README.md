@@ -177,6 +177,14 @@ Electron 43 · Vue 3 · Element Plus · ECharts · Vite 6 · electron-builder 26
 
 ## 开发
 
+### 应用图标
+
+当前图标为 A5「小海狸建造师」，原始方形图保存在 `build/icon-source.png`。
+执行 `npm run gen:icons` 生成 `build/icon.png`（1024×1024）和 `build/icon.ico`
+（256/128/64/48/32/24/16），再执行 `npm run verify:icons` 校验各尺寸及完整构图。
+生成过程只缩放，不去底、裁切或补边；不应使用旧的 `scripts/rebuild-icon.cjs` 去底流程处理该图。
+侧栏、窗口与托盘使用同一 PNG，安装包使用构建资源中的图标。已安装版本需重新打包安装后更新。
+
 ```bash
 npm install
 npm run dev        # 开发模式（Vite 热更新 + Electron）

@@ -154,6 +154,9 @@ function createWindow() {
     minWidth: 1080,
     minHeight: 700,
     title: 'Personnel PLM',
+    icon: app.isPackaged
+      ? path.join(process.resourcesPath, 'tray-icon.png')
+      : path.join(__dirname, '../build/icon.png'),
     autoHideMenuBar: true,
     backgroundColor: '#f5f7fa',
     webPreferences: {
