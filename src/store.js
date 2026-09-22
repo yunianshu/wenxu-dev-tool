@@ -56,6 +56,8 @@ export const state = reactive({
     sidebarCollapsed: false,
     /** 终端字号（px）。同上，纯外观偏好；不同人看终端的舒适字号差别不小 */
     terminalFontSize: 13,
+    /** 单个本机字体名称；空字符串沿用默认等宽字体回退栈。 */
+    terminalFontFamily: '',
     /** 外壳（含顶栏插槽）是否已挂载进文档。初始挂载期间根元素还没进 document，
      *  document.querySelector 找不到顶栏插槽，投递页头的 Teleport 会失败 */
     shellMounted: false,

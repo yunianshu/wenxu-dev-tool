@@ -58,6 +58,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { ArrowDown, Close, Refresh } from '@element-plus/icons-vue'
 import '@xterm/xterm/css/xterm.css'
 import { shortPath } from '../utils/path'
+import { terminalFontStack } from '../utils/ui-prefs'
 
 const props = defineProps({
   pane: { type: Object, required: true },        // { projectId, projectName, cwd, sessionCwd?, shellId, sessionId, shellLabel, exited, exitCode }
@@ -65,6 +66,7 @@ const props = defineProps({
   shellOptions: { type: Array, default: () => [] },
   /** 终端字号（px），纯外观偏好，由 ui-prefs.json 持久化，在终端工作台工具栏调整 */
   fontSize: { type: Number, default: 13 },
+  fontFamily: { type: String, default: '' },
 })
 const emit = defineEmits(['focus', 'close', 'session', 'update:shell'])
 
@@ -258,10 +260,11 @@ function scheduleFit() {
   }, 60)
 }
 
-/** 字号变化：改 xterm 选项后重新适配，scheduleFit 会把新的行列数同步给 pty */
-watch(() => props.fontSize, (size) => {
+/** 字体变化只更新外观，重新适配并同步 pty 行列数，不重建会话。 */
+watch(() => [props.fontSize, props.fontFamily], ([size, family]) => {
   if (!term || !size) return
   term.options.fontSize = size
+  term.options.fontFamily = terminalFontStack(family)
   scheduleFit()
 })
 
@@ -344,7 +347,7 @@ onMounted(async () => {
   term = new Terminal({
     cursorBlink: true,
     fontSize: props.fontSize,
-    fontFamily: 'Consolas, "Cascadia Mono", "Sarasa Mono SC", Menlo, monospace',
+    fontFamily: terminalFontStack(props.fontFamily),
     scrollback: 5000,
     allowProposedApi: true,
     theme: {

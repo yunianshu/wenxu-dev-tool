@@ -334,15 +334,10 @@
     <section v-show="activeSection === 'ui'" class="workspace-panel settings-ui">
       <div class="settings-item">
         <div class="settings-item-head">
-          <strong>终端字号</strong>
-          <span>终端工作台里的文字大小（{{ FONT_SIZE_MIN }}–{{ FONT_SIZE_MAX }}px），改完立即生效</span>
+          <strong>终端字体</strong>
+          <span>统一设置终端工作台的字体与字号，改完立即生效</span>
         </div>
-        <div class="font-size-control">
-          <el-button :disabled="fontSize <= FONT_SIZE_MIN" title="缩小终端字号" @click="stepFontSize(-1)">A－</el-button>
-          <span class="font-size-value">{{ fontSize }}</span>
-          <el-button :disabled="fontSize >= FONT_SIZE_MAX" title="放大终端字号" @click="stepFontSize(1)">A＋</el-button>
-          <el-button link type="primary" :disabled="fontSize === 13" @click="resetFontSize">恢复默认</el-button>
-        </div>
+        <TerminalFontSettings />
       </div>
 
       <div class="settings-item">
@@ -379,7 +374,7 @@ import { useTopbarReady } from '../composables/useTopbarReady'
 import { useProjects } from '../composables/useProjects'
 import { toPlain } from '../utils/ipc'
 import { shortPath, pathKey } from '../utils/path'
-import { FONT_SIZE_MIN, FONT_SIZE_MAX, stepTerminalFontSize, resetTerminalFontSize } from '../utils/ui-prefs'
+import TerminalFontSettings from '../components/TerminalFontSettings.vue'
 defineEmits(['show-changelog'])
 
 const topbarReady = useTopbarReady()
@@ -395,12 +390,6 @@ const { loadProjects } = useProjects()
 
 /** 由 vite define 从 package.json 注入（见 vite.config.js） */
 const appVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '—'
-
-// ---------- 界面 ----------
-/** 终端字号：与终端工作台工具栏共用同一份 state 与落盘逻辑，两处永远一致 */
-const fontSize = computed(() => state.ui.terminalFontSize)
-const stepFontSize = stepTerminalFontSize
-const resetFontSize = resetTerminalFontSize
 
 // ---------- 窗口关闭行为（主进程 close 拦截读取同一 closeAction 配置） ----------
 const CLOSE_ACTION_OPTIONS = [

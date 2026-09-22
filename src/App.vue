@@ -65,7 +65,7 @@ import SettingsView from './views/SettingsView.vue'
 import { state } from './store'
 import { useProjects } from './composables/useProjects'
 import { toPlain } from './utils/ipc'
-import { saveUiPrefs } from './utils/ui-prefs'
+import { saveUiPrefs, getTerminalFontRevision, restoreTerminalFontPrefs } from './utils/ui-prefs'
 import { shortPath } from './utils/path'
 
 const view = ref('dashboard')
@@ -94,6 +94,7 @@ let sidebarTouched = false
 /** 侧栏收起状态（外观偏好）：按上次退出时的状态恢复。
  *  恢复过程本身不加动画（见 sidebarAnimatable），避免每次启动都看到侧栏滑一次 */
 async function restoreSidebarPref() {
+  const fontRevision = getTerminalFontRevision()
   let saved = null
   try {
     saved = await window.gitReport.uiPrefsLoad?.()
@@ -101,8 +102,7 @@ async function restoreSidebarPref() {
   // 主进程繁忙时这个回包可能晚于用户点击：用户已经点过就以用户为准，
   // 否则会把刚切换的状态倒回磁盘上的旧值（侧栏自己弹回去）
   if (!sidebarTouched) state.ui.sidebarCollapsed = saved?.sidebarCollapsed === true
-  // 终端字号只在终端工作台里调整，这里只管恢复（加载时序早于用户能进到那一页）
-  if (saved?.terminalFontSize) state.ui.terminalFontSize = saved.terminalFontSize
+  restoreTerminalFontPrefs(saved, fontRevision)
   await nextTick()
   sidebarAnimatable.value = true
 }

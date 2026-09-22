@@ -50,10 +50,15 @@
             </el-tooltip>
           </el-radio-group>
 
+          <el-button class="terminal-font-settings-trigger" @click="fontSettingsVisible = true">字体设置</el-button>
           <el-button v-if="panes.length" @click="closeAll">全部关闭</el-button>
         </div>
       </div>
     </Teleport>
+
+    <el-dialog v-model="fontSettingsVisible" title="终端字体" width="460px" class="terminal-font-dialog">
+      <TerminalFontSettings />
+    </el-dialog>
 
     <p v-if="!state.projects.items.length" class="terminal-hint">
       还没有项目：先到「项目」页创建项目并关联本地目录，再回到这里分屏开终端。
@@ -74,6 +79,7 @@
         :focused="index === activeIndex"
         :shell-options="shellOptions"
         :font-size="state.ui.terminalFontSize"
+        :font-family="state.ui.terminalFontFamily"
         @focus="activeIndex = index"
         @close="removePane(index)"
         @session="onSession"
@@ -116,6 +122,7 @@ import { computed, nextTick, onBeforeMount, onBeforeUnmount, onMounted, ref, wat
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown, Plus } from '@element-plus/icons-vue'
 import TerminalPane from '../components/TerminalPane.vue'
+import TerminalFontSettings from '../components/TerminalFontSettings.vue'
 import { state } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
 
@@ -153,6 +160,7 @@ const panes = computed({
   set: (list) => { state.terminal.panes = list },
 })
 const gridMode = ref('auto')
+const fontSettingsVisible = ref(false)
 const shellOptions = ref([])
 const activeIndex = ref(0)
 const columnWidths = ref([0.5, 0.5])

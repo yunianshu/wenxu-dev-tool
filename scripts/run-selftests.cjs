@@ -48,6 +48,7 @@ const SUITES = [
   'extensions-selftest.cjs',
   'terminal-selftest.cjs',
   'terminal-workbench-selftest.cjs',
+  'terminal-font-selftest.cjs',
   'local-debug-selftest.cjs',
   'projects-selftest.cjs',
   'ai-context-selftest.mjs',
