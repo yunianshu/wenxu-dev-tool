@@ -197,7 +197,8 @@ Electron 43 · Vue 3 · Element Plus · ECharts · Vite 6 · electron-builder 26
 
 ### 应用图标
 
-当前图标为 A5「小海狸建造师」，原始方形图保存在 `build/icon-source.png`。
+当前图标为「项目启航」：青绿色背景搭配浅色项目文件夹与金色发布箭头，表达项目管理与一键发布。
+原始方形图保存在 `build/icon-source.png`，设计说明与生成提示见 [应用图标设计](design/app-icon.md)。
 执行 `npm run gen:icons` 生成 `build/icon.png`（1024×1024）和 `build/icon.ico`
 （256/128/64/48/32/24/16），再执行 `npm run verify:icons` 校验各尺寸及完整构图。
 生成过程只缩放，不去底、裁切或补边；不应使用旧的 `scripts/rebuild-icon.cjs` 去底流程处理该图。
