@@ -62,6 +62,7 @@ require.cache[require.resolve('../electron/deploy/ssh-service')] = {
     },
     exec: async (_conn, command, onLine) => {
       serverState.execLog.push(command)
+      if (command.includes('__DATA_SYNC_PATH_OK__')) return { code: 0, stdout: '__DATA_SYNC_PATH_OK__\n', stderr: '' }
       // sha256sum：对已真实落盘的「服务器」文件计算真实哈希，校验链路不失真
       const shaM = command.match(/sha256sum '([^']+)'/)
       if (shaM) {
@@ -99,7 +100,7 @@ function unzipTo(zipPath, destDir) {
   ], { windowsHide: true })
 }
 
-function seedProject(dir, dataSync) {
+function seedProject(dir, dataSync, options = {}) {
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(path.join(dir, 'VERSION'), '2.0.0\n', 'utf8')
   fs.writeFileSync(path.join(dir, 'docker-compose.yml'), 'services: {}\n', 'utf8')
@@ -114,8 +115,8 @@ function seedProject(dir, dataSync) {
     targets: [{
       id: 't1',
       name: '生产',
-      remotePath: '/srv/app',
-      server: { host: `${path.basename(dir)}.example.invalid`, port: 22, username: 'root', authType: 'password' },
+      remotePath: options.remotePath || '/srv/app',
+      server: { host: options.host || `${path.basename(dir)}.example.invalid`, port: 22, username: 'root', authType: 'password' },
       health: { enabled: false, url: '', timeout: 90, interval: 3 },
       dataSync,
     }],
@@ -237,6 +238,30 @@ async function main() {
     passed += 1
     console.log('  ✓ 数据目录缺失在检查阶段即失败，且不产生服务器操作')
 
+    // 同一服务器仅共享连接，数据同步配置与落盘目录始终跟随具体项目。
+    const sharedHost = 'shared-production.example.invalid'
+    const sharedA = seedProject(path.join(tmpRoot, 'shared-server-a'), { enabled: true, localDir: 'data', remoteDir: 'shared/data-a' }, { host: sharedHost, remotePath: '/srv/projects/a' })
+    const sharedB = seedProject(path.join(tmpRoot, 'shared-server-b'), { enabled: true, localDir: 'data', remoteDir: 'shared/data-b' }, { host: sharedHost, remotePath: '/srv/projects/b' })
+    for (const [projectId, expected, forbidden] of [[sharedA, '/srv/projects/a/shared/data-a', '/srv/projects/b/shared/data-b'], [sharedB, '/srv/projects/b/shared/data-b', '/srv/projects/a/shared/data-a']]) {
+      serverState.execLog.length = 0
+      const { record } = await runDeploy(projectId)
+      assert.strictEqual(record.status, 'success', record.message)
+      const syncCommands = serverState.execLog.filter((command) => command.includes('unzip -o'))
+      assert.strictEqual(syncCommands.length, 1)
+      assert.ok(syncCommands[0].includes(expected), '同步目标必须使用当前项目安装目录及配置')
+      assert.ok(!syncCommands[0].includes(forbidden), '不得使用同服务器另一项目的数据目录')
+    }
+    const projectB = deployProjects.list().find((item) => item.id === sharedB)
+    projectB.targets[0].dataSync.enabled = false
+    deployProjects.save(projectB)
+    serverState.execLog.length = 0
+    const { record: disabledB } = await runDeploy(sharedB)
+    assert.strictEqual(disabledB.status, 'success', disabledB.message)
+    assert.strictEqual(disabledB.stages.datasync.status, 'skipped')
+    assert.ok(!serverState.execLog.some((command) => command.includes('unzip -o')), 'B 关闭同步后不得借用 A 的启用配置')
+    passed += 1
+    console.log('  ✓ 同服务器 A/B 各用各自目录；关闭 B 不继承 A 的同步配置')
+
     // ── 8. 导入钩子：importMode=command → 数据落盘后执行导入命令（占位符展开） ──
     const importDir = path.join(tmpRoot, 'proj-import')
     fs.mkdirSync(importDir, { recursive: true })
@@ -332,7 +357,7 @@ async function main() {
       const recR = await deployService.restoreDbBackup(savedR.id, 't1', 'db_20260905-123401.sql')
       assert.strictEqual(recR.status, 'success', '恢复应成功: ' + recR.message)
       const dropCmd = serverState.execLog.find((c) => c.includes('DROP DATABASE'))
-      assert.ok(dropCmd && dropCmd.includes('DROP DATABASE mydb WITH (FORCE)'), '应重建目标库')
+      assert.ok(dropCmd && dropCmd.includes('DROP DATABASE "mydb" WITH (FORCE)'), '应安全引用并重建目标库')
       assert.ok(serverState.execLog.some((c) => c.includes('db_guard_') && c.includes('pg_dump')), '应先做保底备份')
       assert.ok(serverState.execLog.some((c) => c.includes('ON_ERROR_STOP=1')), '灌入应启用出错即停')
       assert.ok(serverState.execLog.some((c) => c.includes('com.docker.compose.project')), '应重启同 compose 项目容器')

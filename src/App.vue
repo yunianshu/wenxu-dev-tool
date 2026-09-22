@@ -291,13 +291,10 @@ onMounted(async () => {
       if (progress.kind === 'upload') state.deploy.uploadPercent = progress.percent || 0
       if (progress.kind === 'datasync') state.deploy.datasyncPercent = progress.percent || 0
     })
-    window.gitReport.onDeployDone((result) => {
+    window.gitReport.onDeployDone(() => {
       state.deploy.running = false
       state.deploy.finishedAt = Date.now()
-      // 仅发布成功才更新线上版本（回滚/数据恢复的 version 字段不是版本号）
-      if (result?.record?.type === 'deploy' && result?.record?.status === 'success') {
-        state.deploy.currentVersion = result.record.version
-      }
+      // 线上版本由部署视图核对项目和目标后更新，避免后台任务污染新选择。
     })
 
     warmupActive = true

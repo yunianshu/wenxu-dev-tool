@@ -23,7 +23,7 @@ function defaultServer() {
   return { host: '', port: 22, username: 'root', authType: 'password', keyPath: '' }
 }
 
-/** 目标级数据同步配置：发布成功后把本地数据目录推送到服务器共享目录 */
+/** 目标级数据同步配置：发布时把本地数据推送到本项目共享目录 */
 function normalizeDataSync(raw) {
   const s = raw && typeof raw === 'object' ? raw : {}
   const str = (v, fallback) => {
@@ -50,12 +50,35 @@ function normalizeDataSync(raw) {
 function normalizeDb(raw) {
   const d = raw && typeof raw === 'object' ? raw : {}
   return {
+    strategy: ['auto', 'manual', 'off'].includes(d.strategy) ? d.strategy
+      : d.enabled === true ? 'manual' : (d.container || d.name ? 'off' : 'auto'),
     enabled: d.enabled === true,
     type: d.type === 'mysql' ? 'mysql' : 'postgres',
     container: String(d.container ?? '').trim(),
     name: String(d.name ?? '').trim(),
     user: String(d.user ?? '').trim(),
   }
+}
+
+function normalizeHealth(raw) {
+  const h = raw && typeof raw === 'object' ? raw : {}
+  return {
+    enabled: true, url: '', timeout: 90, interval: 3,
+    ...h,
+    // 旧配置显式关闭的检查继续关闭；仅未配置的新目标默认自动探测。
+    strategy: ['auto', 'manual'].includes(h.strategy) ? h.strategy : h.enabled === false ? 'manual' : 'auto',
+  }
+}
+
+function sameServerEndpoint(a, b) {
+  return a.host.toLowerCase() === b.host.toLowerCase() && a.port === b.port && a.username === b.username
+}
+
+function clearAutomaticRuntime(target) {
+  target.remotePath = ''
+  delete target.autoSudo
+  delete target.autoHealth
+  delete target.autoDb
 }
 
 /** 单个部署目标（环境） */
@@ -66,7 +89,7 @@ function defaultTarget() {
     serverId: '',
     server: defaultServer(),
     remotePath: '',
-    health: { enabled: true, url: '', timeout: 90, interval: 3 },
+    health: normalizeHealth(),
     db: normalizeDb(),
     dataSync: normalizeDataSync(),
   }
@@ -172,11 +195,11 @@ function normalizeProject(p) {
 
   if (!Array.isArray(source.targets) || !source.targets.length) {
     const t = defaultTarget()
+    t.health = normalizeHealth(source.health)
     if (source.server && (source.server.host || source.server.remotePath || source.remotePath)) {
       t.server = { ...defaultServer(), ...source.server }
       // 旧格式 remotePath 位于 server 内部（deploy-service 旧版读 project.server.remotePath）
       t.remotePath = (source.server && source.server.remotePath) || source.remotePath || ''
-      t.health = { ...defaultTarget().health, ...(source.health || {}) }
       t.name = '默认环境'
     }
     // 旧格式无环境级 db 配置：项目级 legacy 值迁移到唯一目标
@@ -189,7 +212,7 @@ function normalizeProject(p) {
     ...defaultTarget(),
     ...t,
     server: { ...defaultServer(), ...(t.server || {}) },
-    health: { ...defaultTarget().health, ...(t.health || {}) },
+    health: normalizeHealth(t.health),
     // 旧数据的目标没有 db 字段，而 defaultTarget() 的默认值会经展开注入，
     // 不能用真值判断「是否自带配置」——显式判所属键，缺失时迁移 legacy 值
     db: normalizeDb(Object.prototype.hasOwnProperty.call(t, 'db') ? t.db : legacyDb),
@@ -288,6 +311,14 @@ function saveServer(input = {}) {
   }
   if (old) doc.servers[doc.servers.indexOf(old)] = s
   else doc.servers.push(s)
+  if (old && !sameServerEndpoint(old, s)) {
+    for (const project of doc.projects) {
+      if (project.deployMode !== 'auto') continue
+      for (const target of project.targets) {
+        if (target.serverId === s.id) clearAutomaticRuntime(target)
+      }
+    }
+  }
   writeDocument(doc)
   return { ok: true, id: s.id }
 }
@@ -390,11 +421,13 @@ function save(input) {
     const oldT = old && old.targets.find((x) => x.id === t.id)
     if (t.serverId) {
       // 项目表单里的 server 只是查询快照，不能覆盖共享服务器的最新连接与口令。
-      t.server = { ...doc.servers.find((s) => s.id === t.serverId) }
-      if (oldT && oldT.serverId !== t.serverId && incoming.deployMode === 'auto') {
-        t.remotePath = ''; delete t.autoSudo
-        t.health = { ...defaultTarget().health }
+      const server = doc.servers.find((s) => s.id === t.serverId)
+      const staleEndpoint = t.server.host && !sameServerEndpoint(normalizeServer(t.server), server)
+      if (incoming.deployMode === 'auto' && ((oldT && oldT.serverId !== t.serverId) || staleEndpoint)) {
+        // 连接变化只使该服务器的探测结果失效，旧表单也不能恢复过期探测结果。
+        clearAutomaticRuntime(t)
       }
+      t.server = { ...server }
     } else {
       const oldConnection = oldT?.serverId ? null : oldT?.server
       mergeSecret(t.server, oldConnection?.secret, 'secret', 'clearSecret')

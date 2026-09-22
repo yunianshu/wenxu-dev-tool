@@ -16,13 +16,14 @@ const history = require('./history')
 const releaseNotes = require('./release-notes')
 const store = require('../store')
 const automatic = require('./auto-deploy')
+const moduleDataSync = require('./data-sync')
 const { validateArtifact } = require('./artifact-check')
 const { detectVersion, bumpVersionFiles } = require('./version-detector')
 
 /** 服务端脚本随应用分发（asar 内也可 readFileSync） */
 const DEPLOY_SCRIPT_PATH = path.join(__dirname, 'scripts', 'deploy.sh')
 
-/** 9 个发布阶段，渲染层按此渲染进度；datasync 在发布成功后由客户端执行 */
+/** 发布阶段；直接挂载的数据在启动前同步，导入钩子在应用健康后执行。 */
 const STAGES = [
   { id: 'check', label: '检查项目' },
   { id: 'package', label: '项目打包' },
@@ -104,12 +105,20 @@ function parseMarker(line, tracker, resultBox) {
   if (m) {
     const map = {
       'backup-code': 'backup', 'backup-db': 'backup', extract: 'extract',
-      build: 'build', start: 'start', health: 'health', rollback: 'rollback',
+      build: 'build', start: 'start', health: 'health', rollback: 'rollback', datasync: 'datasync',
     }
     const sid = map[m[1]]
     if (sid === 'rollback') {
       log('warn', '发布失败，正在自动回滚……')
-    } else if (sid) tracker.begin(sid)
+    } else if (sid) {
+      if (sid === 'datasync') tracker.end('build', 'success')
+      tracker.begin(sid)
+    }
+    return null
+  }
+  if (line === '__STAGE_OK__:datasync') {
+    resultBox.dataSynced = true
+    tracker.end('datasync', 'success')
     return null
   }
   const okM = line.match(/^__DEPLOY_OK__:(.*)$/)
@@ -154,12 +163,29 @@ function readDeployScript() {
   return fs.readFileSync(DEPLOY_SCRIPT_PATH, 'utf8').replace(/\r\n/g, '\n')
 }
 
+/** 自动探测结果与用户配置分开保存；服务器复用不改变项目的发布策略。 */
+function healthFor(project, target) {
+  if (project.deployMode === 'auto' && target.health?.strategy !== 'manual') {
+    return target.autoHealth || target.health || {}
+  }
+  return target.health || {}
+}
+
+/** 数据库归属与服务器连接分离；自动识别结果不会覆盖手动配置或关闭选择。 */
+function databaseFor(project, target) {
+  if (project.deployMode === 'auto') {
+    if (target.db?.strategy === 'off') return { enabled: false }
+    if (target.db?.strategy !== 'manual') return target.autoDb || { enabled: false }
+  }
+  return target.db || {}
+}
+
 /** 拼装 deploy.sh 参数（服务器目录结构方案 §8：home 下 releases/uploads/backups/shared/deployer） */
 function buildDeployArgs(project, target, pack, version) {
   const d = project.deploy || {}
   // 数据库备份配置按环境存放：同一项目发布到测试/生产时用的是各自的库
-  const db = target.db || {}
-  const h = target.health || {}
+  const db = databaseFor(project, target)
+  const h = healthFor(project, target)
   const mode = deployModeOf(project)
   const args = [
     'deploy',
@@ -171,6 +197,7 @@ function buildDeployArgs(project, target, pack, version) {
     '--version', version,
   ]
   if (project.releaseId) args.push('--release-id', project.releaseId)
+  if (pack.dataSyncScript) args.push('--data-sync-script', pack.dataSyncScript)
   if (project.composeProjectName) args.push('--project-name', project.composeProjectName)
   if (mode === 'docker') {
     args.push('--compose', resolveCompose(project).file)
@@ -182,9 +209,9 @@ function buildDeployArgs(project, target, pack, version) {
   }
   args.push(d.backupCode ? '--backup-code' : '--no-backup-code')
   if (db.enabled) {
-    args.push('--backup-db', '--db-type', db.type || 'postgres',
-      '--db-container', db.container || '', '--db-name', db.name || '',
-      '--db-user', db.user || '')
+    args.push('--backup-db', '--db-type', db.type || 'postgres')
+    if (db.service) args.push('--db-service', db.service)
+    else args.push('--db-container', db.container || '', '--db-name', db.name || '', '--db-user', db.user || '')
   } else {
     args.push('--no-backup-db')
   }
@@ -405,11 +432,11 @@ function runPackageCommand(project) {
 }
 
 /** 发布前本地检查（方案 §23 的关键项；按部署形态分别校验） */
-function preCheckLocal(project, target, version) {
+function preCheckLocal(project, target, version, autoMode = false) {
   const problems = []
   if (!project.name) problems.push('缺少项目名称')
   if (!project.localPath || !fs.existsSync(project.localPath)) problems.push(`本地项目目录不存在: ${project.localPath}`)
-  else if (deployModeOf(project) === 'docker') {
+  else if (!autoMode && deployModeOf(project) === 'docker') {
     const rc = resolveCompose(project)
     if (!fs.existsSync(path.join(project.localPath, rc.file))) {
       problems.push(`Docker Compose 文件不存在: ${rc.file}（已尝试 ${COMPOSE_CANDIDATES.join(' / ')}），可在部署设置改用脚本部署形态`)
@@ -417,10 +444,16 @@ function preCheckLocal(project, target, version) {
   }
   if (!version) problems.push('未识别到版本号（可改用手动输入）')
   // 数据库备份参数缺失在客户端就拦截：否则要等发布到服务器备份阶段才失败
-  const db = target.db || {}
+  const db = databaseFor(project, target)
   if (db.enabled) {
-    if (!String(db.container || '').trim() || !String(db.name || '').trim()) {
+    if (!db.service && (!String(db.container || '').trim() || !String(db.name || '').trim())) {
       problems.push(`[${target.name}] 已启用「发布前备份数据库」但未配置数据库容器名或库名（部署设置 → 数据库备份中补全）`)
+    }
+  }
+  const health = healthFor(project, target)
+  if (health.enabled && project.deployMode === 'auto' && target.health?.strategy === 'manual') {
+    if (!/^https?:\/\/[^\s]+$/i.test(String(health.url || '').trim())) {
+      problems.push(`[${target.name}] 请填写本项目有效的 HTTP 健康检查地址，或使用自动识别/关闭 HTTP 检查`)
     }
   }
   const s = target.server || {}
@@ -451,27 +484,12 @@ function getDataSync(target) {
  * 返回 { ok, sourceDir, problem }：ok=false 时 problem 为用户可读原因。
  */
 function validateDataSync(project, dataSync) {
-  if (!dataSync.localDir) return { ok: false, problem: '数据目录未填写' }
-  const sourceDir = path.resolve(project.localPath, dataSync.localDir)
-  // 防越界：数据目录必须位于项目目录内（resolve 后前缀校验）
-  const projectRoot = path.resolve(project.localPath)
-  if (sourceDir !== projectRoot && !sourceDir.startsWith(projectRoot + path.sep)) {
-    return { ok: false, problem: `数据目录必须在项目目录内: ${dataSync.localDir}` }
-  }
-  if (sourceDir === projectRoot) {
-    return { ok: false, problem: '数据目录不能是项目根目录本身' }
-  }
-  if (!fs.existsSync(sourceDir)) return { ok: false, problem: `数据目录不存在: ${sourceDir}` }
-  if (!fs.statSync(sourceDir).isDirectory()) return { ok: false, problem: `数据目录不是文件夹: ${sourceDir}` }
-  if (!dataSync.remoteDir || dataSync.remoteDir.includes('..')) {
-    return { ok: false, problem: `远程数据目录非法: ${dataSync.remoteDir}` }
-  }
-  return { ok: true, sourceDir }
+  return moduleDataSync.validateDataSync(project, dataSync)
 }
 
 /** 服务器端数据同步命令：建目录 → 解压覆盖 → 删包（单条命令，任一步失败整体失败） */
-function buildDataSyncCommand(dataZipRemote, remoteDestDir) {
-  return `mkdir -p ${quoteArg(remoteDestDir)} && unzip -o ${quoteArg(dataZipRemote)} -d ${quoteArg(remoteDestDir)} && rm -f ${quoteArg(dataZipRemote)} && echo __DATA_SYNC_OK__`
+function buildDataSyncCommand(dataZipRemote, remoteDestDir, remoteHome) {
+  return moduleDataSync.buildDataSyncCommand(dataZipRemote, remoteDestDir, remoteHome)
 }
 
 /** 解析目标的数据导入钩子配置（凭据经 getDataSyncCredentials 从原始数据解密，list() 脱敏版不含） */
@@ -556,6 +574,7 @@ async function run(projectId, targetId) {
 
   let conn = null
   let pack = null
+  let dataPack = null
   let prepared = null
   let buildWorkspace = null
   const autoMode = project.deployMode === 'auto'
@@ -578,9 +597,9 @@ async function run(projectId, targetId) {
       if (activeRun) activeRun.redact = prepared.redact
       if (isCanceled()) throw new Error('发布已取消')
       target.remotePath = prepared.remotePath
-      target.health = prepared.health
-      target.db = { enabled: false }
-      target.dataSync = { enabled: false }
+      target.autoHealth = prepared.health
+      target.autoDb = prepared.db
+      if (target.db?.strategy !== 'manual' && target.db?.strategy !== 'off' && prepared.db?.reason) log('info', prepared.db.reason)
       target.autoSudo = prepared.sudo
       project.composeProjectName = automatic.identity(project, target.id)
       project.composeFile = automatic.COMPOSE
@@ -600,7 +619,7 @@ async function run(projectId, targetId) {
       log('info', `本次更新内容：${gitInfo.info.commits.length} 条提交${scope ? `（${scope}）` : ''}`)
     }
     const mode = deployModeOf(project)
-    const problems = autoMode ? [] : preCheckLocal(project, target, ver.version)
+    const problems = preCheckLocal(project, target, ver.version, autoMode)
     if (!autoMode && list.some((p) => p.id !== project.id && p.targets.some((t) => t.server?.host === target.server.host && Number(t.server.port || 22) === Number(target.server.port || 22) && String(t.remotePath).replace(/\/+$/, '') === String(target.remotePath).replace(/\/+$/, '')))) {
       problems.push('该服务器部署目录已被其他项目配置使用，请为当前项目设置独立目录')
     }
@@ -708,7 +727,7 @@ async function run(projectId, targetId) {
         includeBuild: true,
         files: prepared?.files,
         safeRoot: autoMode,
-        exclude: autoMode ? automatic.privateFile : undefined,
+        exclude: autoMode ? prepared.exclude : undefined,
       })
       log('success', `ZIP 生成完成：${pack.fileName}（${(pack.sizeBytes / 1024 / 1024).toFixed(1)} MB，${pack.fileCount} 个文件）`)
     }
@@ -730,6 +749,37 @@ async function run(projectId, targetId) {
     log('success', 'SSH 连接成功')
 
     const remoteHome = target.remotePath
+    let dataZipRemote = ''
+    const uploadDataPackage = async () => {
+      if (dataZipRemote) return dataZipRemote
+      if (isCanceled()) throw new Error('发布已取消')
+      const checked = validateDataSync(project, dataSyncCfg)
+      if (!checked.ok) throw new Error(checked.problem)
+      log('info', `正在打包数据目录 ${dataSyncCfg.localDir} ……`)
+      dataPack = await packager.buildDataPackage({ projectDir: project.localPath, dataDir: dataSyncCfg.localDir, appName: project.name, version: ver.version })
+      const destination = ssh.remoteJoin(remoteHome, 'uploads', dataPack.fileName)
+      await ssh.upload(conn, dataPack.zipPath, destination, (done, total) => {
+        emit('deploy:progress', { kind: 'datasync', percent: total ? Math.round((done / total) * 100) : 0 })
+      })
+      const sum = await ssh.exec(conn, `sha256sum ${quoteArg(destination)} | awk '{print $1}'`)
+      if ((sum.stdout || '').trim() !== dataPack.sha256) throw new Error('数据包上传校验失败（SHA256 不一致）')
+      dataZipRemote = destination
+      return destination
+    }
+    const prepareStartupSync = async () => {
+      if (!autoMode || !dataSyncCfg.enabled || !prepared?.syncBeforeStart) return
+      const dataFile = await uploadDataPackage()
+      const destination = ssh.remoteJoin(remoteHome, dataSyncCfg.remoteDir)
+      pack.dataSyncScript = ssh.remoteJoin(remoteHome, 'deployer', 'data-sync.sh')
+      await uploadTextFile(conn, '#!/usr/bin/env bash\n' + buildDataSyncCommand(dataFile, destination, remoteHome) + '\n', pack.dataSyncScript)
+      log('info', '本项目数据将在备份和构建通过后、启动新版本前同步')
+    }
+    if (dataSyncCfg.enabled) {
+      const checked = await ssh.exec(conn, moduleDataSync.buildDataSyncPreflightCommand(remoteHome, dataSyncCfg.remoteDir))
+      if (checked.code !== 0 || !/__DATA_SYNC_PATH_OK__/.test(checked.stdout || '')) {
+        throw new Error(`数据同步目录检查失败：${String(checked.stderr || checked.stdout || '无法确认项目目录归属').trim()}`)
+      }
+    }
     log('info', '初始化远程目录结构…')
     await ssh.mkdirp(conn, ssh.remoteJoin(remoteHome, 'uploads'))
     await ssh.mkdirp(conn, ssh.remoteJoin(remoteHome, 'deployer'))
@@ -768,6 +818,7 @@ async function run(projectId, targetId) {
       throw new Error(`上传校验失败（本地 ${pack.sha256.slice(0, 8)} / 远端 ${remoteSha.slice(0, 8)}）`)
     }
     log('success', 'SHA256 校验通过')
+    await prepareStartupSync()
     tracker.end('upload', 'success', t2)
 
     // ── 阶段 4~8：服务器端执行 deploy.sh ────────────
@@ -775,7 +826,7 @@ async function run(projectId, targetId) {
     const cmd = `${target.autoSudo && autoMode ? 'sudo -n ' : ''}bash ${quoteArg(scriptRemote)} ${buildDeployArgs(project, target, pack, ver.version).map(quoteArg).join(' ')}`
     let res = await execDeployScript(conn, cmd, tracker, resultBox)
     // 自动方案的构建失败可用真实错误修正一次；此时服务器尚未停止旧服务。
-    if (autoMode && !resultBox.ok && !isCanceled() && tracker.state.build.status === 'running' && tracker.state.start.status === 'waiting') {
+    if (autoMode && !resultBox.ok && !isCanceled() && tracker.state.build.status === 'running' && tracker.state.start.status === 'waiting' && tracker.state.datasync.status === 'waiting') {
       log('warn', '构建未通过，正在依据构建日志自动修复部署方案并重试一次…')
       const fixed = await automatic.prepare(project, target, {
         conn, uploadText: uploadTextFile, log, signal: controller.signal, releaseId: project.releaseId,
@@ -784,17 +835,19 @@ async function run(projectId, targetId) {
       if (isCanceled()) throw new Error('发布已取消')
       if (activeRun) activeRun.redact = fixed.redact
       prepared = fixed
-      target.health = fixed.health
+      target.autoHealth = fixed.health
+      target.autoDb = fixed.db
       projects.save(project)
       try { fs.unlinkSync(pack.zipPath) } catch { /* 临时包可能已清理 */ }
       tracker.begin('package')
-      pack = await packager.buildPackage({ projectDir: project.localPath, appName: project.name, version: ver.version, files: fixed.files, includeBuild: true, safeRoot: true, exclude: automatic.privateFile })
+      pack = await packager.buildPackage({ projectDir: project.localPath, appName: project.name, version: ver.version, files: fixed.files, includeBuild: true, safeRoot: true, exclude: fixed.exclude })
       tracker.end('package', 'success')
       tracker.begin('upload')
       const remote = ssh.remoteJoin(remoteHome, 'uploads', pack.fileName)
       await ssh.upload(conn, pack.zipPath, remote)
       const verify = await ssh.exec(conn, `sha256sum ${quoteArg(remote)} | awk '{print $1}'`)
       if (verify.stdout.trim() !== pack.sha256) throw new Error('修复后的发布包上传校验失败')
+      await prepareStartupSync()
       tracker.end('upload', 'success')
       Object.assign(resultBox, { ok: false, message: '', rolledBack: false })
       const retryCmd = `${target.autoSudo ? 'sudo -n ' : ''}bash ${quoteArg(scriptRemote)} ${buildDeployArgs(project, target, pack, ver.version).map(quoteArg).join(' ')}`
@@ -818,35 +871,23 @@ async function run(projectId, targetId) {
         try { fs.unlinkSync(pack.zipPath) } catch { /* 清理失败不影响结果 */ }
       }
 
-      // ── 阶段 9：数据同步（可选，发布成功后推送本地数据到服务器共享目录） ──
+      // 直接挂载的数据已在启动前同步；其余数据和应用导入在健康检查后执行。
       if (dataSyncCfg.enabled && !resultBox.rolledBack) {
         tracker.begin('datasync')
         const tds = Date.now()
         try {
-          const vds = validateDataSync(project, dataSyncCfg)
-          if (!vds.ok) throw new Error(vds.problem)
-          log('info', `正在打包数据目录 ${dataSyncCfg.localDir} ……`)
-          const dataPack = await packager.buildDataPackage({
-            projectDir: project.localPath,
-            dataDir: dataSyncCfg.localDir,
-            appName: project.name,
-            version: ver.version,
-          })
-          log('info', `数据包 ${dataPack.fileName}（${dataPack.fileCount} 项，${(dataPack.sizeBytes / 1024 / 1024).toFixed(1)} MB）`)
-          const dataZipRemote = ssh.remoteJoin(remoteHome, 'uploads', dataPack.fileName)
-          await ssh.upload(conn, dataPack.zipPath, dataZipRemote, (done, total) => {
-            emit('deploy:progress', { kind: 'datasync', percent: total ? Math.round((done / total) * 100) : 0 })
-          })
-          const dsum = await ssh.exec(conn, `sha256sum ${quoteArg(dataZipRemote)} | awk '{print $1}'`)
-          if ((dsum.stdout || '').trim() !== dataPack.sha256) {
-            throw new Error('数据包上传校验失败（SHA256 不一致）')
-          }
           const destDir = ssh.remoteJoin(remoteHome, dataSyncCfg.remoteDir)
-          log('info', `解压覆盖到 ${dataSyncCfg.remoteDir} ……`)
-          const dres = await ssh.exec(conn, buildDataSyncCommand(dataZipRemote, destDir))
-          if (dres.code !== 0 || !/__DATA_SYNC_OK__/.test(dres.stdout || '')) {
-            throw new Error(`服务器执行数据同步失败（退出码 ${dres.code}）`)
+          if (pack.dataSyncScript) {
+            if (!resultBox.dataSynced) throw new Error('服务器未确认启动前数据同步完成，请检查发布日志')
+          } else {
+            const dataFile = await uploadDataPackage()
+            log('info', `解压覆盖到 ${dataSyncCfg.remoteDir} ……`)
+            const dres = await ssh.exec(conn, buildDataSyncCommand(dataFile, destDir, remoteHome))
+            if (dres.code !== 0 || !/__DATA_SYNC_OK__/.test(dres.stdout || '')) {
+              throw new Error(`服务器执行数据同步失败（退出码 ${dres.code}）`)
+            }
           }
+          if (isCanceled()) throw new Error('发布已取消')
           // ── 同步后导入钩子：把数据写入应用（如调用应用导入接口） ──
           const di = getDataImport(projectId, target, target.id)
           if (di.mode === 'command' && di.command.trim()) {
@@ -862,14 +903,13 @@ async function run(projectId, targetId) {
             }
             log('success', '数据导入完成')
           }
-          try { fs.unlinkSync(dataPack.zipPath) } catch { /* noop */ }
           tracker.end('datasync', 'success', tds)
           log('success', `数据同步完成 → ${dataSyncCfg.remoteDir}`)
         } catch (dsErr) {
           tracker.end('datasync', 'failed', tds)
           const msg = `数据同步失败: ${(dsErr && dsErr.message) || dsErr}`
           log('error', msg)
-          log('warn', '代码已发布成功但数据未同步，请排查后重新发布')
+          log('warn', '代码已发布，数据同步或导入未完成；已写入数据不会自动撤回，请排查后重试')
           return finish('failed', msg)
         }
       } else {
@@ -918,6 +958,7 @@ async function run(projectId, targetId) {
     if (activeRun && activeRun.id === runId) activeRun = null
     // 清理本地残留 zip（失败场景；成功路径已在 finish 前删除；脚本形态产物包保留）
     try { if (pack && !pack.keepLocal && fs.existsSync(pack.zipPath)) fs.unlinkSync(pack.zipPath) } catch { /* noop */ }
+    try { if (dataPack && fs.existsSync(dataPack.zipPath)) fs.unlinkSync(dataPack.zipPath) } catch { /* 临时数据包清理失败不改变发布结果 */ }
     if (buildWorkspace && path.dirname(path.resolve(buildWorkspace)) === path.resolve(os.tmpdir()) && path.basename(buildWorkspace).startsWith('onedeploy-build-')) {
       fs.rmSync(buildWorkspace, { recursive: true, force: true })
     }
@@ -1018,32 +1059,91 @@ function assertDbBackupName(fileName) {
   }
 }
 
-/** 数据库恢复所需配置（沿用该环境在部署设置中填写的 db 配置） */
-function requireDbConfig(target) {
-  const d = (target && target.db) || {}
+/** 使用项目自己的数据库策略；自动识别结果不要求用户填写容器名和库名。 */
+function requireDbConfig(project, target, forRestore = false) {
+  const d = databaseFor(project, target)
   const env = (target && target.name) || '当前环境'
-  if (!d.enabled) throw new Error(`[${env}] 未启用「发布前备份数据库」，无法恢复（请先在部署设置中开启并配置数据库信息）`)
+  if (!d.enabled) throw new Error(`[${env}] 未启用「发布前备份数据库」${d.reason ? `：${d.reason}` : '，请先发布以识别数据库，或在部署设置中配置数据库信息'}`)
+  if (!['postgres', 'mysql'].includes(d.type)) throw new Error(`[${env}] 数据库类型不支持备份管理`)
+  if (forRestore && d.type !== 'postgres') throw new Error(`[${env}] MySQL 备份可以查看；当前仅支持 PostgreSQL 备份恢复`)
+  if (!String(target.remotePath || '').trim()) throw new Error(`[${env}] 尚无已部署目录，请先完成发布`)
+  const auto = project.deployMode === 'auto' && (target.db?.strategy || 'auto') === 'auto'
+  if (auto) {
+    const service = String(d.service || '').trim()
+    if (!/^[a-zA-Z0-9_.-]+$/.test(service)) throw new Error(`[${env}] 自动识别的数据库服务无效，请重新发布以更新识别结果`)
+    return { ...d, auto: true, service }
+  }
+  // 列表只读备份目录，不依赖容器仍在运行或完整的恢复参数。
+  if (!forRestore) return d
   const container = String(d.container || '').trim()
   const name = String(d.name || '').trim()
   const user = String(d.user || 'postgres').trim()
   if (!container || !name) throw new Error(`[${env}] 数据库容器名或库名未配置`)
-  // 容器名/库名/用户名进入 shell 与 SQL 标识符位置，只放行安全字符
-  for (const v of [container, name, user]) {
-    if (!/^[\w.-]+$/.test(v)) throw new Error(`[${env}] 数据库配置含非法字符：${v}`)
+  if (!/^[a-zA-Z0-9_.-]+$/.test(container)) throw new Error(`[${env}] 数据库容器名含非法字符`)
+  if ([name, user].some((value) => !value || /[\x00-\x1f\x7f]/.test(value))) throw new Error(`[${env}] 数据库名称或用户无效`)
+  return { ...d, container, name, user, auto: false }
+}
+
+function dbSudo(project, target) {
+  return project.deployMode === 'auto' && target.autoSudo ? 'sudo -n ' : ''
+}
+
+/** 标签同时限定项目和服务；多副本不能猜测要恢复哪一个数据库。 */
+async function resolveRestoreDb(conn, project, target, db) {
+  if (!db.auto) return db
+  const docker = `${dbSudo(project, target)}docker`
+  const result = await ssh.exec(conn, `${docker} ps -q --filter ${quoteArg(`label=com.docker.compose.project=${automatic.identity(project, target.id)}`)} --filter ${quoteArg(`label=com.docker.compose.service=${db.service}`)} --filter status=running`)
+  const ids = (result.stdout || '').trim().split(/\s+/).filter(Boolean)
+  if (result.code !== 0 || ids.length !== 1 || !/^[a-f0-9]{12,64}$/.test(ids[0])) {
+    throw new Error('无法唯一定位当前项目的运行中数据库容器，请检查服务状态后重试')
   }
-  if (d.type !== 'postgres') throw new Error(`[${env}] 当前仅支持 PostgreSQL 备份恢复`)
-  return { container, name, user }
+  const readNames = [
+    'db_user="${POSTGRES_USER:-}"',
+    'if [ -z "$db_user" ] && [ -n "${POSTGRES_USER_FILE:-}" ]; then db_user="$(cat "$POSTGRES_USER_FILE")"; fi',
+    'db_user="${db_user:-postgres}"',
+    'db_name="${POSTGRES_DB:-}"',
+    'if [ -z "$db_name" ] && [ -n "${POSTGRES_DB_FILE:-}" ]; then db_name="$(cat "$POSTGRES_DB_FILE")"; fi',
+    'db_name="${db_name:-$db_user}"',
+    'printf "%s\\n%s\\n" "$db_user" "$db_name"',
+  ].join('\n')
+  const names = await ssh.exec(conn, `${docker} exec ${quoteArg(ids[0])} sh -ceu ${quoteArg(readNames)}`)
+  const rows = (names.stdout || '').replace(/\r?\n$/, '').split('\n')
+  if (names.code !== 0 || rows.length !== 2 || rows.some((value) => !value || /[\x00-\x1f\x7f]/.test(value))) {
+    throw new Error('无法读取数据库现有库名和用户，请检查容器的 PostgreSQL 环境配置')
+  }
+  return { ...db, container: ids[0], user: rows[0], name: rows[1] }
+}
+
+/** 密码始终在容器内读取，不经 inspect、SSH 输出、客户端变量或日志传递。 */
+function postgresCommand(docker, db, tool, args, stdin = false) {
+  const script = [
+    'if [ -z "${PGPASSWORD:-}" ]; then',
+    '  PGPASSWORD="${POSTGRES_PASSWORD:-}"',
+    '  if [ -z "$PGPASSWORD" ] && [ -n "${POSTGRES_PASSWORD_FILE:-}" ]; then PGPASSWORD="$(cat "$POSTGRES_PASSWORD_FILE")"; fi',
+    '  export PGPASSWORD',
+    'fi',
+    `exec ${tool} "$@"`,
+  ].join('\n')
+  return `${docker} exec ${stdin ? '-i ' : ''}${quoteArg(db.container)} sh -ceu ${quoteArg(script)} -- ${args.map(quoteArg).join(' ')}`
+}
+
+function sqlIdentifier(value) {
+  return `"${String(value).replace(/"/g, '""')}"`
+}
+
+function sqlLiteral(value) {
+  return `E'${String(value).replace(/\\/g, '\\\\').replace(/'/g, "''")}'`
 }
 
 /** 列出服务器 backups/ 下的数据库备份（按时间倒序） */
 async function listDbBackups(projectId, targetId) {
-  const { target, conn } = await connectTarget(projectId, targetId)
-  requireDbConfig(target) // 未配置数据库信息时列表也无意义
+  const { project, target, conn } = await connectTarget(projectId, targetId)
   const home = target.remotePath
   try {
+    requireDbConfig(project, target)
     const res = await ssh.exec(conn,
       // glob 展开为全路径，awk 内取 basename；$5=大小 $6/$7=日期时间
-      `ls -lht --time-style=+%Y-%m-%d\\ %H:%M ${quoteArg(ssh.remoteJoin(home, 'backups'))}/db_*.sql 2>/dev/null | awk '{n=split($8,a,"/"); print $5, $6, $7, a[n]}'`)
+      `${dbSudo(project, target)}ls -lht --time-style=+%Y-%m-%d\\ %H:%M ${quoteArg(ssh.remoteJoin(home, 'backups'))}/db_*.sql 2>/dev/null | awk '{n=split($8,a,"/"); print $5, $6, $7, a[n]}'`)
     const backups = (res.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => {
       const m = l.match(/^(\S+)\s+(\S+)\s+(\S+)\s+(db_[\w.-]+\.sql)$/)
       return m ? { size: m[1], time: `${m[2]} ${m[3]}`, fileName: m[4] } : null
@@ -1062,13 +1162,26 @@ async function listDbBackups(projectId, targetId) {
 async function restoreDbBackup(projectId, targetId, fileName) {
   if (activeRun) throw new Error('已有发布任务进行中，请等待完成或取消')
   assertDbBackupName(fileName)
-  const { project, target, conn } = await connectTarget(projectId, targetId)
-  const db = requireDbConfig(target)
+  const runId = crypto.randomBytes(6).toString('hex')
+  activeRun = { id: runId, conn: null, canceled: false }
+  let project, target, conn, db
+  try {
+    ;({ project, target, conn } = await connectTarget(projectId, targetId))
+    activeRun.conn = conn
+    db = requireDbConfig(project, target, true)
+    db = await resolveRestoreDb(conn, project, target, db)
+    if (isCanceled()) throw new Error('数据库恢复已取消')
+  } catch (error) {
+    ssh.close(conn)
+    if (activeRun?.id === runId) activeRun = null
+    throw error
+  }
   const home = target.remotePath
   const backupDir = ssh.remoteJoin(home, 'backups')
   const stamp = new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14)
+  const sudo = dbSudo(project, target)
+  const docker = `${sudo}docker`
 
-  const runId = crypto.randomBytes(6).toString('hex')
   const logBuf = []
   logSink = (level, text) => logBuf.push(`${ts()} [${level.toUpperCase()}] ${text}`)
   const record = {
@@ -1079,7 +1192,6 @@ async function restoreDbBackup(projectId, targetId, fileName) {
     host: `${target.server.host}:${target.server.port}`, remotePath: home,
     message: '', logFile: '',
   }
-  activeRun = { id: runId, conn, canceled: false }
   const finish = (status, message) => {
     record.status = status
     record.message = message || ''
@@ -1093,28 +1205,37 @@ async function restoreDbBackup(projectId, targetId, fileName) {
 
   try {
     const sqlFile = ssh.remoteJoin(backupDir, fileName)
-    const has = await ssh.exec(conn, `test -f ${quoteArg(sqlFile)} && echo Y || echo N`)
-    if (!/Y/.test(has.stdout || '')) throw new Error(`备份文件不存在：${fileName}`)
+    const has = await ssh.exec(conn, `${sudo}test -f ${quoteArg(sqlFile)} && echo Y || echo N`)
+    if ((has.stdout || '').trim() !== 'Y') throw new Error(`备份文件不存在：${fileName}`)
 
     log('info', `开始恢复数据库：${fileName}（库 ${db.name}@${db.container}）`)
     // 1. 保底备份当前库（失败即中止）
-    const guardFile = ssh.remoteJoin(backupDir, `db_guard_${stamp}.sql`)
+    const guardName = `db_guard_${stamp}_${runId}.sql`
+    const guardFile = ssh.remoteJoin(backupDir, guardName)
     log('info', '恢复前先保底备份当前数据库……')
-    const guard = await ssh.exec(conn, `docker exec ${quoteArg(db.container)} pg_dump -U ${quoteArg(db.user)} ${quoteArg(db.name)} > ${quoteArg(guardFile)} && echo __GUARD_OK__`)
+    const dump = postgresCommand(docker, db, 'pg_dump', ['-U', db.user, '--', db.name])
+    // sudo docker 不会提升 shell 重定向的权限，备份文件也须在相同权限下写入。
+    const dumpToFile = sudo ? `${dump} | ${sudo}tee ${quoteArg(guardFile)} >/dev/null` : `${dump} > ${quoteArg(guardFile)}`
+    const guard = await ssh.exec(conn, `bash -o pipefail -c ${quoteArg(`umask 077; ${dumpToFile} && ${sudo}chmod 600 ${quoteArg(guardFile)} && echo __GUARD_OK__`)}`)
     if (guard.code !== 0 || !/__GUARD_OK__/.test(guard.stdout || '')) {
       throw new Error('保底备份失败，已中止恢复（当前数据未做任何改动）')
     }
-    log('success', `保底备份完成：db_guard_${stamp}.sql`)
+    log('success', `保底备份完成：${guardName}`)
 
     // 2. 杀连接 + 重建空库 + 灌入（单条命令链，任一步失败整体失败）
     log('info', '重建数据库并灌入备份……')
-    const restoreCmd = [
-      `docker exec ${quoteArg(db.container)} psql -U ${quoteArg(db.user)} -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${db.name}' AND pid <> pg_backend_pid();"`,
-      `docker exec ${quoteArg(db.container)} psql -U ${quoteArg(db.user)} -d postgres -c "DROP DATABASE ${db.name} WITH (FORCE);"`,
-      `docker exec ${quoteArg(db.container)} psql -U ${quoteArg(db.user)} -d postgres -c "CREATE DATABASE ${db.name} OWNER ${db.user};"`,
-      `docker exec -i ${quoteArg(db.container)} psql -U ${quoteArg(db.user)} -d ${quoteArg(db.name)} -v ON_ERROR_STOP=1 < ${quoteArg(sqlFile)}`,
+    // 默认库本身可能是 postgres，维护连接不能连接即将删除的数据库。
+    const maintenance = db.name === 'postgres' ? 'template1' : 'postgres'
+    const psql = (sql) => postgresCommand(docker, db, 'psql', ['-U', db.user, '-d', maintenance, '-v', 'ON_ERROR_STOP=1', '-c', sql])
+    const importSql = postgresCommand(docker, db, 'psql', ['-U', db.user, '-d', db.name, '-v', 'ON_ERROR_STOP=1'], true)
+    const restoreSteps = [
+      psql(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=${sqlLiteral(db.name)} AND pid <> pg_backend_pid();`),
+      psql(`DROP DATABASE ${sqlIdentifier(db.name)} WITH (FORCE);`),
+      psql(`CREATE DATABASE ${sqlIdentifier(db.name)} OWNER ${sqlIdentifier(db.user)};`),
+      sudo ? `${sudo}cat ${quoteArg(sqlFile)} | ${importSql}` : `${importSql} < ${quoteArg(sqlFile)}`,
       `echo __DB_RESTORE_OK__`,
     ].join(' && ')
+    const restoreCmd = `bash -o pipefail -c ${quoteArg(restoreSteps)}`
     const res = await ssh.exec(conn, restoreCmd, (chunk) => {
       for (const line of String(chunk).split(/\r?\n/)) {
         const t = line.replace(/\s+$/, '')
@@ -1122,14 +1243,17 @@ async function restoreDbBackup(projectId, targetId, fileName) {
       }
     })
     if (res.code !== 0 || !/__DB_RESTORE_OK__/.test(res.stdout || '')) {
-      throw new Error(`数据库恢复失败（退出码 ${res.code}），可用保底备份 db_guard_${stamp}.sql 再次恢复`)
+      throw new Error(`数据库恢复失败（退出码 ${res.code}），可用保底备份 ${guardName} 再次恢复`)
     }
     log('success', '备份已灌入')
 
     // 3. 重启同 compose 项目的容器（应用连接池指向已重建的库）
     log('info', '重启应用容器……')
-    await ssh.exec(conn,
-      `PROJ=$(docker inspect ${quoteArg(db.container)} --format '{{index .Config.Labels "com.docker.compose.project"}}') && [ -n "$PROJ" ] && docker restart $(docker ps --filter label=com.docker.compose.project=$PROJ -q) || echo __NO_COMPOSE__`)
+    const projectName = db.auto ? quoteArg(automatic.identity(project, target.id))
+      : `$(${docker} inspect ${quoteArg(db.container)} --format '{{index .Config.Labels "com.docker.compose.project"}}')`
+    const restarted = await ssh.exec(conn,
+      `PROJ=${projectName}; if [ -n "$PROJ" ]; then CONTAINERS=$(${docker} ps --filter "label=com.docker.compose.project=$PROJ" -q) && [ -n "$CONTAINERS" ] && ${docker} restart $CONTAINERS; else echo __NO_COMPOSE__; fi`)
+    if (restarted.code !== 0) throw new Error('数据库已恢复，但应用容器重启失败，请检查服务状态')
     log('success', `数据库恢复完成：${fileName}`)
     return finish('success', `数据库已恢复到备份 ${fileName}`)
   } catch (err) {
@@ -1139,7 +1263,7 @@ async function restoreDbBackup(projectId, targetId, fileName) {
   } finally {
     ssh.close(conn)
     logSink = null
-    activeRun = null
+    if (activeRun?.id === runId) activeRun = null
   }
 }
 
@@ -1148,7 +1272,7 @@ async function rollback(projectId, version, targetId) {
   if (activeRun) throw new Error('已有发布任务进行中')
   const { project, target, conn } = await connectTarget(projectId, targetId)
   const home = target.remotePath
-  const h = target.health || {}
+  const h = healthFor(project, target)
   const logBuf = []
   const runId = crypto.randomBytes(6).toString('hex')
   const record = {

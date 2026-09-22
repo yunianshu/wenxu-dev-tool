@@ -47,7 +47,7 @@
         @click="doRollback(rollbackVersion)"
       >回滚到此版本</el-button>
       <el-button
-        v-if="activeTarget && activeTarget.db && activeTarget.db.enabled"
+        v-if="activeDatabase.enabled"
         size="large"
         plain
         @click="openDbBackups"
@@ -117,7 +117,8 @@
   </el-dialog>
 
   <!-- 数据库备份恢复 -->
-  <el-dialog v-model="dbDialogVisible" title="数据库备份恢复（当前目标）" width="640px">
+  <el-dialog v-model="dbDialogVisible" :title="`数据库备份 · ${form.name} / ${activeTarget?.name || '当前环境'}`" width="640px">
+    <el-alert v-if="activeDatabase.type === 'mysql'" title="可查看本项目的 MySQL / MariaDB 备份，当前一键恢复支持 PostgreSQL。" type="info" :closable="false" />
     <el-alert type="warning" :closable="false" show-icon class="db-restore-alert">
       恢复会先自动保底备份当前数据库，再清空并重建数据库、灌入选中备份，最后重启应用容器。属高危操作，请确认备份时间点。
     </el-alert>
@@ -130,7 +131,7 @@
       <el-table-column label="文件" prop="fileName" min-width="200" show-overflow-tooltip />
       <el-table-column label="操作" width="90" fixed="right">
         <template #default="{ row }">
-          <el-button text size="small" type="danger" :disabled="restoringDb" @click="doDbRestore(row)">恢复</el-button>
+          <el-button text size="small" type="danger" :disabled="restoringDb || state.deploy.running || activeDatabase.type !== 'postgres'" @click="doDbRestore(row)">恢复</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -180,11 +181,31 @@ const rollingBack = ref(false)
 const releases = ref([])
 const rollbackVersion = ref('')
 const logBox = ref(null)
+let selectionEpoch = 0
+let releaseQueryId = 0
+let disposed = false
+
+function captureSelection() {
+  return { projectId: props.form.id, targetId: props.activeTargetId, epoch: selectionEpoch }
+}
+function isCurrentSelection(selection) {
+  return !disposed && selection.epoch === selectionEpoch
+    && selection.projectId === props.form.id && selection.targetId === props.activeTargetId
+}
 
 const canPublish = computed(() => {
   if (state.deploy.running || !props.form.id || props.dirty || !props.activeTarget) return false
   const t = props.activeTarget
   return !!(props.form.name && props.form.localPath && t.server.host && (props.form.deployMode === 'auto' || (props.publishVersion && t.remotePath)))
+})
+
+const activeDatabase = computed(() => {
+  const target = props.activeTarget
+  if (props.form.deployMode === 'auto') {
+    if (target?.db?.strategy === 'off') return {}
+    if (target?.db?.strategy !== 'manual') return target?.autoDb || {}
+  }
+  return target?.db || {}
 })
 
 // ─── 发布（当前目标） ───
@@ -237,27 +258,25 @@ function rebuildPrediction(force = false) {
  * 异步返回时项目/环境可能已切换，丢弃过期结果。
  */
 async function loadHistoryVersion() {
-  const pid = props.form.id
-  const tid = props.activeTargetId
-  if (!pid) { historyVersion.value = ''; return }
+  const selection = captureSelection()
+  if (!selection.projectId) { historyVersion.value = ''; return }
   try {
-    const rows = await window.gitReport.deployHistoryList(pid)
-    if (pid !== props.form.id || tid !== props.activeTargetId) return
+    const rows = await window.gitReport.deployHistoryList(selection.projectId)
+    if (!isCurrentSelection(selection)) return
     const hit = (Array.isArray(rows) ? rows : []).find(
-      (r) => r && r.status === 'success' && r.version && (!r.targetId || r.targetId === tid),
+      (r) => r && (!r.type || r.type === 'deploy' || r.type === 'rollback')
+        && r.status === 'success' && r.version && (!r.targetId || r.targetId === selection.targetId),
     )
     historyVersion.value = hit ? hit.version : ''
   } catch { /* 历史读取失败不影响展示 */ }
 }
 
-// 切项目/环境即补全，不必等用户点「查询」或打开「新版本」
-watch(() => [props.form.id, props.activeTargetId], () => { loadHistoryVersion() }, { immediate: true })
-
 function newVersion() {
+  const selection = captureSelection()
   rebuildPrediction(true)
   versionDialogVisible.value = true
   // 基准补全：线上版本需 SSH（失败静默）返回后刷新候选；本地发布记录已随切换预载
-  const refresh = () => { if (versionDialogVisible.value) rebuildPrediction() }
+  const refresh = () => { if (isCurrentSelection(selection) && versionDialogVisible.value) rebuildPrediction() }
   if (!state.deploy.currentVersion) queryReleases(true).then(refresh)
 }
 
@@ -280,7 +299,7 @@ watch(() => state.deploy.running, (running) => {
     ticker = setInterval(() => { now.value = Date.now() }, 1000)
   }
 }, { immediate: true })
-onUnmounted(() => { if (ticker) clearInterval(ticker) })
+onUnmounted(() => { disposed = true; if (ticker) clearInterval(ticker) })
 
 const hasRun = computed(() => !!state.deploy.startedAt)
 
@@ -328,6 +347,8 @@ function resetStages() {
 }
 
 async function publish() {
+  if (!canPublish.value) return
+  const selection = captureSelection()
   const v = props.publishVersion
   const t = props.activeTarget
   const oldV = onlineVersion.value || '（未知）'
@@ -338,12 +359,13 @@ async function publish() {
       { type: 'warning', confirmButtonText: '🚀 发布', cancelButtonText: '取消' },
     )
   } catch { return }
+  if (!isCurrentSelection(selection) || !canPublish.value) return
   resetStages()
   state.deploy.startedAt = Date.now()
   state.deploy.finishedAt = 0
   state.deploy.running = true
   try {
-    const r = await window.gitReport.deployRun(props.form.id, props.activeTargetId)
+    const r = await window.gitReport.deployRun(selection.projectId, selection.targetId)
     if (r && r.error) {
       ElMessage.error(r.error)
       // 主进程前置校验失败（如「已有发布任务进行中」）不会发出 done 事件，
@@ -388,17 +410,21 @@ watch(() => state.deploy.logs.length, async () => {
 // ─── 版本列表 / 回滚（当前目标） ───
 /** 查询服务器历史版本；silent 用于「新版本」预测基准的后台补查（不打扰用户） */
 async function queryReleases(silent = false) {
+  const selection = captureSelection()
+  const queryId = ++releaseQueryId
+  if (!selection.projectId || !selection.targetId) return
   try {
-    const r = await window.gitReport.deployReleases(props.form.id, props.activeTargetId)
+    const r = await window.gitReport.deployReleases(selection.projectId, selection.targetId)
+    if (!isCurrentSelection(selection) || queryId !== releaseQueryId) return
     if (r && r.ok) {
       releases.value = r.releases || []
-      state.deploy.currentVersion = r.current || state.deploy.currentVersion
+      state.deploy.currentVersion = r.current || ''
       if (!silent && !releases.value.length) ElMessage.info('服务器暂无历史版本')
     } else if (!silent) {
       ElMessage.error((r && r.error) || '查询失败')
     }
   } catch (e) {
-    if (!silent) ElMessage.error(e.message || String(e))
+    if (!silent && isCurrentSelection(selection) && queryId === releaseQueryId) ElMessage.error(e.message || String(e))
   }
 }
 
@@ -409,10 +435,12 @@ const dbBackups = ref([])
 const restoringDb = ref(false)
 
 async function openDbBackups() {
+  const selection = captureSelection()
   dbDialogVisible.value = true
   dbLoading.value = true
   try {
-    const r = await window.gitReport.deployDbBackups(props.form.id, props.activeTargetId)
+    const r = await window.gitReport.deployDbBackups(selection.projectId, selection.targetId)
+    if (!isCurrentSelection(selection)) return
     if (r && r.ok) {
       dbBackups.value = r.backups || []
     } else {
@@ -420,13 +448,15 @@ async function openDbBackups() {
       ElMessage.error((r && r.error) || '查询备份失败')
     }
   } catch (e) {
-    ElMessage.error(e.message || String(e))
+    if (isCurrentSelection(selection)) ElMessage.error(e.message || String(e))
   } finally {
-    dbLoading.value = false
+    if (isCurrentSelection(selection)) dbLoading.value = false
   }
 }
 
 async function doDbRestore(row) {
+  if (state.deploy.running) return
+  const selection = captureSelection()
   try {
     await ElMessageBox.confirm(
       `确认把数据库恢复到备份「${row.fileName}」（${row.time}）？\n\n当前数据会先自动保底备份，然后被该备份内容完全替换，应用容器将重启。`,
@@ -434,6 +464,7 @@ async function doDbRestore(row) {
       { type: 'warning', confirmButtonText: '恢复', cancelButtonText: '取消' },
     )
   } catch { return }
+  if (!isCurrentSelection(selection) || state.deploy.running) return
   restoringDb.value = true
   // 数据恢复占用主进程发布互斥：同步 running 态（禁用发布按钮）并复位上一轮的阶段/计时展示
   state.deploy.running = true
@@ -443,10 +474,10 @@ async function doDbRestore(row) {
   state.deploy.logs = []
   state.deploy.logs.push({ level: 'info', text: `开始恢复数据库备份 ${row.fileName}`, ts: new Date().toLocaleTimeString('zh-CN', { hour12: false }) })
   try {
-    const r = await window.gitReport.deployDbRestore(props.form.id, props.activeTargetId, row.fileName)
+    const r = await window.gitReport.deployDbRestore(selection.projectId, selection.targetId, row.fileName)
     if (r && r.ok) {
       ElMessage.success(`数据库已恢复到 ${row.fileName}`)
-      await openDbBackups() // 刷新列表（保底备份会出现在最前）
+      if (isCurrentSelection(selection)) await openDbBackups() // 刷新当前目标的保底备份
     } else {
       ElMessage.error((r && r.error) || (r && r.record && r.record.message) || '恢复失败')
     }
@@ -459,6 +490,8 @@ async function doDbRestore(row) {
 }
 
 async function doRollback(version, targetId) {
+  if (state.deploy.running) return
+  const selection = captureSelection()
   const tid = targetId || props.activeTargetId
   const tName = (props.form.targets.find((x) => x.id === tid) || {}).name || ''
   try {
@@ -468,19 +501,22 @@ async function doRollback(version, targetId) {
       { type: 'warning', confirmButtonText: '回滚' },
     )
   } catch { return }
+  if (!isCurrentSelection(selection) || state.deploy.running) return
   rollingBack.value = true
   resetStages()
   state.deploy.startedAt = Date.now()
   state.deploy.finishedAt = 0
   state.deploy.running = true
   try {
-    const r = await window.gitReport.deployRollback(props.form.id, tid, version)
+    const r = await window.gitReport.deployRollback(selection.projectId, tid, version)
     if (r && r.ok) {
       ElMessage.success(`已回滚到 ${version}`)
-      if (tid === props.activeTargetId) state.deploy.currentVersion = version
+      if (isCurrentSelection(selection) && tid === props.activeTargetId) state.deploy.currentVersion = version
     } else if (r && r.error) {
       ElMessage.error(r.error)
     }
+  } catch (e) {
+    ElMessage.error(e.message || String(e))
   } finally {
     rollingBack.value = false
     state.deploy.running = false
@@ -490,17 +526,22 @@ async function doRollback(version, targetId) {
 
 /** 切换项目时清空版本列表与回滚选择（由组合层调用） */
 function resetSelection() {
+  selectionEpoch += 1
   releases.value = []
   rollbackVersion.value = ''
   historyVersion.value = ''
+  versionDialogVisible.value = false
+  dbDialogVisible.value = false
+  dbBackups.value = []
+  dbLoading.value = false
 }
 
-// 切换部署环境后，历史版本列表必须重新获取，否则会沿用上一个环境的数据
-// （线上版本回退值 historyVersion 由上方 watch([form.id, activeTargetId]) 重新加载）
-watch(() => props.activeTargetId, () => {
-  releases.value = []
-  rollbackVersion.value = ''
-})
+// 项目和目标共同决定上下文；同步失效可覆盖 A→B→A 及尚未重渲染的迟到请求。
+watch(() => [props.form.id, props.activeTargetId], () => {
+  resetSelection()
+  state.deploy.currentVersion = ''
+  loadHistoryVersion()
+}, { immediate: true, flush: 'sync' })
 
 defineExpose({ doRollback, resetSelection })
 </script>

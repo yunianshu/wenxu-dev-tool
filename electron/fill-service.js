@@ -11,6 +11,7 @@
  */
 const fs = require('fs')
 const path = require('path')
+const { createHash } = require('crypto')
 const { app } = require('electron')
 const store = require('./store')
 const { execGit } = require('./git-service')
@@ -627,11 +628,11 @@ async function plan(payload) {
  * - 禅道：逐任务查询当日已有工时记录，本次行依次复用已有记录 ID（表单键=effortID →
  *   更新覆盖）；行数超过已有记录时，多出的行按行号键追加（同 KnowMore 行为）
  * - 汉印：GetByDate 取当日已填记录，TaskId 匹配的条目带原 Id 提交（更新占比）；
- *   当日已有但本次未涉及的任务不动（不删除）；占比 0% 的条目不提交
+ *   不删除其他记录；遗漏已有记录或减少禅道行数时先阻止提交，避免总量残留
  * - dryRun=true 只回显将提交的表单/条目，不写入
  * - 日期必须与所有工时行一致；写入前刷新剩余工时与已有记录，任一查询失败即停止
  */
-async function submitCore(payload) {
+async function submitCore(payload, platformScope) {
   const { date, tasks, dryRun, hp } = payload || {}
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || '')) || Number.isNaN(Date.parse(`${date}T00:00:00Z`)) || new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) !== date) {
     throw new Error('请选择有效的填报日期')
@@ -649,6 +650,11 @@ async function submitCore(payload) {
   }
   const hpItems = hp && Array.isArray(hp.items) ? hp.items.filter((it) => Number(it.Percent) > 0).map((it) => ({ ...it, Id: 0 })) : []
   if (hpItems.some((it) => it.WorkDate !== date)) throw new Error('汉印工时日期与填报日期不一致')
+  if (hpItems.length && (hpItems.some((it) => !Number.isFinite(Number(it.Percent)) || Number(it.Percent) > 100) || round2(hpItems.reduce((sum, it) => sum + Number(it.Percent), 0)) !== 100)) {
+    throw new Error('汉印本次占比合计必须为 100%，请重新生成填报计划；本次未写入')
+  }
+  if (new Set(hpItems.map((it) => String(it.TaskId))).size !== hpItems.length) throw new Error('汉印同一任务存在重复条目，请重新生成填报计划；本次未写入')
+  const history = readFillLog().filter((entry) => entry && !entry.dryRun && entry.date === date && entry.payload)
   // 分项进度：逐任务/汉印记录已写入的结果，失败时随错误带出（fill-log 分项留痕的数据源）
   const progress = { tasks: [], hp: null, stage: 'prepare' }
   try {
@@ -664,6 +670,9 @@ async function submitCore(payload) {
       if (!latest || !Number.isFinite(latest.left)) throw new Error(`无法获取任务 #${t.taskId} 最新剩余工时，已停止提交`)
       // eslint-disable-next-line no-await-in-loop
       const today = (await client.getTaskEfforts(t.taskId)).filter((e) => e.date === date)
+      if (today.slice(t.rows.length).some((row) => Number(row.consumed) > 0)) {
+        throw new Error(`禅道任务 #${t.taskId} 在 ${date} 已有 ${today.length} 条工时，本次只有 ${t.rows.length} 条，会遗留旧工时。请保留原项目，或先在禅道核对处理多余记录后再提交；本次未写入`)
+      }
       const consumed = round2(t.rows.reduce((s, row) => s + row.consumed, 0))
       const replaced = today.slice(0, t.rows.length).reduce((s, row) => s + row.consumed, 0)
       const left = Math.max(0, round2(latest.left + replaced - consumed))
@@ -675,14 +684,41 @@ async function submitCore(payload) {
       })
       prepared.push({ ...t, rows, consumed, updated: Math.min(today.length, rows.length), appended: Math.max(0, rows.length - today.length) })
     }
+    // 现有客户端没有删除接口；先查本工具历史涉及但本次遗漏的任务，禁止静默残留。
+    // 老日志没有账号范围，只凭工作内容与工时的精确匹配识别，不猜测记录归属。
+    const previous = new Map()
+    for (const entry of history) {
+      if (entry.platformScope && entry.platformScope.zentao !== platformScope.zentao) continue
+      const written = new Set((entry.tasks || []).map((t) => String(t.taskId)))
+      for (const task of entry.payload.tasks || []) {
+        const id = String(task.taskId)
+        if (taskIds.has(id) || (!written.has(id) && entry.stage !== `zentao#${id}`)) continue
+        if (!previous.has(id)) previous.set(id, [])
+        previous.get(id).push(...(task.rows || []))
+      }
+    }
+    for (const [id, oldRows] of previous) {
+      const existing = (await client.getTaskEfforts(Number(id))).filter((row) => row.date === date && Number(row.consumed) > 0) // eslint-disable-line no-await-in-loop
+      const owned = existing.filter((row) => oldRows.some((old) => row.work === old.work && Number(row.consumed) === Number(old.consumed)))
+      if (owned.length) {
+        throw new Error(`禅道任务 #${id} 在 ${date} 仍有本工具提交的 ${owned.length} 条工时（${round2(owned.reduce((sum, row) => sum + Number(row.consumed), 0))}h），本次未包含该任务。请重新选中相应项目，或先在禅道核对处理这些记录后再提交；本次未写入`)
+      }
+    }
     let hpClient = null
     let hpUpdated = 0
-    if (hpItems.length) {
+    const hadHp = history.some((entry) => entry.hp && entry.hp.sent && (!entry.platformScope || entry.platformScope.hanprint === platformScope.hanprint))
+    if (hpItems.length || hadHp) {
       hpClient = await hanprint.ensureClient()
       const saved = (await hpClient.getByDate(date)).filter((r) => r && r.ProjectType !== -2)
+      const matched = new Set()
       for (const item of hpItems) {
-        const hit = saved.find((s) => String(s.TaskId) === String(item.TaskId))
-        if (hit) { item.Id = hit.Id; hpUpdated += 1 }
+        const hit = saved.find((s) => String(s.TaskId) === String(item.TaskId) && !matched.has(s))
+        if (hit) { item.Id = hit.Id; hpUpdated += 1; matched.add(hit) }
+      }
+      const leftover = saved.filter((item) => !matched.has(item) && Number(item.Percent) > 0)
+      if (leftover.length) {
+        const details = leftover.map((item) => `#${item.TaskId}（${item.Percent}%）`).join('、')
+        throw new Error(`汉印 ${date} 仍有本次未包含的记录：${details}。直接提交会遗留占比；请重新选中相应项目，或先在汉印核对处理这些记录后再提交。程序不会删除平台记录；本次两个平台均未写入`)
       }
     }
     const results = []
@@ -822,16 +858,36 @@ function localStamp() {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, '0')}`
 }
 
-/** submit 外壳：包住 submitCore 做成败留痕（分项结果 + 提交载荷），失败原样抛出 */
+/** 留痕只保存平台和账号的摘要，不包含密码、令牌，避免切换平台后误用旧记录。 */
+function submissionScope() {
+  const cfg = store.load()
+  const scope = (key) => {
+    const platform = cfg[key] || {}
+    return createHash('sha256').update(JSON.stringify([String(platform.baseUrl || '').replace(/\/+$/, ''), platform.account || '', platform.clientId || ''])).digest('hex')
+  }
+  return { zentao: scope('zentao'), hanprint: scope('hanprint') }
+}
+
+let submissionRunning = false
+/** 主进程统一互斥，普通提交、预览与失败重放都必须经过同一入口。 */
 async function submit(payload) {
+  if (submissionRunning) throw new Error('已有填报正在处理，请等待完成后再提交')
+  submissionRunning = true
+  try { return await submitLogged(payload) } finally { submissionRunning = false }
+}
+
+/** 包住 submitCore 做成败留痕（分项结果 + 提交载荷），失败原样抛出。 */
+async function submitLogged(payload) {
   const { date, dryRun, hp } = payload || {}
   const tasksIn = Array.isArray(payload && payload.tasks) ? payload.tasks : []
+  const platformScope = submissionScope()
   try {
-    const r = await submitCore(payload)
+    const r = await submitCore(payload, platformScope)
     if (!dryRun) {
       const sent = hp && Array.isArray(hp.items) ? hp.items.filter((it) => Number(it.Percent) > 0).length : 0
       appendFillLog({
         at: localStamp(),
+        platformScope,
         date,
         dryRun: false,
         tasks: r.results.map((x) => ({ taskId: x.taskId, taskName: x.taskName, consumed: x.consumed, verified: !!x.verified, updated: x.updated, appended: x.appended })),
@@ -852,6 +908,7 @@ async function submit(payload) {
       if (done > 0) e.message = `${e.message}（已写入 ${done}/${total} 个禅道任务，可在提交记录中重新提交）`
       appendFillLog({
         at: localStamp(),
+        platformScope,
         date,
         dryRun: false,
         tasks: prog.tasks,

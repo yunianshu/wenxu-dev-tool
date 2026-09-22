@@ -10,7 +10,7 @@
       <el-table-column prop="version" label="版本" width="100">
         <template #default="{ row }">
           <span class="mono">{{ row.version || '—' }}</span>
-          <el-tag v-if="row.version && row.version === state.deploy.currentVersion" size="small" type="success" effect="plain" class="cur-tag">运行中</el-tag>
+          <el-tag v-if="row.version && (row.releaseId || row.version) === state.deploy.currentVersion" size="small" type="success" effect="plain" class="cur-tag">运行中</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="目标" width="90">
@@ -49,8 +49,8 @@
         <template #default="{ row }">
           <el-button text size="small" type="primary" @click="viewLog(row)">日志</el-button>
           <el-button
-            v-if="row.type === 'deploy' && row.status === 'success' && row.version !== state.deploy.currentVersion"
-            text size="small" type="warning" @click="emit('rollback', row.version, row.targetId)"
+            v-if="row.projectId === projectId && row.type === 'deploy' && row.status === 'success' && (row.releaseId || row.version) !== state.deploy.currentVersion"
+            text size="small" type="warning" @click="rollbackRecord(row)"
           >回滚</el-button>
         </template>
       </el-table-column>
@@ -124,6 +124,7 @@ const summarizing = ref(false)
 const tagging = ref(false)
 const tagName = ref('')
 let offHistoryUpdated = null
+let historyRequest = 0
 
 /** 弹窗当前展示的记录：从表格数据里取，生成总结/打标签后 reload 即自动刷新 */
 const changeRow = computed(() => history.value.find((r) => r.id === changeRecordId.value) || null)
@@ -151,17 +152,31 @@ function openChanges(row) {
 // 过期响应防护：快速连续切换项目时，先发请求可能后回，落表前校验项目未再变化
 async function loadHistory() {
   const pid = props.projectId || undefined
+  const request = ++historyRequest
   try {
     const rows = await window.gitReport.deployHistoryList(pid) || []
-    if ((props.projectId || undefined) === pid) history.value = rows
+    if (request === historyRequest && (props.projectId || undefined) === pid) history.value = rows
   } catch {
-    if ((props.projectId || undefined) === pid) history.value = []
+    if (request === historyRequest && (props.projectId || undefined) === pid) history.value = []
   }
+}
+
+function rollbackRecord(row) {
+  if (!props.projectId || row.projectId !== props.projectId || row.type !== 'deploy' || row.status !== 'success') return
+  const release = row.releaseId || row.version
+  if (release && release !== state.deploy.currentVersion) emit('rollback', release, row.targetId)
 }
 
 // 项目切换时跟随刷新：props 由父组件重渲染异步更新，父层同步调用 reload 会读到旧 id，
 // 因此数据加载统一由本 watch 驱动（immediate 覆盖首载，此时 projectId 可能为空=查全部）
-watch(() => props.projectId, () => { loadHistory() }, { immediate: true })
+watch(() => props.projectId, () => {
+  history.value = []
+  changeRecordId.value = ''
+  changeDialog.value = false
+  logDialog.value = false
+  dialogLog.value = ''
+  loadHistory()
+}, { immediate: true, flush: 'sync' })
 
 // 发布成功后主进程在后台整理更新内容，完成后推送刷新（弹窗打开时也随之更新）
 onMounted(() => {
@@ -170,7 +185,10 @@ onMounted(() => {
 onUnmounted(() => { if (offHistoryUpdated) offHistoryUpdated() })
 
 async function viewLog(row) {
-  dialogLog.value = await window.gitReport.deployHistoryReadLog(row.logFile) || ''
+  const pid = props.projectId
+  const content = await window.gitReport.deployHistoryReadLog(row.logFile) || ''
+  if (pid !== props.projectId) return
+  dialogLog.value = content
   logDialog.value = true
 }
 
@@ -208,6 +226,7 @@ async function doTag() {
 }
 
 async function clearHistory() {
+  const pid = props.projectId || undefined
   // projectId 为空 = 查询/清空全部项目的历史：确认文案必须如实说明作用域，防止误删
   const scopeAll = !props.projectId
   try {
@@ -217,8 +236,9 @@ async function clearHistory() {
       { type: 'warning' },
     )
   } catch { return }
-  await window.gitReport.deployHistoryClear(props.projectId || undefined)
-  loadHistory()
+  if ((props.projectId || undefined) !== pid) return
+  await window.gitReport.deployHistoryClear(pid)
+  if ((props.projectId || undefined) === pid) loadHistory()
 }
 
 // ─── 工具 ───

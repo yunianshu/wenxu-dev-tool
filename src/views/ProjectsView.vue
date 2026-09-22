@@ -105,7 +105,7 @@ import { useTopbarReady } from '../composables/useTopbarReady'
 import { useProjects } from '../composables/useProjects'
 import { deploymentConfigured, projectStatusLabel, reposForProject } from '../utils/project-context'
 
-defineEmits(['navigate', 'create-project', 'edit-project'])
+const emit = defineEmits(['navigate', 'create-project', 'edit-project'])
 const query = ref('')
 const status = ref('')
 const { currentProject, selectProject, removeProject, saveProject } = useProjects()

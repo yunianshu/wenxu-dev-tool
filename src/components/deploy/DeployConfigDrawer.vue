@@ -1,12 +1,13 @@
 <template>
   <el-drawer
     :model-value="modelValue"
-    title="部署设置"
+    :title="`部署设置 · ${form.name || '当前项目'}`"
     size="600px"
     class="deploy-config-drawer"
     @update:model-value="emit('update:modelValue', $event)"
   >
     <div class="deploy-config-scroll">
+      <el-alert title="数据库备份、健康检查和数据同步只作用于当前项目与环境，切换或编辑共享服务器不会套用其他项目的设置。" type="info" :closable="false" />
       <el-card shadow="never" class="card">
         <template #header>
           <div class="card-header">
@@ -128,12 +129,23 @@
 
       <el-card shadow="never" class="card">
         <template #header>
-          <div class="card-header"><span>数据库备份（当前目标）</span></div>
+          <div class="card-header"><span>数据库备份 · {{ form.name }} / {{ activeTarget?.name }}</span></div>
         </template>
         <template v-if="activeTarget">
-          <div class="f-row check-row">
+          <div v-if="form.deployMode === 'auto'" class="f-row">
+            <el-select v-model="dbStrategy" style="width: 240px">
+              <el-option value="auto" label="根据本项目自动识别" />
+              <el-option value="manual" label="手动指定数据库" />
+              <el-option value="off" label="本项目不备份数据库" />
+            </el-select>
+          </div>
+          <p v-if="form.deployMode === 'auto' && dbStrategy === 'auto'" class="f-mini">根据本项目的 Compose 识别数据库，发布前备份正在运行的实例；首次安装没有旧数据库时跳过备份。</p>
+          <p v-if="form.deployMode === 'auto' && dbStrategy === 'auto' && activeTarget.autoDb?.reason" class="f-mini">{{ activeTarget.autoDb.reason }}</p>
+          <template v-if="form.deployMode !== 'auto' || dbStrategy === 'manual'">
+          <div v-if="form.deployMode !== 'auto'" class="f-row check-row">
             <el-checkbox v-model="activeTarget.db.enabled">发布前备份数据库</el-checkbox>
           </div>
+          <p class="f-mini">仅备份本项目指定的数据库；无数据库的项目可关闭。自动发布也会执行这里保存的备份设置。</p>
           <div class="f-row">
             <el-select v-model="activeTarget.db.type" style="width: 130px" :disabled="!activeTarget.db.enabled">
               <el-option value="postgres" label="PostgreSQL" />
@@ -143,6 +155,7 @@
             <el-input v-model="activeTarget.db.name" placeholder="库名" style="width: 140px" :disabled="!activeTarget.db.enabled" />
             <el-input v-model="activeTarget.db.user" placeholder="用户(可选)" style="width: 130px" :disabled="!activeTarget.db.enabled" />
           </div>
+          </template>
         </template>
               </el-card>
 
@@ -165,9 +178,17 @@
 
       <el-card shadow="never" class="card">
         <template #header>
-          <div class="card-header"><span>健康检查（当前目标）</span></div>
+          <div class="card-header"><span>健康检查 · {{ form.name }} / {{ activeTarget?.name }}</span></div>
         </template>
         <template v-if="activeTarget">
+          <div v-if="form.deployMode === 'auto'" class="f-row">
+            <el-radio-group v-model="activeTarget.health.strategy" size="small">
+              <el-radio-button value="auto">依据本项目自动检查</el-radio-button>
+              <el-radio-button value="manual">自定义 HTTP 检查</el-radio-button>
+            </el-radio-group>
+          </div>
+          <p v-if="form.deployMode === 'auto' && activeTarget.health.strategy !== 'manual'" class="f-mini">优先使用本项目已有的容器健康检查；否则使用部署方案识别的业务接口。其他项目的检查地址不会复用到此处。</p>
+          <template v-if="form.deployMode !== 'auto' || activeTarget.health.strategy === 'manual'">
           <div class="f-row check-row">
             <el-checkbox v-model="activeTarget.health.enabled">启用 HTTP 健康检查</el-checkbox>
           </div>
@@ -187,17 +208,20 @@
             <el-input-number v-model="activeTarget.health.interval" :min="1" :max="30" controls-position="right" style="width: 90px" :disabled="!activeTarget.health.enabled" />
             <span class="f-mini">秒探测一次</span>
           </div>
+          </template>
         </template>
               </el-card>
 
       <el-card shadow="never" class="card">
         <template #header>
-          <div class="card-header"><span>数据同步（当前目标）</span></div>
+          <div class="card-header"><span>数据同步 · {{ form.name }} / {{ activeTarget?.name }}</span></div>
         </template>
         <template v-if="activeTarget">
           <div class="f-row check-row">
-            <el-checkbox v-model="activeTarget.dataSync.enabled">发布成功后同步本地数据</el-checkbox>
+            <el-checkbox v-model="activeTarget.dataSync.enabled">发布时同步本地数据</el-checkbox>
           </div>
+          <p class="f-mini">按本项目单独启用，来源以项目本地目录为基准，目标位于该项目安装目录内。导入命令和应用账号也只用于此项目。</p>
+          <p class="f-mini">自动发布中，容器直接读取的数据会在启动前同步；应用导入命令在健康检查通过后执行。回滚代码不会撤回已同步的数据。</p>
           <div class="f-row">
             <span class="f-label">本地数据目录</span>
             <el-input
@@ -286,7 +310,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { emptyTarget } from './deploy-form'
+import { emptyTarget, refreshTargetServer } from './deploy-form'
 
 const props = defineProps({
   /** 抽屉开关（v-model） */
@@ -315,9 +339,18 @@ function selectServer(id) {
   t.serverId = id || ''
   t.server = { ...(props.servers.find((s) => s.id === id) || emptyTarget().server) }
   delete t.server.projects
-  if (props.form.deployMode === 'auto') { t.remotePath = ''; delete t.autoSudo }
+  if (props.form.deployMode === 'auto') { t.remotePath = ''; delete t.autoSudo; delete t.autoHealth; delete t.autoDb }
   emit('reset-conn')
 }
+
+const dbStrategy = computed({
+  get: () => activeTarget.value?.db?.strategy || 'auto',
+  set: (value) => {
+    if (!activeTarget.value?.db) return
+    activeTarget.value.db.strategy = value
+    activeTarget.value.db.enabled = value === 'manual'
+  },
+})
 
 // ─── 数据同步导入钩子：开关代理（写入 dataSync.importMode）───
 const importEnabled = computed({
@@ -353,7 +386,7 @@ function rebaseline() {
 function refreshServerSnapshot(servers) {
   for (const target of openSnapshot?.targets || []) {
     const server = servers.find((s) => s.id === target.serverId)
-    if (server) { target.server = { ...server }; delete target.server.projects }
+    if (server) refreshTargetServer(target, server, openSnapshot.deployMode === 'auto')
   }
 }
 defineExpose({ rebaseline, refreshServerSnapshot })

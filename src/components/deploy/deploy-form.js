@@ -15,9 +15,9 @@ export function emptyTarget() {
       secretConfigured: false, secretMasked: '', passphraseConfigured: false,
     },
     remotePath: '',
-    health: { enabled: true, url: '', timeout: 90, interval: 3 },
+    health: { strategy: 'auto', enabled: true, url: '', timeout: 90, interval: 3 },
     // 数据库备份按环境独立配置：测试/生产是不同实例，容器名与库名必然不同
-    db: { enabled: false, type: 'postgres', container: '', name: '', user: '' },
+    db: { strategy: 'auto', enabled: false, type: 'postgres', container: '', name: '', user: '' },
     dataSync: {
       enabled: false, localDir: 'data', remoteDir: 'shared/data',
       importMode: 'none', importCommand: '', importUser: '',
@@ -45,6 +45,19 @@ export function emptyProject() {
     },
     targets: [t],
   }
+}
+
+/** 刷新共享连接时，同时使旧服务器的运行探测失效；手动项目策略保持不变。 */
+export function refreshTargetServer(target, server, autoMode) {
+  const old = target.server || {}
+  if (autoMode && (old.host !== server.host || Number(old.port || 22) !== Number(server.port || 22) || old.username !== server.username)) {
+    target.remotePath = ''
+    delete target.autoSudo
+    delete target.autoHealth
+    delete target.autoDb
+  }
+  target.server = { ...server }
+  delete target.server.projects
 }
 
 export function fmtTime(t) {

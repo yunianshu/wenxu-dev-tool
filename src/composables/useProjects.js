@@ -7,31 +7,36 @@ const currentProject = computed(() =>
   state.projects.items.find((project) => project.id === state.projects.currentId) || null
 )
 
-async function loadProjects({ preserveSelection = true } = {}) {
-  if (state.projects.loading) return state.projects.items
+let loadingProjects = null
+
+function loadProjects({ preserveSelection = true } = {}) {
+  if (loadingProjects) return loadingProjects
   state.projects.loading = true
-  const previousId = preserveSelection ? state.projects.currentId : ''
-  try {
-    const items = await window.gitReport.projectsList()
-    state.projects.items = Array.isArray(items) ? items : []
-    // 部署模块沿用同一份项目对象，避免两个项目列表产生偏差。
-    state.deploy.projects = state.projects.items
-    if (previousId && state.projects.items.some((item) => item.id === previousId)) {
-      state.projects.currentId = previousId
-    } else if (state.projects.currentId && state.projects.items.some((item) => item.id === state.projects.currentId)) {
-      // 保持当前选择。
-    } else {
-      state.projects.currentId = state.projects.items[0]?.id || ''
+  const requestedId = state.projects.currentId
+  loadingProjects = Promise.resolve().then(async () => {
+    try {
+      const items = await window.gitReport.projectsList()
+      state.projects.items = Array.isArray(items) ? items : []
+      // 部署模块沿用同一份项目对象，避免两个项目列表产生偏差。
+      state.deploy.projects = state.projects.items
+      // 以响应时的选择为准：请求期间切换项目不能被旧 ID 覆盖。
+      const keepCurrent = (preserveSelection || state.projects.currentId !== requestedId)
+        && state.projects.items.some((item) => item.id === state.projects.currentId)
+      if (!keepCurrent) {
+        state.projects.currentId = state.projects.items[0]?.id || ''
+      }
+      state.deploy.currentProjectId = state.projects.currentId
+      return state.projects.items
+    } catch (error) {
+      console.error('加载项目失败', error)
+      ElMessage.error('加载项目失败')
+      return []
+    } finally {
+      state.projects.loading = false
+      loadingProjects = null
     }
-    state.deploy.currentProjectId = state.projects.currentId
-    return state.projects.items
-  } catch (error) {
-    console.error('加载项目失败', error)
-    ElMessage.error('加载项目失败')
-    return []
-  } finally {
-    state.projects.loading = false
-  }
+  })
+  return loadingProjects
 }
 
 function selectProject(projectId) {

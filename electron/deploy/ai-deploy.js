@@ -254,7 +254,7 @@ function parseEnvKeys(text) {
 /**
  * 本地项目体检。返回结构化报告（不依赖 AI，也不读取任何真实凭据文件内容）。
  */
-function scanLocal(project) {
+function scanLocal(project, { skipContent } = {}) {
   const root = String((project && project.localPath) || '').trim()
   const report = {
     root,
@@ -283,6 +283,7 @@ function scanLocal(project) {
   report.entries = rootEntries.map((e) => (e.isDirectory() ? `${e.name}/` : e.name)).sort().slice(0, 80)
 
   const scanStack = (dir, prefix, depth) => {
+    if (prefix && skipContent?.(prefix.replace(/\/$/, ''))) return
     for (const [file, kind, label] of STACK_MARKERS) {
       if (fs.existsSync(path.join(dir, file))) report.stack.push({ file: prefix + file, kind, label })
     }
@@ -310,6 +311,7 @@ function scanLocal(project) {
   const configured = String((project && project.composeFile) || '').trim()
   const composeList = [...new Set([configured, ...COMPOSE_CANDIDATES].filter(Boolean))]
   for (const rel of composeList) {
+    if (skipContent?.(rel)) continue
     if (composeSeen.has(rel)) continue
     composeSeen.add(rel)
     let abs
@@ -322,6 +324,7 @@ function scanLocal(project) {
 
   // 发布相关脚本内容（供 AI 改写/生成时参考）
   for (const name of ['upgrade.sh', 'start.sh', 'stop.sh', 'package.sh', 'backup.sh', 'restore.sh', 'release-common.sh', 'Dockerfile', '.env.example']) {
+    if (skipContent?.(name)) continue
     let abs
     try { abs = resolveProjectFile(root, name) } catch { report.risks.push(`跳过不安全的部署文件路径：${name}`); continue }
     if (!fs.existsSync(abs)) continue
@@ -336,7 +339,8 @@ function scanLocal(project) {
     if (f.kind === 'release') report.releaseScripts[f.rel.replace(/\.(sh|bat)$/, '')] = f.rel
   }
 
-  report.version = detectVersion(root) || { version: '', source: '' }
+  // 带内容排除的自动发布证据不需要版本值；旧版本探测会遍历子模块，不能越过排除范围。
+  report.version = skipContent ? { version: '', source: '' } : detectVersion(root) || { version: '', source: '' }
 
   // 敏感文件（只报路径，不读内容）
   for (const rel of ['.env', 'secrets', '.secrets', 'id_rsa', 'secrets.env']) {

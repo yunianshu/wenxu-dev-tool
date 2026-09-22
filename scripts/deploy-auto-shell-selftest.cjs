@@ -25,6 +25,11 @@ docker() {
 if health_docker '${posix(root)}'; then echo '错误：只有数据库正常也被判成功'; exit 10; fi
 BROKEN=0
 health_docker '${posix(root)}' || exit 11
+HEALTH_URL=""
+curl() { echo '错误：已有容器健康检查时不应强制请求根路径' >&2; return 19; }
+run_health '${posix(root)}' || exit 12
+BROKEN=1
+if run_health '${posix(root)}'; then echo '错误：取消冗余 HTTP 检查后漏检容器故障'; exit 13; fi
 echo '全部容器健康检查通过，单容器失败正确拦截'
 `)
   const result = spawnSync(bash, [posix(test)], { encoding: 'utf8', timeout: 10000 })

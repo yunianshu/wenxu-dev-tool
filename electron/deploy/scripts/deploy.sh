@@ -36,7 +36,8 @@ CMD="deploy"
 MODE="docker" APP_NAME="" HOME_DIR="" PACKAGE="" SHA256="" VERSION="" COMPOSE_FILE="docker-compose.yml"
 UPGRADE_SCRIPT="upgrade.sh"
 RELEASE_ID="" PROJECT_NAME=""
-BACKUP_CODE=1 BACKUP_DB=0 DB_TYPE="postgres" DB_CONTAINER="" DB_NAME="" DB_USER=""
+DATA_SYNC_SCRIPT=""
+BACKUP_CODE=1 BACKUP_DB=0 DB_TYPE="postgres" DB_CONTAINER="" DB_SERVICE="" DB_NAME="" DB_USER=""
 AUTO_ROLLBACK=1 HEALTH_URL="" HEALTH_TIMEOUT=90 HEALTH_INTERVAL=3
 KEEP_RELEASES=10 KEEP_BACKUPS=10 DELETE_UPLOAD=1
 BOOTSTRAP_JAVA=0 BOOTSTRAP_PGDUMP=0
@@ -55,12 +56,14 @@ while [ $# -gt 0 ]; do
     --version)      VERSION="$2"; shift 2 ;;
     --release-id)   RELEASE_ID="$2"; shift 2 ;;
     --project-name) PROJECT_NAME="$2"; shift 2 ;;
+    --data-sync-script) DATA_SYNC_SCRIPT="$2"; shift 2 ;;
     --backup-code)      BACKUP_CODE=1; shift ;;
     --no-backup-code)   BACKUP_CODE=0; shift ;;
     --backup-db)        BACKUP_DB=1; shift ;;
     --no-backup-db)     BACKUP_DB=0; shift ;;
     --db-type)      DB_TYPE="$2"; shift 2 ;;
     --db-container) DB_CONTAINER="$2"; shift 2 ;;
+    --db-service)   DB_SERVICE="$2"; shift 2 ;;
     --db-name)      DB_NAME="$2"; shift 2 ;;
     --db-user)      DB_USER="$2"; shift 2 ;;
     --auto-rollback)    AUTO_ROLLBACK=1; shift ;;
@@ -352,6 +355,10 @@ backup_code() {
 backup_db() {
   stage backup-db
   if [ "$BACKUP_DB" != "1" ]; then return 0; fi
+  if [ -n "$DB_SERVICE" ]; then
+    backup_compose_db
+    return 0
+  fi
   [ -n "$DB_CONTAINER" ] || fail_rollback "已启用数据库备份但未配置数据库容器名"
   [ -n "$DB_NAME" ] || fail_rollback "已启用数据库备份但未配置数据库名"
   mkdir -p "$BACKUPS"
@@ -376,11 +383,93 @@ backup_db() {
   ok "数据库已备份: $out"
 }
 
+# 自动方案按当前版本服务定位数据库，绝不猜容器名或将密码拼进 SSH 命令。
+backup_compose_db() {
+  [[ "$DB_SERVICE" =~ ^[a-zA-Z0-9_-]+$ ]] || fail_rollback "数据库服务标识无效"
+  if [ -z "$OLD_RELEASE" ] || [ ! -d "$OLD_RELEASE" ]; then
+    log "首次发布，没有当前数据库实例，跳过数据库备份"
+    return 0
+  fi
+  local ids container out
+  ids=$(cd "$OLD_RELEASE" && docker compose -f "$COMPOSE_FILE" ps -q "$DB_SERVICE") \
+    || fail_rollback "无法定位当前版本数据库服务"
+  set -- $ids
+  [ "$#" = 1 ] || fail_rollback "当前版本数据库服务未运行或存在多个实例，已停止发布"
+  container="$1"
+  mkdir -p "$BACKUPS"
+  out="$BACKUPS/db_${TS}.sql"
+  if ! (umask 077; docker exec -i "$container" sh -s -- "$DB_TYPE" > "$out" <<'DB_BACKUP'
+read_setting() {
+  value=$(printenv "$1" 2>/dev/null || true)
+  if [ -n "$value" ]; then printf '%s' "$value"; return; fi
+  file=$(printenv "${1}_FILE" 2>/dev/null || true)
+  if [ -n "$file" ]; then cat "$file"; fi
+}
+case "$1" in
+  postgres)
+    user=$(read_setting POSTGRES_USER); user=${user:-postgres}
+    db=$(read_setting POSTGRES_DB); db=${db:-$user}
+    PGPASSWORD=$(read_setting POSTGRES_PASSWORD)
+    export PGPASSWORD
+    exec pg_dump --username="$user" -- "$db" 2>/dev/null
+    ;;
+  mysql)
+    db=$(read_setting MARIADB_DATABASE); db=${db:-$(read_setting MYSQL_DATABASE)}
+    [ -n "$db" ] || { echo '[ERROR] 当前数据库未声明业务库名，请使用项目手动备份配置' >&2; exit 1; }
+    user=$(read_setting MARIADB_USER); user=${user:-$(read_setting MYSQL_USER)}
+    if [ -n "$user" ]; then
+      pass=$(read_setting MARIADB_PASSWORD); pass=${pass:-$(read_setting MYSQL_PASSWORD)}
+    else
+      user=root
+      pass=$(read_setting MARIADB_ROOT_PASSWORD); pass=${pass:-$(read_setting MYSQL_ROOT_PASSWORD)}
+    fi
+    MYSQL_PWD=$pass; export MYSQL_PWD
+    if command -v mariadb-dump >/dev/null 2>&1; then dump=mariadb-dump; else dump=mysqldump; fi
+    exec "$dump" --single-transaction --no-tablespaces --user="$user" -- "$db" 2>/dev/null
+    ;;
+  *) echo '[ERROR] 当前数据库类型不支持自动备份' >&2; exit 1 ;;
+esac
+DB_BACKUP
+  ); then
+    rm -f "$out"
+    fail_rollback "当前项目数据库备份失败，已停止发布（运行版本未变）"
+  fi
+  ok "当前项目数据库已备份: $out"
+}
+
 # 备份阶段失败：尚未改动运行状态，直接失败退出
 fail_rollback() {
   err "$1"
   echo "__DEPLOY_FAIL__:$1"
   exit 1
+}
+
+validate_data_sync_script() {
+  [ -n "$DATA_SYNC_SCRIPT" ] || return 0
+  [[ "$APP_HOME" = /* ]] && [ "$DATA_SYNC_SCRIPT" = "$APP_HOME/deployer/data-sync.sh" ] \
+    || fail_rollback "启动前数据同步脚本不属于当前项目部署目录"
+  local part="$DATA_SYNC_SCRIPT" actual home_real links
+  while [ "$part" != / ]; do
+    [ ! -L "$part" ] || fail_rollback "启动前数据同步脚本路径不能经过链接"
+    part=$(dirname -- "$part")
+  done
+  [ -f "$DATA_SYNC_SCRIPT" ] && [ -r "$DATA_SYNC_SCRIPT" ] \
+    || fail_rollback "启动前数据同步脚本不存在或不可读取"
+  actual=$(readlink -f -- "$DATA_SYNC_SCRIPT") || fail_rollback "无法核验数据同步脚本路径"
+  home_real=$(readlink -f -- "$APP_HOME") || fail_rollback "无法核验项目部署目录"
+  [ "$actual" = "$home_real/deployer/data-sync.sh" ] || fail_rollback "启动前数据同步脚本路径越界"
+  links=$(stat -c %h -- "$DATA_SYNC_SCRIPT") || fail_rollback "无法核验数据同步脚本文件"
+  [ "$links" = 1 ] || fail_rollback "启动前数据同步脚本不能是硬链接"
+}
+
+sync_data_before_start() {
+  [ -n "$DATA_SYNC_SCRIPT" ] || return 0
+  stage datasync
+  validate_data_sync_script
+  log "镜像构建完成，启动前同步当前项目数据…"
+  bash -- "$DATA_SYNC_SCRIPT" || fail_rollback "启动前数据同步失败（旧版本保持运行；已同步文件不会自动撤回）"
+  echo '__STAGE_OK__:datasync'
+  ok "启动前项目数据同步完成"
 }
 
 # ───────────────────────── 清理 ─────────────────────────
@@ -592,6 +681,7 @@ do_deploy() {
   [ -n "$HOME_DIR" ] || fail_now "缺少 --home"
   [ -n "$VERSION" ]  || fail_now "缺少 --version"
   [ -n "$PACKAGE" ]  || fail_now "缺少 --package"
+  validate_data_sync_script
 
   mkdir -p "$RELEASES" "$UPLOADS" "$BACKUPS" "$SHARED"
   [ -w "$APP_HOME" ] || fail_now "部署目录不可写: $APP_HOME"
@@ -646,6 +736,7 @@ do_deploy() {
   (cd "$NEW_RELEASE" && docker compose -f "$COMPOSE_FILE" build) \
     || fail_rollback "Docker 镜像构建失败（旧版本保持运行）"
   ok "Docker 镜像构建完成"
+  sync_data_before_start
 
   # 启动服务：先停旧容器释放端口，再启动新版本
   stage start

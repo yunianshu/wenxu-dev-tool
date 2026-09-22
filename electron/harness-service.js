@@ -316,7 +316,7 @@ async function doStart(opts = {}, token = startSeq) {
   // 内置运行时以单文件归档随包分发：首次使用（或升级换版本）需解包到用户数据目录，约 1 分钟
   await harnessRuntime.ensureBundledRuntime({
     onStage: (stage) => {
-      if (stage !== 'extract') return
+      if (stage !== 'extract' || token !== startSeq) return
       setState({
         status: 'starting', stage, error: '', port: 0, pid: 0, url: '', displayUrl: '',
         startedAt: Date.now(), runtime: 'bundled', cli: '', runtimeDir: '',
@@ -375,10 +375,10 @@ async function doStart(opts = {}, token = startSeq) {
       if (settled) return
       settled = true
       if (timer) clearTimeout(timer)
-      // 启动已被 stop()/restart() 作废：无论就绪、超时还是退出，都按已停止收尾
-      // （进程已被 stop 杀掉，不能再用 running/error 覆盖 stop 设置的状态）
+      // 旧启动只结束自己的等待，不能改写停止状态或后来实例的运行状态。
       if (token !== startSeq) {
-        patch = { status: 'stopped', url: '', displayUrl: '', port: 0, pid: 0, error: '' }
+        resolve(snapshot())
+        return
       }
       setState(patch)
       resolve(snapshot())
@@ -411,6 +411,7 @@ async function doStart(opts = {}, token = startSeq) {
     if (timer.unref) timer.unref()
 
     const onChunk = (chunk) => {
+      if (token !== startSeq || child !== proc) return
       const text = String(chunk)
       logBuffer = (logBuffer + text).slice(-MAX_LOG_CHARS)
       const matched = text.match(URL_LINE) || logBuffer.match(URL_LINE)
@@ -450,7 +451,12 @@ async function doStart(opts = {}, token = startSeq) {
     })
 
     proc.on('exit', (code, signal) => {
-      if (child === proc) child = null
+      // taskkill/SIGTERM 的退出事件可能晚于重启就绪；记录与状态归当前实例所有。
+      if (token !== startSeq || child !== proc) {
+        finish({})
+        return
+      }
+      child = null
       clearPidFile()
       const reason = `Harness 服务已退出（code=${code === null ? 'null' : code}${signal ? `, signal=${signal}` : ''}）`
       if (settled && state.status === 'running') {
@@ -470,7 +476,7 @@ async function start(opts = {}) {
   const token = ++startSeq
   startingToken = token
   starting = (opts.retryOnFail === true ? startWithRetry(opts, token) : doStart(opts, token))
-    .finally(() => { starting = null })
+    .finally(() => { if (startingToken === token) starting = null })
   return starting
 }
 

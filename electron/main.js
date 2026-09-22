@@ -476,15 +476,19 @@ function registerIpc() {
   ipcMain.handle('report:readHistory', (_e, id) => reportHistory.read(id))
   ipcMain.handle('report:deleteHistory', (_e, id) => reportHistory.remove(id))
 
-  // AI 对话（流式）：每个 sender 一个 AbortController 支持停止
+  // AI 对话（流式）：请求标识隔离项目会话；未带标识的旧调用仍兼容。
   // 安全：明文 API Key 由主进程从 store 解析（getApiKey），渲染层不持有、也不接收
   const aiControllers = new WeakMap()
   ipcMain.handle('ai:chat', async (e, payload) => {
     const { messages, opts } = payload || {}
     const wc = e.sender
     const cfg = store.load()
+    const requestId = typeof opts?.requestId === 'string' ? opts.requestId : ''
+    let requests = aiControllers.get(wc)
+    if (!requests) { requests = new Map(); aiControllers.set(wc, requests) }
+    requests.get(requestId)?.abort()
     const controller = new AbortController()
-    aiControllers.set(wc, controller)
+    requests.set(requestId, controller)
     try {
       const full = await aiService.chat({
         baseUrl: (opts && opts.baseUrl) || cfg.ai.baseUrl,
@@ -494,7 +498,8 @@ function registerIpc() {
         messages,
         signal: controller.signal,
         onDelta: (text) => {
-          try { wc.send('ai:chatDelta', text) } catch { /* noop */ }
+          if (requests.get(requestId) !== controller || controller.signal.aborted) return
+          try { wc.send('ai:chatDelta', requestId ? { requestId, text } : text) } catch { /* noop */ }
         },
       })
       return { ok: true, text: full }
@@ -502,12 +507,14 @@ function registerIpc() {
       if (err && err.name === 'AbortError') return { ok: false, aborted: true, error: '' }
       return { ok: false, error: (err && err.message) || String(err) }
     } finally {
-      aiControllers.delete(wc)
+      if (requests.get(requestId) === controller) requests.delete(requestId)
+      if (!requests.size) aiControllers.delete(wc)
     }
   })
-  ipcMain.handle('ai:stop', (e) => {
-    const c = aiControllers.get(e.sender)
-    if (c) { try { c.abort() } catch { /* noop */ } }
+  ipcMain.handle('ai:stop', (e, requestId) => {
+    const requests = aiControllers.get(e.sender)
+    if (typeof requestId === 'string') requests?.get(requestId)?.abort()
+    else for (const controller of requests?.values() || []) controller.abort()
     return true
   })
   ipcMain.handle('ai:test', async (_e, opts) => {

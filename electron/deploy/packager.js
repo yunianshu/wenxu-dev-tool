@@ -11,6 +11,7 @@ const path = require('path')
 const os = require('os')
 const crypto = require('crypto')
 const archiver = require('archiver')
+const dataSync = require('./data-sync')
 
 /** 方案 §6.1 默认排除规则 */
 const DEFAULT_EXCLUDES = [
@@ -216,13 +217,16 @@ function buildDataPackage(opts) {
   if (!dataDir || typeof dataDir !== 'string') {
     return Promise.reject(new Error('未指定数据目录'))
   }
-  const sourceDir = path.resolve(projectDir, dataDir)
-  if (!fs.existsSync(sourceDir)) return Promise.reject(new Error(`数据目录不存在: ${sourceDir}`))
-  if (!fs.statSync(sourceDir).isDirectory()) return Promise.reject(new Error(`数据目录不是文件夹: ${sourceDir}`))
+  let sourceDir, entries
+  try {
+    sourceDir = dataSync.resolveLocalDataDir(projectDir, dataDir)
+    entries = dataSync.collectDataEntries(sourceDir)
+  } catch (error) { return Promise.reject(error) }
 
   const stamp = formatStamp(new Date())
   const safeName = (appName || 'app').replace(/[^\w.-]+/g, '_')
-  const fileName = `${safeName}-data-${version || 'unknown'}-${stamp}.zip`
+  const safeVersion = String(version || 'unknown').replace(/[^\w.-]+/g, '_')
+  const fileName = `${safeName}-data-${safeVersion}-${stamp}-${crypto.randomBytes(3).toString('hex')}.zip`
   const zipPath = path.join(os.tmpdir(), 'onedeploy', fileName)
   fs.mkdirSync(path.dirname(zipPath), { recursive: true })
 
@@ -243,20 +247,10 @@ function buildDataPackage(opts) {
     archive.pipe(output)
 
     // 完整收集：数据目录内容所见即所得（空目录打包为目录条目，保留结构）
-    const walk = (dir, rel) => {
-      for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
-        const abs = path.join(dir, ent.name)
-        const relPath = rel ? `${rel}/${ent.name}` : ent.name
-        if (ent.isDirectory()) {
-          archive.append(null, { name: `${relPath}/` })
-          walk(abs, relPath)
-        } else if (ent.isFile()) {
-          archive.file(abs, { name: relPath })
-          fileCount += 1 // 只统计文件（目录条目不计数）
-        }
-      }
+    for (const entry of entries) {
+      if (entry.directory) archive.append(null, { name: `${entry.relative}/` })
+      else { archive.file(entry.absolute, { name: entry.relative }); fileCount += 1 }
     }
-    walk(sourceDir, '')
     archive.finalize()
   })
 }

@@ -1156,12 +1156,15 @@ await test('submit：只复用目标日期记录，重新生成与重复提交�
 await test('submit：多行仅补回实际覆盖行，忽略客户端旧 ID 与旧剩余', async () => {
   const p = submitFixture()
   p.tasks[0].rows[0].effortId = 999
+  p.tasks[0].rows.push({ date: p.date, work: '另一项工作', consumed: 1, effortId: 998, left: 99 })
   await withStubClients(() => fill.submit(p), { zt: {
     myTasks: async () => [{ id: 66, left: 5 }],
     getTaskEfforts: async () => [{ id: 101, date: p.date, consumed: 3 }, { id: 102, date: p.date, consumed: 4 }],
     recordEfforts: async (_id, rows) => {
       assert.strictEqual(rows[0].effortId, 101)
-      assert.strictEqual(rows[0].left, 6)
+      assert.strictEqual(rows[1].effortId, 102)
+      assert.strictEqual(rows[0].left, 9)
+      assert.strictEqual(rows[1].left, 9)
       return { status: 200 }
     },
   } })

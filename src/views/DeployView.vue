@@ -115,7 +115,7 @@ import DeployAiAssistant from '../components/deploy/DeployAiAssistant.vue'
 import DeployRunPanel from '../components/deploy/DeployRunPanel.vue'
 import DeployHistoryTable from '../components/deploy/DeployHistoryTable.vue'
 import ServerManagerDialog from '../components/deploy/ServerManagerDialog.vue'
-import { emptyTarget, emptyProject, fmtDur } from '../components/deploy/deploy-form'
+import { emptyTarget, emptyProject, fmtDur, refreshTargetServer } from '../components/deploy/deploy-form'
 
 defineEmits(['navigate'])
 const { currentProject, loadProjects: loadSharedProjects } = useProjects()
@@ -135,6 +135,7 @@ const runPanelRef = ref(null)
 const historyRef = ref(null)
 let offDone = null
 let detectTimer = null
+let disposed = false
 
 /** 当前编辑的部署目标（响应式：切换目标后服务器/健康检查卡随之切换） */
 const activeTarget = computed(() => {
@@ -190,7 +191,7 @@ async function loadProjects() {
   } catch { state.deploy.projects = [] }
   state.deploy.currentProjectId = state.projects.currentId
   const selected = state.deploy.projects.find((project) => project.id === state.deploy.currentProjectId)
-  if (selected) fillForm(selected)
+  if (selected) fillForm(selected, selected.id === form.id ? activeTargetId.value : '')
 }
 
 /** preferredTargetId：填充后尽量停留的环境（保存/换版本等流程不得把用户悄悄切到环境 1） */
@@ -334,7 +335,7 @@ async function selectDeploymentServer(serverId) {
   const server = servers.value.find((s) => s.id === serverId)
   if (!server || !activeTarget.value) return
   const target = activeTarget.value
-  if (target.serverId !== serverId && form.deployMode === 'auto') { target.remotePath = ''; delete target.autoSudo }
+  if (target.serverId !== serverId && form.deployMode === 'auto') { target.remotePath = ''; delete target.autoSudo; delete target.autoHealth; delete target.autoDb }
   target.serverId = serverId
   target.server = { ...server }; delete target.server.projects
   if (form.deployMode === 'auto') { target.name = '正式环境'; form.productionTargetId = target.id }
@@ -350,7 +351,7 @@ async function onServersChanged() {
   state.deploy.projects = state.projects.items
   for (const target of form.targets) {
     const server = servers.value.find((s) => s.id === target.serverId)
-    if (server) { target.server = { ...server }; delete target.server.projects }
+    if (server) refreshTargetServer(target, server, form.deployMode === 'auto')
   }
   configDrawerRef.value?.refreshServerSnapshot(servers.value)
   connResult.value = null
@@ -413,14 +414,15 @@ onMounted(() => {
     const r = d && d.record
     if (!r) return
     if (r.projectId === form.id && form.deployMode === 'auto') {
-      const selectedTarget = activeTargetId.value
       await loadProjects()
-      if (form.targets.some((t) => t.id === selectedTarget)) activeTargetId.value = selectedTarget
     }
+    if (disposed) return
     const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
     const head = `<b>${esc(r.projectName)}</b>${r.targetName ? ` · ${esc(r.targetName)}` : ''} ${esc(r.version)} → ${esc(r.host)}`
     if (r.status === 'success') {
-      if (r.targetId === activeTargetId.value) state.deploy.currentVersion = r.version
+      if (r.type === 'deploy' && r.projectId === state.projects.currentId && r.projectId === form.id && r.targetId === activeTargetId.value) {
+        state.deploy.currentVersion = r.releaseId || r.version
+      }
       await ElMessageBox.alert(
         `${head}<br/>耗时 ${fmtDur(r.durationMs)}<br/><br/>✓ 发布成功${r.serviceUrl ? `<br/>访问地址：${esc(r.serviceUrl)}` : ''}`,
         '发布成功',
@@ -451,6 +453,7 @@ watch(() => state.projects.currentId, (projectId) => {
 })
 
 onUnmounted(() => {
+  disposed = true
   if (offDone) offDone()
   clearTimeout(detectTimer)
 })

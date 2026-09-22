@@ -59,7 +59,7 @@ contextBridge.exposeInMainWorld('gitReport', {
   // AI 对话（流式）
   aiChat: (messages, opts) =>
     ipcRenderer.invoke('ai:chat', { messages: toPlain(messages), opts: toPlain(opts) }),
-  aiStop: () => ipcRenderer.invoke('ai:stop'),
+  aiStop: (requestId) => ipcRenderer.invoke('ai:stop', requestId),
   aiTest: (opts) => ipcRenderer.invoke('ai:test', toPlain(opts)),
   aiModels: (opts) => ipcRenderer.invoke('ai:models', toPlain(opts)),
   onAiDelta: (cb) => subscribe('ai:chatDelta', cb),

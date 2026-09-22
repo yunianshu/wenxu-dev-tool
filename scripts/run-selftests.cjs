@@ -21,8 +21,15 @@ const SUITES = [
   'deploy-auto-selftest.cjs',
   'deploy-servers-selftest.cjs',
   'deploy-auto-shell-selftest.cjs',
+  'deploy-auto-db-selftest.cjs',
+  'deploy-db-restore-selftest.cjs',
+  'deploy-project-policy-selftest.cjs',
+  'deploy-auto-data-selftest.cjs',
+  'deploy-prestart-data-selftest.cjs',
+  'deploy-history-selftest.cjs',
   'deploy-scriptmode-selftest.cjs',
   'deploy-datasync-selftest.cjs',
+  'deploy-data-boundary-selftest.cjs',
   'deploy-ai-selftest.cjs',
   'deploy-ai-context-selftest.cjs',
   'deploy-release-notes-selftest.cjs',
@@ -32,6 +39,7 @@ const SUITES = [
   'report-history-selftest.cjs',
   'git-service-selftest.cjs',
   'fill-report-selftest.cjs',
+  'fill-consistency-selftest.cjs',
   'harness-defaults-selftest.cjs',
   'harness-orphan-lock-selftest.cjs',
   'harness-runtime-selftest.cjs',
@@ -43,6 +51,9 @@ const SUITES = [
   'local-debug-selftest.cjs',
   'projects-selftest.cjs',
   'ai-context-selftest.mjs',
+  'project-chat-selftest.cjs',
+  'ai-lifecycle-selftest.cjs',
+  'ui-state-selftest.cjs',
 ]
 
 let failed = 0

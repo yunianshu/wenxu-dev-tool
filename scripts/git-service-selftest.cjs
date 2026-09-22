@@ -71,6 +71,42 @@ async function main() {
     passed += 1
     console.log('  ✓ 重复仓库路径不会产生重复提交')
 
+    const options = { since: '2026-09-04', until: '2026-09-05', authors: [], includeMerges: false }
+    assert.strictEqual(await gitService.collectCommits([repo], options), commits, '引用未变时应复用热缓存，不能重跑全量日志')
+    const source = path.join(tempRoot, 'fetch-source')
+    git(tempRoot, ['clone', '--quiet', repo, source])
+    git(source, ['config', 'user.name', '测试用户'])
+    git(source, ['config', 'user.email', 'test@example.com'])
+    git(source, ['commit', '--allow-empty', '-m', '拉取后补进的历史提交'], {
+      GIT_AUTHOR_DATE: '2026-09-04T11:00:00+08:00',
+      GIT_COMMITTER_DATE: '2026-09-04T11:00:00+08:00',
+    })
+    const originalHead = git(repo, ['rev-parse', 'HEAD'])
+    git(repo, ['fetch', source, 'HEAD:refs/remotes/review/main'])
+    assert.strictEqual(git(repo, ['rev-parse', 'HEAD']), originalHead, '只更新远端引用，不改变当前分支')
+    const fetched = await gitService.collectCommits([repo], options)
+    assert.strictEqual(fetched.length, 2, 'fetch 补进历史提交后，同参数收集必须立即刷新')
+    assert.strictEqual(await gitService.collectCommits([repo], options), fetched)
+    passed += 1
+    console.log('  ✓ 历史范围在 fetch 更新引用后立即刷新，未变化时仍命中热缓存')
+
+    git(repo, ['checkout', '--detach', 'refs/remotes/review/main'])
+    const detached = await gitService.collectCommits([repo], options)
+    assert.notStrictEqual(detached, fetched, 'checkout 改变 HEAD 后必须检查新的提交图')
+    git(repo, ['checkout', '--detach', originalHead])
+    git(source, ['reset', '--hard', originalHead])
+    git(repo, ['fetch', '--force', source, 'HEAD:refs/remotes/review/main'])
+    const rewritten = await gitService.collectCommits([repo], options)
+    assert.strictEqual(rewritten.length, 1, '引用改写后不得从历史增量缓存带回已移除的提交')
+    const realNow = Date.now
+    try {
+      const now = realNow()
+      Date.now = () => now + 121000
+      assert.notStrictEqual(await gitService.collectCommits([repo], options), rewritten, '历史缓存达到有效期也必须重新读取')
+    } finally { Date.now = realNow }
+    passed += 1
+    console.log('  ✓ checkout、引用改写和历史缓存到期不会复用旧结果')
+
     console.log(`\n结果：${passed} 通过，0 失败`)
   } finally {
     // 仅清理由本测试创建且位于系统临时目录下的隔离数据。

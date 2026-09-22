@@ -368,15 +368,21 @@ function toggleZcodePlugin(id, enable) {
 
 // ─── Codex 插件（config.toml [plugins."id"] 段 + plugins/cache 版本目录） ───
 
+/** 读写共用 TOML 表头识别，保留合法缩进、空白、引号与行尾注释。 */
+function codexPluginHeader(line) {
+  const match = /^\s*\[\s*plugins\s*\.\s*(?:"([^"]+)"|'([^']+)')\s*\]\s*(?:#.*)?$/.exec(line)
+  return match ? (match[1] || match[2]) : null
+}
+
 /** 行级解析 config.toml 中 [plugins."id"] 段的 enabled 布尔值 */
 function parseCodexPluginSections(toml) {
   const out = {}
   let current = null
   for (const line of toml.split(/\r?\n/)) {
     const t = line.trim()
-    const header = /^\[\s*plugins\.\s*"([^"]+)"\s*\]$/.exec(t)
+    const header = codexPluginHeader(line)
     if (header) {
-      current = header[1]
+      current = header
       if (!(current in out)) out[current] = true // 段存在但未写 enabled 时按启用处理
       continue
     }
@@ -426,7 +432,7 @@ function toggleCodexPlugin(id, enable) {
   const eol = raw.includes('\r\n') ? '\r\n' : '\n'
   const lines = raw.split(/\r?\n/)
   const header = `[plugins."${id}"]`
-  const headerIndex = lines.indexOf(header)
+  const headerIndex = lines.findIndex((line) => codexPluginHeader(line) === id)
   if (headerIndex >= 0) {
     // 段边界：下一个以 [ 开头的行（含子表）之前都属于该段
     let end = lines.length

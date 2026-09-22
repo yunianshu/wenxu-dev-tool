@@ -17,6 +17,7 @@
             type="date"
             value-format="YYYY-MM-DD"
             :clearable="false"
+            :disabled="state.fillReport.submitting"
             :disabled-date="(d) => d.getTime() > Date.now()"
             :shortcuts="dateShortcuts"
             style="width: 150px"
@@ -25,6 +26,7 @@
             v-model="startTime"
             start="06:00" end="21:00" step="00:15"
             :clearable="false"
+            :disabled="state.fillReport.submitting"
             placeholder="上班时间"
             style="width: 108px"
           />
@@ -32,6 +34,7 @@
             v-model="endTime"
             start="00:00" end="23:45" step="00:15"
             clearable
+            :disabled="state.fillReport.submitting"
             class="end-time-select"
             :placeholder="endPlaceholder"
             style="width: 138px"
@@ -40,6 +43,7 @@
         </div>
         <el-select
           v-model="selectedProjectIds"
+          :disabled="state.fillReport.submitting"
           multiple
           filterable
           collapse-tags
@@ -271,7 +275,7 @@
           type="primary"
           plain
           :loading="resubmitting === log.at"
-          :disabled="!!resubmitting || !!deleting"
+          :disabled="state.fillReport.submitting || state.fillReport.running || !!resubmitting || !!deleting"
           @click="doResubmit(log)"
         >重新提交</el-button>
         <el-button
@@ -465,8 +469,8 @@ const fillableProjects = computed(() =>
     .map((p) => ({ ...p, repoCount: reposForProject(p, state.discoveredRepos).length })),
 )
 
-const canGenerate = computed(() => !!(fillDate.value && fillableProjects.value.some((p) => p.repoCount > 0)))
-const canSubmit = computed(() => !!(plan.value && plan.value.tasks.length && !plan.value.ztError && !unmatchedCount.value && zentaoConfigured.value))
+const canGenerate = computed(() => !!(fillDate.value && !state.fillReport.submitting && fillableProjects.value.some((p) => p.repoCount > 0)))
+const canSubmit = computed(() => !!(plan.value && plan.value.tasks.length && !state.fillReport.submitting && !state.fillReport.running && !plan.value.ztError && !unmatchedCount.value && zentaoConfigured.value))
 const unmatchedCount = computed(() => (plan.value ? plan.value.planned.filter((p) => !p.taskId).length : 0))
 /** 当天有提交的全部项目（生成报告后由主进程带回），勾选决定哪些计入填报 */
 const dayProjects = computed(() => {
@@ -550,6 +554,7 @@ function logSummary(log) {
 
 /** 按留痕记录重新提交：重放当时存档的载荷；禅道/汉印已有记录按 ID 复用更新覆盖，不重复写入 */
 async function doResubmit(log) {
+  if (state.fillReport.submitting || state.fillReport.running) return
   try {
     await ElMessageBox.confirm(
       `重新提交 ${log.date} 的填报（禅道 ${log.ztTotal} 个任务${log.hp && log.hp.sent ? `、汉印 ${log.hp.sent} 条` : ''}）？已写入的部分会更新覆盖，不会重复。`,
@@ -559,7 +564,9 @@ async function doResubmit(log) {
   } catch {
     return
   }
+  if (state.fillReport.submitting || state.fillReport.running) return
   resubmitting.value = log.at
+  state.fillReport.submitting = true
   try {
     const r = await window.gitReport.fillResubmit(log.at)
     if (!r.ok) {
@@ -581,6 +588,7 @@ async function doResubmit(log) {
     ElMessage.error(`重新提交失败：${e?.message || e}`)
   } finally {
     resubmitting.value = ''
+    state.fillReport.submitting = false
     loadLogs()
   }
 }
@@ -771,6 +779,7 @@ async function doUnbind() {
 }
 
 async function submitFill(preview) {
+  if (state.fillReport.submitting || state.fillReport.running) return
   const p = plan.value
   if (!p) return
   if (unmatchedCount.value) {
@@ -798,6 +807,7 @@ async function submitFill(preview) {
       return
     }
   }
+  if (state.fillReport.submitting || state.fillReport.running) return
   state.fillReport.submitting = true
   try {
     const payload = { date: p.date, tasks, dryRun: preview }

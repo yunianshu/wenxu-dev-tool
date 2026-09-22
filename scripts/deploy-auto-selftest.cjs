@@ -5,6 +5,7 @@ const os = require('os')
 const path = require('path')
 const crypto = require('crypto')
 const { Writable } = require('stream')
+const { parse, stringify } = require('yaml')
 const { execFileSync } = require('child_process')
 // Git 自带的 GNU tar 会把 "C:\..." 的盘符当作远程主机（tar: Cannot connect to C: resolve failed），
 // 而它常排在 PATH 里系统的前面；优先用系统自带 bsdtar（zip 与 tar.gz 都能处理）。
@@ -197,6 +198,69 @@ function project(name) {
     const flat = path.join(root, 'flat'); fs.mkdirSync(flat); fs.writeFileSync(path.join(flat, 'upgrade.sh'), 'exit 0'); fs.writeFileSync(path.join(flat, 'start.sh'), 'exit 0')
     const tarFile = path.join(root, 'flat.tar.gz'); execFileSync(TAR_BIN, ['-czf', tarFile, '-C', flat, 'upgrade.sh', 'start.sh'])
     await assert.rejects(() => validateArtifact(tarFile), /顶层目录/)
+  })
+  await test('已有 Compose 多运行配置保持顺序与格式，单独上传且不进入构建快照', async () => {
+    const p = project('compose-runtime')
+    fs.mkdirSync(path.join(p.localPath, 'deploy/config'), { recursive: true })
+    fs.writeFileSync(path.join(p.localPath, 'Dockerfile'), 'FROM node:22-alpine\nCOPY . /app\n')
+    const rootEnv = 'ROOT_VALUE=root-fixture-private\n'
+    const runtime = 'BUSINESS_OPTION=business-fixture\nRAW_VALUE="${ROOT_VALUE} with quotes"\nSHORT_TOKEN=qZ!\n'
+    const worker = 'WORKER_OPTION=${ROOT_VALUE}\n'
+    fs.writeFileSync(path.join(p.localPath, '.env'), rootEnv)
+    fs.writeFileSync(path.join(p.localPath, 'deploy/config/runtime.properties'), runtime)
+    fs.writeFileSync(path.join(p.localPath, 'README.md'), worker)
+    const doc = { services: {
+      api: { build: { context: '..' }, ports: ['8080:8080'], env_file: ['../.env', { path: 'config/runtime.properties', required: true, format: 'raw' }, { path: 'missing.properties', required: false }], healthcheck: { test: ['CMD', 'curl', '-f', 'http://localhost:8080/health'] } },
+      worker: { image: 'node:22-alpine', env_file: ['../README.md'] },
+    } }
+    fs.writeFileSync(path.join(p.localPath, 'deploy/compose.yaml'), stringify(doc))
+    const evidence = auto.evidence(p)
+    assert(!evidence.files.some((f) => f.path === 'README.md'), '声明为 env_file 的任意文件名不能作为 AI 证据')
+    const opts = { conn: {}, uploadText: async (_, text, file) => remote.set(file, text), log: () => {}, releaseId: '1.0.0-runtime-first' }
+    const prepared = await auto.prepare(p, p.targets[0], opts)
+    const output = parse(prepared.files.find((f) => f.path === auto.COMPOSE).content)
+    const entries = output.services.api.env_file
+    assert.equal(entries.length, 3)
+    assert.equal(remote.get(entries[0]), rootEnv)
+    assert.equal(entries[1].format, 'raw'); assert.equal(entries[1].required, true)
+    assert.equal(remote.get(entries[1].path), runtime, 'raw 内容必须保持引号与插值原文')
+    assert.equal(entries[2].required, false); assert(!remote.has(entries[2].path))
+    assert.equal(remote.get(output.services.worker.env_file[0]), worker)
+    assert.notEqual(output.services.worker.env_file[0], entries[0], '不同服务变量文件不能合并为同一份')
+    assert.equal(auto.parseEnv(remote.get(prepared.remotePath + '/shared/.env')).ROOT_VALUE, 'root-fixture-private', 'env_file 引用的项目插值变量也需提供')
+    for (const value of ['root-fixture-private', 'business-fixture', 'qZ!']) {
+      assert(!prepared.redact('output=' + value).includes(value))
+      assert(!JSON.stringify(prepared.recipe).includes(value))
+      assert(!JSON.stringify(prepared.files).includes(value))
+    }
+    const zip = await packager.buildPackage({ projectDir: p.localPath, appName: p.name, version: '1.0.0', files: prepared.files, safeRoot: true, exclude: prepared.exclude })
+    try {
+      const names = execFileSync(TAR_BIN, ['-tf', zip.zipPath], { encoding: 'utf8' }).split(/\r?\n/)
+      for (const rel of ['.env', 'deploy/config/runtime.properties', 'README.md']) assert(!names.includes(rel), `${rel} 不得进入 ZIP`)
+    } finally { fs.unlinkSync(zip.zipPath) }
+    const firstPath = entries[1].path
+    fs.writeFileSync(path.join(p.localPath, 'deploy/config/runtime.properties'), 'BUSINESS_OPTION=second-runtime-fixture\n')
+    const next = await auto.prepare(p, p.targets[0], { ...opts, releaseId: '1.0.1-runtime-second' })
+    const nextEntries = parse(next.files.find((f) => f.path === auto.COMPOSE).content).services.api.env_file
+    assert.notEqual(nextEntries[1].path, firstPath)
+    assert.equal(remote.get(firstPath), runtime, '后续发布不能覆盖旧版本回滚所需的运行配置')
+    assert.equal(remote.get(nextEntries[1].path), 'BUSINESS_OPTION=second-runtime-fixture\n')
+    assert.equal(prepared.health.enabled, false)
+    assert.equal(prepared.health.url, '', '已有容器 /health 检查不能再强制探测 /')
+    assert(service.buildDeployArgs(p, { ...p.targets[0], health: prepared.health }, { fileName: 'app.zip', sha256: 'abc' }, '1.0.0').includes('--no-health'))
+  })
+  await test('运行配置路径与 required 校验，禁用 healthcheck 不能绕过业务探测', () => {
+    const p = project('compose-validation')
+    const recipe = (env_file, healthcheck) => ({ compose: stringify({ services: { app: { image: 'node:22-alpine', env_file, healthcheck } } }), publicService: 'app', publicPort: 8080 })
+    assert.throws(() => auto.validateRecipe(p, recipe('../outside.env')), /路径/)
+    assert.throws(() => auto.validateRecipe(p, recipe('/etc/passwd')), /路径/)
+    assert.throws(() => auto.validateRecipe(p, recipe({ path: '../outside.env', required: false })), /路径/)
+    assert.throws(() => auto.validateRecipe(p, recipe('missing.env')), /不存在/)
+    assert.doesNotThrow(() => auto.validateRecipe(p, recipe({ path: 'missing.env', required: false })))
+    assert.equal(auto.validateRecipe(p, recipe(undefined, { disable: true, test: ['CMD', 'true'] })).healthPath, '/')
+    assert.equal(auto.validateRecipe(p, recipe(undefined, { test: ['NONE'] })).healthPath, '/')
+    assert.equal(auto.validateRecipe(p, recipe(undefined, { test: ['CMD', 'true'] })).healthPath, null)
+    assert.equal(auto.validateRecipe(p, { ...recipe(undefined, { test: ['CMD', 'true'] }), healthPath: '/ready' }).healthPath, '/ready')
   })
   console.log(`\n自动发布自测通过（${passed} 组断言）`)
 })().catch((e) => { console.error(e.stack); process.exitCode = 1 }).finally(() => {

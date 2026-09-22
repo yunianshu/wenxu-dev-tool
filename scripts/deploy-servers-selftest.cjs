@@ -11,9 +11,16 @@ const identity = require('../electron/deploy/auto-deploy').identity
 const file = path.join(root, 'deploy-projects.json')
 let passed = 0
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name) }
+function assertRuntimeCleared(target) {
+  assert.equal(target.remotePath, '')
+  for (const key of ['autoSudo', 'autoHealth', 'autoDb']) assert(!Object.hasOwn(target, key), key + ' 必须失效')
+}
+function withRuntime(target, suffix) {
+  return { ...target, remotePath: '/apps/' + suffix, autoSudo: true, autoHealth: { enabled: true, url: 'http://127.0.0.1:21000/health' }, autoDb: { enabled: true, type: 'postgres', service: 'db' } }
+}
 try {
   const connection = { host: 'example.invalid', port: 22, username: 'root', authType: 'password', secret: store.encryptText('fixture-old-password') }
-  const old = ['a', 'b'].map(id => ({ id, name: id, deployMode: 'auto', targets: [{ id: 't-' + id, server: connection, remotePath: '/apps/' + id, dataSync: { importSecret: store.encryptText('import-' + id) } }] }))
+  const old = ['a', 'b'].map(id => ({ id, name: id, deployMode: 'auto', targets: [withRuntime({ id: 't-' + id, server: connection, health: { enabled: false, url: 'http://custom.invalid/health' }, db: { strategy: 'manual', enabled: true, container: 'custom-db', name: 'custom', user: 'operator' }, dataSync: { enabled: true, localDir: 'custom-data', importSecret: store.encryptText('import-' + id) } }, id)] }))
   fs.writeFileSync(file, JSON.stringify({ projects: old }))
   let a, b, serverId
   test('旧连接合并为共享服务器，目录/目标ID/凭据保留且迁移幂等', () => {
@@ -30,16 +37,83 @@ try {
     assert(!JSON.stringify(projects.listServers()).includes('fixture-old-password'))
     assert(!JSON.stringify(projects.list()).includes('fixture-old-password'))
   })
-  test('全局编辑同步全部引用，旧项目快照不能覆盖新口令', () => {
+  test('旧健康检查显式关闭保持手动关闭，新项目与显式自动策略不受影响', () => {
+    const variants = [
+      [{ enabled: false }, 'manual', false],
+      [{ enabled: true }, 'auto', true],
+      [undefined, 'auto', true],
+      [{ strategy: 'auto', enabled: false }, 'auto', false],
+      [{ strategy: 'manual', enabled: true }, 'manual', true],
+    ]
+    for (const [health, strategy, enabled] of variants) {
+      for (const source of [{ health }, { targets: [{ health }] }]) {
+        const normalized = projects.normalizeProject({ deployMode: 'auto', ...source })
+        assert.equal(normalized.targets[0].health.strategy, strategy)
+        assert.equal(normalized.targets[0].health.enabled, enabled)
+        assert.deepStrictEqual(projects.normalizeProject(normalized).targets[0].health, normalized.targets[0].health)
+      }
+    }
+    assert.equal(a.targets[0].health.strategy, 'manual')
+    assert.equal(a.targets[0].health.enabled, false)
+    assert(projects.save(a).ok)
+    assert.equal(JSON.parse(fs.readFileSync(file)).projects[0].targets[0].health.strategy, 'manual')
+  })
+  test('全局编辑地址使全部自动目标探测失效，旧快照不能恢复运行状态或覆盖新口令', () => {
     const saved = projects.saveServer({ ...projects.listServers()[0], name: '正式服务器', host: 'prod.example.invalid', secret: 'fixture-new-password' })
     assert(saved.ok)
+    for (const p of projects.list()) assertRuntimeCleared(p.targets[0])
     a.targets[0].server.secret = 'stale-password'; projects.save(a)
     for (const p of projects.list()) {
       assert.equal(p.targets[0].server.host, 'prod.example.invalid')
       assert.equal(projects.getCredentials(p.id).password, 'fixture-new-password')
+      assertRuntimeCleared(p.targets[0])
+      assert.deepStrictEqual(p.targets[0].db, a.targets[0].db)
+      assert.deepStrictEqual(p.targets[0].health, a.targets[0].health)
+      assert.equal(p.targets[0].dataSync.localDir, 'custom-data')
+      assert.equal(projects.getDataSyncCredentials(p.id), 'import-' + p.id)
     }
-    assert.equal(projects.list().find(p => p.id === 'a').targets[0].remotePath, '/apps/a')
     assert.notEqual(identity(a, 't-a'), identity(b, 't-b'))
+  })
+  test('仅名称口令编辑保留探测，端口/账号变更只清所引用服务器的自动目标', () => {
+    const second = projects.saveServer({ host: 'isolated.invalid' })
+    assert(second.ok)
+    for (const [id, mode, selectedServer] of [['manual', 'docker', serverId], ['script', 'script', serverId], ['unrelated', 'auto', second.id]]) {
+      const p = projects.defaultProject(); p.id = id; p.deployMode = mode
+      p.targets = [withRuntime({ ...p.targets[0], serverId: selectedServer }, id)]
+      assert(projects.save(p).ok)
+    }
+    const reseedAutomatic = () => {
+      for (const id of ['a', 'b']) {
+        const p = projects.list().find(p => p.id === id)
+        p.targets[0] = withRuntime(p.targets[0], id)
+        assert(projects.save(p).ok)
+      }
+    }
+    reseedAutomatic()
+    const before = projects.list()
+    assert(projects.saveServer({ ...projects.listServers().find(s => s.id === serverId), name: '服务器改名', secret: 'fixture-renamed-password' }).ok)
+    assert.equal(projects.getCredentials('a').password, 'fixture-renamed-password')
+    for (const p of projects.list()) {
+      const expected = before.find(x => x.id === p.id).targets[0]
+      for (const key of ['remotePath', 'autoSudo', 'autoHealth', 'autoDb']) assert.deepStrictEqual(p.targets[0][key], expected[key])
+    }
+    for (const update of [{ port: 2222 }, { username: 'deploy' }]) {
+      reseedAutomatic()
+      assert(projects.saveServer({ ...projects.listServers().find(s => s.id === serverId), ...update }).ok)
+      for (const p of projects.list()) {
+        if (['a', 'b'].includes(p.id)) {
+          assertRuntimeCleared(p.targets[0])
+          assert.equal(p.targets[0].db.name, 'custom')
+          assert.equal(p.targets[0].health.enabled, false)
+          assert.equal(p.targets[0].dataSync.localDir, 'custom-data')
+        } else {
+          assert.equal(p.targets[0].remotePath, '/apps/' + p.id)
+          assert.equal(p.targets[0].autoDb.service, 'db')
+        }
+      }
+    }
+    for (const id of ['manual', 'script', 'unrelated']) assert(projects.remove(id).ok)
+    assert(projects.removeServer(second.id).ok)
   })
   test('同一服务器可被新项目引用，项目间目录保持隔离', () => {
     const p = projects.defaultProject(); p.name = '第三项目'; p.targets[0].serverId = serverId
@@ -47,7 +121,7 @@ try {
     assert.equal(projects.listServers().length, 1)
     assert.equal(projects.listServers()[0].projects.length, 3)
     assert.equal(projects.list().find(x => x.id === p.id).targets[0].remotePath, '')
-    assert.equal(projects.getCredentials(p.id).password, 'fixture-new-password')
+    assert.equal(projects.getCredentials(p.id).password, 'fixture-renamed-password')
   })
   test('引用中禁止删除，未知引用拒绝保存，解除关联不复制凭据', () => {
     assert.equal(projects.removeServer(serverId).ok, false)

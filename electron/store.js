@@ -139,12 +139,13 @@ function save(cfg) {
       delete c.ai.keyConfigured
       delete c.ai.keyMasked
       delete c.ai.apiKey
+      delete c.ai.keyEnc
       if (!clear && !newKey) {
         // 未输入新 Key 也未要求清除：保留磁盘既有 Key（字节原样，不触发解密）
         const oldAi = old.ai || {}
         if (oldAi.keyEnc) c.ai.keyEnc = oldAi.keyEnc
         else if (oldAi.apiKey) c.ai.apiKey = oldAi.apiKey
-      } else if (newKey) {
+      } else if (!clear && newKey) {
         try {
           if (safeStorage.isEncryptionAvailable()) {
             c.ai.keyEnc = safeStorage.encryptString(newKey).toString('base64')
@@ -165,9 +166,10 @@ function save(cfg) {
       delete c.zentao.pwdConfigured
       delete c.zentao.pwdMasked
       delete c.zentao.password
+      delete c.zentao.pwdEnc
       if (!clearPwd && !newPwd) {
         if (old.zentao && old.zentao.pwdEnc) c.zentao.pwdEnc = old.zentao.pwdEnc
-      } else if (newPwd) {
+      } else if (!clearPwd && newPwd) {
         c.zentao.pwdEnc = encryptText(newPwd)
       }
       // clearPwd → 不带 pwdEnc，即清除
@@ -180,9 +182,10 @@ function save(cfg) {
       delete c.hanprint.pwdConfigured
       delete c.hanprint.pwdMasked
       delete c.hanprint.password
+      delete c.hanprint.pwdEnc
       if (!clearPwd && !newPwd) {
         if (old.hanprint && old.hanprint.pwdEnc) c.hanprint.pwdEnc = old.hanprint.pwdEnc
-      } else if (newPwd) {
+      } else if (!clearPwd && newPwd) {
         c.hanprint.pwdEnc = encryptText(newPwd)
       }
     }

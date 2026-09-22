@@ -5,6 +5,7 @@ const { execFile } = require('child_process')
 const os = require('os')
 const fs = require('fs')
 const path = require('path')
+const { createHash } = require('crypto')
 
 /** 默认按目录名包含匹配排除的目录（第三方克隆 / SDK / 缓存 / 系统目录） */
 const DEFAULT_CONTAINS_EXCLUDES = [
@@ -229,11 +230,11 @@ function tryCall(fn, payload) { try { fn(payload) } catch { /* noop */ } }
  * - 新范围为某缓存条目的超集时仅补查缺口区间（如日报→周报只补差额天数）
  * - 仓库列表（含顺序）/作者/合并参数任一变化自动视为不同 key
  *
- * 正确性约定：历史日期的提交视为不可变（rebase/amend 改写历史不在覆盖范围）；
- * 范围触及「今天及以后」的条目仅在 FRESH_TTL 内允许复用，过期后整体重查，避免漏掉新提交。
+ * 每次先检查轻量 refs/HEAD 指纹：fetch/pull/checkout/rebase 后立即失效；
+ * 所有范围最多缓存 FRESH_TTL，避免历史报告长期漏掉后补或改写的提交。
  */
 const COLLECT_CACHE_LIMIT = 8
-/** 含「今天/未来」的条目允许复用的时长（毫秒） */
+/** 各日期范围允许复用的最长时间（毫秒） */
 const COLLECT_FRESH_TTL = 120 * 1000
 const collectCache = new Map()
 /** 进行中任务的并发去重：相同参数的并发调用共享同一 Promise（后续加入者收不到中间进度） */
@@ -326,9 +327,18 @@ function groupCommitsByRepo(commits) {
   return m
 }
 
-/** 缓存条目是否可复用：纯历史范围永久有效；含今天/未来/开放区间则要求新鲜 */
+/** refs 查询不遍历提交历史，热路径只需检查仓库引用是否变化。 */
+async function repositoryFingerprint(repos) {
+  const refs = await runPool(repos, async (repo) => {
+    const result = await execGit(repo, ['show-ref', '--head', '--dereference'])
+    // 查询失败不能信任旧缓存；空仓库同样走实际查询，避免错误结果长期保留。
+    return result.ok ? result.stdout : `unavailable:${Date.now()}:${Math.random()}`
+  })
+  return createHash('sha256').update(JSON.stringify(refs)).digest('hex')
+}
+
+/** 即使引用不变，过期的历史缓存也重新读取（例如浅克隆加深）。 */
 function cacheUsable(entry) {
-  if (entry.until && BARE_DATE_RE.test(entry.until) && entry.until <= todayLocal()) return true
   return Date.now() - entry.createdAt <= COLLECT_FRESH_TTL
 }
 
@@ -342,10 +352,10 @@ async function collectCommits(repos, opts, onProgress) {
   // 调用方可能因并发扫描事件得到重复路径；底层集中去重，确保每个仓库只执行一次查询。
   const repoList = uniquePaths(repos)
   const reposSig = repoList.join('\u0000')
-  const key = [reposSig, o.since, o.until, o.includeMerges ? 1 : 0, o.authorsSig].join('\u0001')
+  const refsSig = await repositoryFingerprint(repoList)
+  const key = [reposSig, refsSig, o.since, o.until, o.includeMerges ? 1 : 0, o.authorsSig].join('\u0001')
 
-  // 1) 精确命中：直接复用（LRU 触碰保活跃度）；过期条目保留在缓存中，
-  //    供步骤 3 作为增量 base 复用其历史段（只重查可能变化的今天段）
+  // 1) 精确命中：引用未变化且仍在有效期内时复用，LRU 触碰保活跃度。
   const hit = collectCache.get(key)
   if (hit && cacheUsable(hit)) {
     collectCache.delete(key)
@@ -358,21 +368,15 @@ async function collectCommits(repos, opts, onProgress) {
   if (collectInflight.has(key)) return collectInflight.get(key)
 
   const task = (async () => {
-    // 3) 增量：寻找被当前范围完全覆盖的最小缓存基
+    // 3) 增量：仅复用引用未变化且未过期的历史范围
     let base = null
     if (BARE_DATE_RE.test(o.since) && BARE_DATE_RE.test(o.until)) {
-      const today = todayLocal()
       for (const [k, v] of collectCache) {
         if (v.reposSig !== reposSig) continue
+        if (v.refsSig !== refsSig || !cacheUsable(v)) continue
         if (v.includeMerges !== o.includeMerges || v.authorsSig !== o.authorsSig) continue
         if (!BARE_DATE_RE.test(v.since) || !BARE_DATE_RE.test(v.until)) continue
-        // 历史日期视为不可变：纯历史条目永久可信；触及今天/未来的过期条目
-        // 截断到「今天 00:00（排他）」后仍可作 base —— 历史段复用，仅补查今天段
-        let vUntil = v.until
-        if (!cacheUsable(v)) {
-          if (v.until <= today) continue
-          vUntil = today
-        }
+        const vUntil = v.until
         if (o.since <= v.since && o.until >= vUntil) {
           const span = Date.parse(vUntil) - Date.parse(v.since)
           const baseSpan = base ? Date.parse(base.until) - Date.parse(base.since) : Infinity
@@ -433,6 +437,7 @@ async function collectCommits(repos, opts, onProgress) {
     // 5) 写缓存（LRU 淘汰最旧）
     collectCache.set(key, {
       reposSig,
+      refsSig,
       authorsSig: o.authorsSig,
       since: o.since,
       until: o.until,

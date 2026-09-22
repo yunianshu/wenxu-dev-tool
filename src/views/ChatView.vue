@@ -39,7 +39,7 @@
 
       </aside>
 
-      <ChatPanel :context-text="contextText" :context-label="contextLabel" :quick-prompts="quickPrompts" />
+      <ChatPanel :project-id="currentProject.id" :context-text="contextText" :context-label="contextLabel" :quick-prompts="quickPrompts" />
     </div>
 
     <EmptyState
@@ -104,11 +104,15 @@ const quickPrompts = [
   { label: '生成项目报告', prompt: '请综合当前已附带的项目上下文，生成一份简洁的项目进展报告；缺失的信息请明确标注。' },
 ]
 
+let historyLoad = 0
 async function loadHistory() {
+  const loadId = ++historyLoad
+  const projectId = currentProject.value?.id
   const [reportRows, deploymentRows] = await Promise.all([
     window.gitReport.listHistory().catch(() => []),
-    window.gitReport.deployHistoryList(currentProject.value?.id).catch(() => []),
+    window.gitReport.deployHistoryList(projectId).catch(() => []),
   ])
+  if (loadId !== historyLoad || projectId !== currentProject.value?.id) return
   reports.value = Array.isArray(reportRows) ? reportRows : []
   deployments.value = Array.isArray(deploymentRows) ? deploymentRows : []
 }

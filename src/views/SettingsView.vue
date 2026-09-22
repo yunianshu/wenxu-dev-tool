@@ -510,35 +510,31 @@ const canFetchModels = computed(() => !!(state.config.ai.baseUrl && (state.confi
 
 /** 保存全部配置；AI 密钥：输入了新 Key 则替换，留空则主进程保留既有；禅道密码同规则 */
 async function saveConfig() {
-  if (apiKeyInput.value) {
-    state.config.ai.apiKey = apiKeyInput.value
-    state.config.ai.keyConfigured = true
-    state.config.ai.keyMasked = maskKey(apiKeyInput.value)
-    apiKeyInput.value = ''
-  } else {
-    delete state.config.ai.apiKey
+  const secrets = [
+    { section: 'ai', field: 'apiKey', input: apiKeyInput, configured: 'keyConfigured', masked: 'keyMasked' },
+    { section: 'zentao', field: 'password', input: ztPwdInput, configured: 'pwdConfigured', masked: 'pwdMasked' },
+    { section: 'hanprint', field: 'password', input: hpPwdInput, configured: 'pwdConfigured', masked: 'pwdMasked' },
+  ]
+  // 明文只放入本次 IPC 载荷，不能留在共享配置中被其他保存/清除操作重发。
+  for (const item of secrets) {
+    state.config[item.section] ||= {}
+    delete state.config[item.section][item.field]
+    item.value = item.input.value
   }
-  if (!state.config.zentao) state.config.zentao = {}
-  if (ztPwdInput.value) {
-    state.config.zentao.password = ztPwdInput.value
-    state.config.zentao.pwdConfigured = true
-    state.config.zentao.pwdMasked = maskKey(ztPwdInput.value)
-    ztPwdInput.value = ''
-  } else {
-    delete state.config.zentao.password
-  }
-  if (!state.config.hanprint) state.config.hanprint = {}
-  if (hpPwdInput.value) {
-    state.config.hanprint.password = hpPwdInput.value
-    state.config.hanprint.pwdConfigured = true
-    state.config.hanprint.pwdMasked = maskKey(hpPwdInput.value)
-    hpPwdInput.value = ''
-  } else {
-    delete state.config.hanprint.password
+  const payload = toPlain(state.config)
+  for (const item of secrets) {
+    if (item.value) payload[item.section][item.field] = item.value
   }
   try {
-    const r = await window.gitReport.configSave(toPlain(state.config))
-    if (r && r.ok === false) ElMessage.error(r.error || '配置保存失败')
+    const r = await window.gitReport.configSave(payload)
+    if (r === false || r?.ok === false) throw new Error(r?.error || '配置保存失败')
+    for (const item of secrets) {
+      if (!item.value) continue
+      state.config[item.section][item.configured] = true
+      state.config[item.section][item.masked] = maskKey(item.value)
+      // 保存期间新输入的内容保留；失败时同样保留输入，便于重试。
+      if (item.input.value === item.value) item.input.value = ''
+    }
   } catch (e) {
     ElMessage.error(`配置保存失败：${(e && e.message) || e}`)
   }
@@ -546,17 +542,21 @@ async function saveConfig() {
 
 /** 清除已存密钥/密码类配置；成功才更新本地展示状态（失败时磁盘仍保留原值） */
 async function saveClearConfig(section, flag) {
-  state.config[section][flag] = true
+  const payload = toPlain(state.config)
+  delete payload.ai?.apiKey
+  delete payload.zentao?.password
+  delete payload.hanprint?.password
+  payload[section][flag] = true
   let ok = true
   let error = ''
   try {
-    const r = await window.gitReport.configSave(toPlain(state.config))
-    if (r && r.ok === false) { ok = false; error = r.error || '操作失败' }
+    const r = await window.gitReport.configSave(payload)
+    if (r === false || r?.ok === false) { ok = false; error = r?.error || '操作失败' }
   } catch (e) {
     ok = false
     error = (e && e.message) || String(e)
   }
-  delete state.config[section][flag]
+  if (ok) delete state.config[section][section === 'ai' ? 'apiKey' : 'password']
   if (!ok) ElMessage.error(`清除失败（${error}），配置未修改`)
   return ok
 }
