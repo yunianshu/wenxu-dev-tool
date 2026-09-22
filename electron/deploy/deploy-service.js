@@ -7,6 +7,7 @@
 const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
+const os = require('os')
 const { spawn } = require('child_process')
 const ssh = require('./ssh-service')
 const packager = require('./packager')
@@ -14,6 +15,8 @@ const projects = require('./deploy-projects')
 const history = require('./history')
 const releaseNotes = require('./release-notes')
 const store = require('../store')
+const automatic = require('./auto-deploy')
+const { validateArtifact } = require('./artifact-check')
 const { detectVersion, bumpVersionFiles } = require('./version-detector')
 
 /** 服务端脚本随应用分发（asar 内也可 readFileSync） */
@@ -50,6 +53,7 @@ function ts() {
 }
 
 function log(level, text) {
+  if (activeRun?.redact) text = activeRun.redact(text)
   emit('deploy:log', { level, text, ts: ts() })
   if (logSink) logSink(level, text)
 }
@@ -84,6 +88,7 @@ function isCanceled() {
 function cancel() {
   if (!activeRun) return { ok: false, error: '当前没有进行中的发布' }
   activeRun.canceled = true
+  activeRun.controller?.abort()
   if (activeRun.pkgChild) killTree(activeRun.pkgChild)
   ssh.close(activeRun.conn)
   return { ok: true }
@@ -95,7 +100,7 @@ function isBusy() {
 
 /** 解析脚本输出的控制标记，返回应显示的行或 null */
 function parseMarker(line, tracker, resultBox) {
-  const m = line.match(/^__STAGE__:(\w+)$/)
+  const m = line.match(/^__STAGE__:([\w-]+)$/)
   if (m) {
     const map = {
       'backup-code': 'backup', 'backup-db': 'backup', extract: 'extract',
@@ -103,7 +108,6 @@ function parseMarker(line, tracker, resultBox) {
     }
     const sid = map[m[1]]
     if (sid === 'rollback') {
-      resultBox.rolledBack = true
       log('warn', '发布失败，正在自动回滚……')
     } else if (sid) tracker.begin(sid)
     return null
@@ -111,7 +115,7 @@ function parseMarker(line, tracker, resultBox) {
   const okM = line.match(/^__DEPLOY_OK__:(.*)$/)
   if (okM) { resultBox.ok = true; resultBox.message = okM[1] || '发布成功'; return null }
   const failM = line.match(/^__DEPLOY_FAIL__:(.*)$/)
-  if (failM) { resultBox.ok = false; resultBox.message = failM[1] || '发布失败'; return null }
+  if (failM) { resultBox.ok = false; resultBox.message = failM[1] || '发布失败'; resultBox.rolledBack = /已自动回滚到/.test(resultBox.message); return null }
   return line
 }
 
@@ -128,6 +132,20 @@ function pipeScriptOutput(chunk, tracker, resultBox) {
     else if (/^\[OK\]/.test(display)) level = 'success'
     log(level, display)
   }
+}
+
+/** SSH 数据包不等于完整行，分别缓冲两条流，避免结果标记被拆开后漏报。 */
+async function execDeployScript(conn, command, tracker, resultBox) {
+  const pending = { stdout: '', stderr: '' }
+  const result = await ssh.exec(conn, command, (chunk, stream = 'stdout') => {
+    pending[stream] += String(chunk)
+    const end = pending[stream].lastIndexOf('\n')
+    if (end < 0) return
+    pipeScriptOutput(pending[stream].slice(0, end + 1), tracker, resultBox)
+    pending[stream] = pending[stream].slice(end + 1)
+  })
+  for (const tail of Object.values(pending)) if (tail) pipeScriptOutput(tail, tracker, resultBox)
+  return result
 }
 
 /** 读取随应用分发的 deploy.sh 内容（强制 LF：git autocrlf 可能把工作区文件
@@ -152,6 +170,8 @@ function buildDeployArgs(project, target, pack, version) {
     '--sha256', pack.sha256,
     '--version', version,
   ]
+  if (project.releaseId) args.push('--release-id', project.releaseId)
+  if (project.composeProjectName) args.push('--project-name', project.composeProjectName)
   if (mode === 'docker') {
     args.push('--compose', resolveCompose(project).file)
   } else {
@@ -210,6 +230,7 @@ const COMPOSE_CANDIDATES = ['docker-compose.yml', 'docker-compose.yaml', 'compos
  * 返回 { file, fallback }；都不存在时返回配置值（由前置检查报错）。
  */
 function resolveCompose(project) {
+  if (project.deployMode === 'auto') return { file: automatic.COMPOSE, fallback: false }
   const configured = String(project.composeFile || 'docker-compose.yml').trim() || 'docker-compose.yml'
   const root = project.localPath
   if (!root || !fs.existsSync(root)) return { file: configured, fallback: false }
@@ -235,15 +256,19 @@ function resolveArtifact(project, version) {
   if (!fs.statSync(dir).isDirectory()) return { ok: false, problem: `产物目录不是文件夹: ${sm.artifactDir || 'release'}` }
   let files = []
   try {
-    files = fs.readdirSync(dir)
-      .filter((f) => ARTIFACT_EXTS.some((e) => f.toLowerCase().endsWith(e)))
-      .map((f) => {
-        const fp = path.join(dir, f)
-        return { fileName: f, filePath: fp, mtime: fs.statSync(fp).mtimeMs }
-      })
+    const visit = (folder, depth) => {
+      for (const e of fs.readdirSync(folder, { withFileTypes: true })) {
+        const fp = path.join(folder, e.name)
+        if (e.isDirectory() && depth < 2) visit(fp, depth + 1)
+        else if (e.isFile() && ARTIFACT_EXTS.some((ext) => e.name.toLowerCase().endsWith(ext))) files.push({ fileName: e.name, filePath: fp, mtime: fs.statSync(fp).mtimeMs })
+      }
+    }
+    visit(dir, 0)
   } catch { /* 目录不可读，按空处理 */ }
   if (!files.length) return { ok: false, problem: `产物目录 ${sm.artifactDir || 'release'} 中没有发布包（支持 ${ARTIFACT_EXTS.join(' / ')}）` }
-  const matched = files.filter((f) => version && f.fileName.includes(version)).sort((a, b) => b.mtime - a.mtime)
+  const escaped = String(version || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const versionPattern = new RegExp(`(?:^|[-_])v?${escaped}(?=$|[-_]|\\.(?:tar\\.gz|tgz|zip)$)`)
+  const matched = files.filter((f) => version && versionPattern.test(f.fileName)).sort((a, b) => b.mtime - a.mtime)
   if (!matched.length) {
     const newest = [...files].sort((a, b) => b.mtime - a.mtime)[0].fileName
     return { ok: false, problem: `产物目录中没有文件名含版本 ${version} 的发布包（最新为 ${newest}），请先重新打包` }
@@ -300,7 +325,7 @@ function syncProjectVersionForPackage(project, ver) {
   if (!changed.length) {
     return `项目版本文件为 ${cur.version}（${cur.source}），与发布版本 ${ver.version} 不一致，且未能自动同步版本文件；打包产物可能不含目标版本`
   }
-  return `已将项目版本 ${cur.version} → ${ver.version}（同步 ${changed.join('、')}；改动在本地工作区，请随代码提交）`
+  return `已将项目版本 ${cur.version} → ${ver.version}（同步 ${changed.join('、')}；仅修改本次构建副本）`
 }
 
 /**
@@ -320,7 +345,7 @@ function ensureReleaseNotesForPackage(project, ver, gitInfo) {
   if (!r.convention) return ''
   if (r.error) return `发布说明初稿生成失败：${r.error}（打包脚本可能因缺文件中止，可手工补写后重试）`
   if (!r.wrote) return ''
-  return `已生成发布说明 ${r.file}（依据 ${commits.length} 条提交自动整理的初稿${anchorLabel ? `，${anchorLabel}` : ''}；文件尚未提交，可润色后随代码提交）`
+  return `已生成发布说明 ${r.file}（依据 ${commits.length} 条提交自动整理的初稿${anchorLabel ? `，${anchorLabel}` : ''}；仅写入本次构建副本）`
 }
 
 /**
@@ -408,7 +433,7 @@ function preCheckLocal(project, target, version) {
 /** 从项目取部署目标（targetId 省略时用第一个目标） */
 function getTarget(project, targetId) {
   const targets = Array.isArray(project.targets) ? project.targets : []
-  return targets.find((t) => t.id === targetId) || targets[0]
+  return targetId ? targets.find((t) => t.id === targetId) : targets.find((t) => t.id === project.productionTargetId) || targets[0]
 }
 
 /** 解析目标的数据同步配置（缺省关闭） */
@@ -531,14 +556,40 @@ async function run(projectId, targetId) {
 
   let conn = null
   let pack = null
-  activeRun = { id: runId, conn: null, canceled: false }
+  let prepared = null
+  let buildWorkspace = null
+  const autoMode = project.deployMode === 'auto'
+  const controller = new AbortController()
+  activeRun = { id: runId, conn: null, canceled: false, controller }
   const setC = (c) => { if (activeRun) activeRun.conn = c; conn = c }
 
   try {
     // ── 阶段 1：本地检查 ─────────────────────────────
     tracker.begin('check')
     const t0 = Date.now()
-    const ver = resolveVersion(project)
+    let ver = resolveVersion(project)
+    if (autoMode) {
+      if (!target.server?.host) throw new Error('请先设置正式服务器地址与登录凭据')
+      if (!fs.existsSync(project.localPath)) throw new Error('本地项目目录不存在')
+      if (!ver.version) ver = { version: new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14), source: '自动发布编号' }
+      project.releaseId = `${ver.version}-${runId}`
+      setC(await ssh.connect({ ...target.server, password: creds.password, passphrase: creds.passphrase }))
+      prepared = await automatic.prepare(project, target, { conn, uploadText: uploadTextFile, log, signal: controller.signal, releaseId: project.releaseId })
+      if (activeRun) activeRun.redact = prepared.redact
+      if (isCanceled()) throw new Error('发布已取消')
+      target.remotePath = prepared.remotePath
+      target.health = prepared.health
+      target.db = { enabled: false }
+      target.dataSync = { enabled: false }
+      target.autoSudo = prepared.sudo
+      project.composeProjectName = automatic.identity(project, target.id)
+      project.composeFile = automatic.COMPOSE
+      record.remotePath = target.remotePath
+      record.releaseId = project.releaseId
+      record.serviceUrl = `http://${target.server.host.includes(':') ? '[' + target.server.host + ']' : target.server.host}:${prepared.port}`
+      // 保存解析后的归属与健康检查，供查询与回滚复用；不保存生成文件或运行密钥。
+      projects.save(project)
+    }
     record.version = ver.version
     // 更新内容：采集本次发布包含的 Git 提交（非仓库/无提交时静默跳过，绝不因此中断发布）
     const anchor = releaseNotes.anchorFromRecords(history.list(project.id), project.id, target.id)
@@ -549,7 +600,10 @@ async function run(projectId, targetId) {
       log('info', `本次更新内容：${gitInfo.info.commits.length} 条提交${scope ? `（${scope}）` : ''}`)
     }
     const mode = deployModeOf(project)
-    const problems = preCheckLocal(project, target, ver.version)
+    const problems = autoMode ? [] : preCheckLocal(project, target, ver.version)
+    if (!autoMode && list.some((p) => p.id !== project.id && p.targets.some((t) => t.server?.host === target.server.host && Number(t.server.port || 22) === Number(target.server.port || 22) && String(t.remotePath).replace(/\/+$/, '') === String(target.remotePath).replace(/\/+$/, '')))) {
+      problems.push('该服务器部署目录已被其他项目配置使用，请为当前项目设置独立目录')
+    }
     if (mode === 'docker') {
       const rc = resolveCompose(project)
       if (rc.fallback) log('warn', `配置的 Compose 文件不存在，自动改用项目根下的 ${rc.file}`)
@@ -557,6 +611,8 @@ async function run(projectId, targetId) {
     let artifact = null
     if (!problems.length && mode === 'script') {
       artifact = resolveArtifact(project, ver.version)
+      // 配置了构建命令时每次重新构建，避免同版本代码改动继续复用旧包。
+      if (String(project.scriptMode?.packageCommand || '').trim()) artifact = { ok: false, problem: '按当前代码重新构建发布包' }
       if (!artifact.ok) {
         // 产物缺失/版本不匹配：配置了打包命令则推迟到打包阶段自动构建，否则检查阶段即失败
         if (String((project.scriptMode || {}).packageCommand || '').trim()) {
@@ -593,17 +649,31 @@ async function run(projectId, targetId) {
     const t1 = Date.now()
     if (mode === 'script') {
       if (!artifact) {
-        const syncNote = syncProjectVersionForPackage(project, ver)
+        const command = String(project.scriptMode?.packageCommand || '')
+        const entry = command.match(/^\s*(?:bash|sh)\s+["']?([^"'\s]+\.sh)/)
+        if (entry && !fs.existsSync(path.resolve(project.localPath, entry[1]))) throw new Error(`打包入口不存在: ${entry[1]}；可切换为自动发布，由程序生成部署方案`)
+        buildWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'onedeploy-build-'))
+        const artifactRoot = path.resolve(project.localPath, project.scriptMode?.artifactDir || 'release')
+        await fs.promises.cp(project.localPath, buildWorkspace, { recursive: true, dereference: false, filter: (source) => {
+          const rel = path.relative(project.localPath, source)
+          if (!rel) return true
+          if (/^(?:\.git|\.local|release|releases)$/.test(rel.split(path.sep)[0])) return false
+          const artifactRel = path.relative(artifactRoot, source)
+          return !(artifactRel && !artifactRel.startsWith('..') && ARTIFACT_EXTS.some((ext) => source.toLowerCase().endsWith(ext)))
+        } })
+        if (isCanceled()) throw new Error('发布已取消')
+        const buildProject = { ...project, localPath: buildWorkspace }
+        const syncNote = syncProjectVersionForPackage(buildProject, ver)
         if (syncNote) log('warn', syncNote)
-        const rnNote = ensureReleaseNotesForPackage(project, ver, gitInfo)
+        const rnNote = ensureReleaseNotesForPackage(buildProject, ver, gitInfo)
         if (rnNote) log('warn', rnNote)
-        const pc = await runPackageCommand(project)
+        const pc = await runPackageCommand(buildProject)
         if (!pc.ok) {
           log('error', pc.problem)
           tracker.end('package', 'failed', t1)
           return finish('failed', pc.problem)
         }
-        artifact = resolveArtifact(project, ver.version)
+        artifact = resolveArtifact(buildProject, ver.version)
         if (!artifact.ok) {
           // 打包成功但版本仍不匹配时，指出项目版本文件与发布版本的偏差，给出可操作方向
           const cur = detectVersion(project.localPath)
@@ -617,6 +687,7 @@ async function run(projectId, targetId) {
         }
       }
       const sizeMb = (artifact.sizeBytes / 1024 / 1024).toFixed(1)
+      await validateArtifact(artifact.filePath, project.scriptMode?.upgradeScript || 'upgrade.sh')
       log('info', `计算发布包校验和：${artifact.fileName} ……`)
       pack = {
         fileName: artifact.fileName,
@@ -634,6 +705,10 @@ async function run(projectId, targetId) {
         appName: project.name,
         version: ver.version,
         onProgress: (count) => emit('deploy:progress', { kind: 'package', count }),
+        includeBuild: true,
+        files: prepared?.files,
+        safeRoot: autoMode,
+        exclude: autoMode ? automatic.privateFile : undefined,
       })
       log('success', `ZIP 生成完成：${pack.fileName}（${(pack.sizeBytes / 1024 / 1024).toFixed(1)} MB，${pack.fileCount} 个文件）`)
     }
@@ -643,7 +718,7 @@ async function run(projectId, targetId) {
     tracker.begin('upload')
     const t2 = Date.now()
     log('info', `连接服务器 ${target.server.host}:${target.server.port}……`)
-    setC(await ssh.connect({
+    if (!conn) setC(await ssh.connect({
       host: target.server.host,
       port: target.server.port,
       username: target.server.username,
@@ -696,8 +771,35 @@ async function run(projectId, targetId) {
     tracker.end('upload', 'success', t2)
 
     // ── 阶段 4~8：服务器端执行 deploy.sh ────────────
-    const cmd = `bash ${quoteArg(scriptRemote)} ${buildDeployArgs(project, target, pack, ver.version).map(quoteArg).join(' ')}`
-    const res = await ssh.exec(conn, cmd, (chunk) => pipeScriptOutput(chunk, tracker, resultBox))
+    if (isCanceled()) throw new Error('发布已取消')
+    const cmd = `${target.autoSudo && autoMode ? 'sudo -n ' : ''}bash ${quoteArg(scriptRemote)} ${buildDeployArgs(project, target, pack, ver.version).map(quoteArg).join(' ')}`
+    let res = await execDeployScript(conn, cmd, tracker, resultBox)
+    // 自动方案的构建失败可用真实错误修正一次；此时服务器尚未停止旧服务。
+    if (autoMode && !resultBox.ok && !isCanceled() && tracker.state.build.status === 'running' && tracker.state.start.status === 'waiting') {
+      log('warn', '构建未通过，正在依据构建日志自动修复部署方案并重试一次…')
+      const fixed = await automatic.prepare(project, target, {
+        conn, uploadText: uploadTextFile, log, signal: controller.signal, releaseId: project.releaseId,
+        previousRecipe: prepared.recipe, feedback: prepared.redact((res.stdout || '') + '\n' + (res.stderr || '')),
+      })
+      if (isCanceled()) throw new Error('发布已取消')
+      if (activeRun) activeRun.redact = fixed.redact
+      prepared = fixed
+      target.health = fixed.health
+      projects.save(project)
+      try { fs.unlinkSync(pack.zipPath) } catch { /* 临时包可能已清理 */ }
+      tracker.begin('package')
+      pack = await packager.buildPackage({ projectDir: project.localPath, appName: project.name, version: ver.version, files: fixed.files, includeBuild: true, safeRoot: true, exclude: automatic.privateFile })
+      tracker.end('package', 'success')
+      tracker.begin('upload')
+      const remote = ssh.remoteJoin(remoteHome, 'uploads', pack.fileName)
+      await ssh.upload(conn, pack.zipPath, remote)
+      const verify = await ssh.exec(conn, `sha256sum ${quoteArg(remote)} | awk '{print $1}'`)
+      if (verify.stdout.trim() !== pack.sha256) throw new Error('修复后的发布包上传校验失败')
+      tracker.end('upload', 'success')
+      Object.assign(resultBox, { ok: false, message: '', rolledBack: false })
+      const retryCmd = `${target.autoSudo ? 'sudo -n ' : ''}bash ${quoteArg(scriptRemote)} ${buildDeployArgs(project, target, pack, ver.version).map(quoteArg).join(' ')}`
+      res = await execDeployScript(conn, retryCmd, tracker, resultBox)
+    }
 
     if (resultBox.ok && res.code === 0) {
       // 补齐脚本未显式标记的阶段（backup/health 可能仍处于 running，统一收尾）
@@ -816,6 +918,9 @@ async function run(projectId, targetId) {
     if (activeRun && activeRun.id === runId) activeRun = null
     // 清理本地残留 zip（失败场景；成功路径已在 finish 前删除；脚本形态产物包保留）
     try { if (pack && !pack.keepLocal && fs.existsSync(pack.zipPath)) fs.unlinkSync(pack.zipPath) } catch { /* noop */ }
+    if (buildWorkspace && path.dirname(path.resolve(buildWorkspace)) === path.resolve(os.tmpdir()) && path.basename(buildWorkspace).startsWith('onedeploy-build-')) {
+      fs.rmSync(buildWorkspace, { recursive: true, force: true })
+    }
   }
 }
 
@@ -824,7 +929,7 @@ function uploadTextFile(conn, text, remotePath) {
   return new Promise((resolve, reject) => {
     conn.sftp((err, sftp) => {
       if (err) return reject(err)
-      const stream = sftp.createWriteStream(remotePath)
+      const stream = sftp.createWriteStream(remotePath, { mode: 0o600 })
       const done = (fn) => (v) => { sftp.end(); fn(v) } // 及时释放通道
       stream.on('error', done(reject))
       stream.on('close', done(() => resolve(remotePath)))
@@ -1082,16 +1187,17 @@ async function rollback(projectId, version, targetId) {
     ]
     if (deployModeOf(project) === 'docker') {
       args.push('--compose', resolveCompose(project).file)
+      if (project.deployMode === 'auto') args.push('--project-name', automatic.identity(project, target.id))
     }
     if (h.enabled && h.url) {
       args.push('--health-url', h.url, '--health-timeout', String(h.timeout || 90), '--health-interval', String(h.interval || 3))
     } else {
       args.push('--no-health')
     }
-    const cmd = `bash ${quoteArg(scriptRemote)} ${args.map(quoteArg).join(' ')}`
+    const cmd = `${project.deployMode === 'auto' && target.autoSudo ? 'sudo -n ' : ''}bash ${quoteArg(scriptRemote)} ${args.map(quoteArg).join(' ')}`
     const tracker = newStageTracker()
     const resultBox = { ok: false, message: '', rolledBack: false, oldVersion: '' }
-    const res = await ssh.exec(conn, cmd, (chunk) => pipeScriptOutput(chunk, tracker, resultBox))
+    const res = await execDeployScript(conn, cmd, tracker, resultBox)
     if (resultBox.ok && res.code === 0) {
       log('success', `回滚成功，当前版本: ${version}`)
       return finish('success', `回滚到 ${version}`)

@@ -1,5 +1,7 @@
 # Spec：部署设置支持复制其他项目的部署配置
 
+> 2026-09-22：以下为历史规格，复制范围与新建默认带入已被 [自动正式发布 R2](../autodeploy/spec.md) 取代。当前只复制服务器连接及 SSH 凭据，不继承项目版本、目录、数据库或脚本。历史 `verify-copyconfig.cjs` 不再作为当前验收入口，使用 `scripts/deploy-auto-selftest.cjs` 与 `scripts/deploy-copy-config-e2e.cjs`。
+
 ## 背景与目标
 
 用户为新项目配置部署时，服务器地址、部署目录、健康检查、数据同步等与已有项目高度雷同，

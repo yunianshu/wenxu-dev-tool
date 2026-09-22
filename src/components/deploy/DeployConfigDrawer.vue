@@ -26,15 +26,17 @@
         <div class="f-row">
           <span class="f-label">部署形态</span>
           <el-radio-group v-model="form.deployMode" size="small">
+            <el-radio-button value="auto">自动发布</el-radio-button>
             <el-radio-button value="docker">Docker Compose</el-radio-button>
             <el-radio-button value="script">脚本部署</el-radio-button>
           </el-radio-group>
         </div>
-        <div v-if="form.deployMode !== 'script'" class="f-row">
+        <el-alert v-if="form.deployMode === 'auto'" title="自动识别项目并在服务器构建，缺少部署文件时使用已配置 AI；无需配置打包命令和目录。" type="info" :closable="false" />
+        <div v-if="form.deployMode === 'docker'" class="f-row">
           <span class="f-label">Compose</span>
           <el-input v-model="form.composeFile" placeholder="docker-compose.yml（支持 compose.yaml 等常见命名自动回退）" style="flex: 1" />
         </div>
-        <template v-else>
+        <template v-else-if="form.deployMode === 'script'">
           <div class="f-row">
             <span class="f-label">产物目录</span>
             <el-input v-model="form.scriptMode.artifactDir" placeholder="release" style="width: 200px" />
@@ -295,8 +297,8 @@
     <!-- 从其他项目复制部署配置 -->
     <el-dialog v-model="copyDialogVisible" title="从其他项目复制部署配置" width="480px" append-to-body>
       <el-alert type="warning" :closable="false" show-icon class="copy-alert">
-        将把所选项目的部署形态、版本策略、部署选项与全部环境（含服务器凭据、健康检查、数据同步）追加到当前项目，
-        现有环境保留不变。当前未保存的修改将丢弃。
+        仅复制服务器连接与登录凭据，部署目录、版本、数据库和构建参数由当前项目独立配置。
+        现有环境保留。当前未保存的修改将丢弃。
       </el-alert>
       <div class="f-row">
         <span class="f-label">源项目</span>

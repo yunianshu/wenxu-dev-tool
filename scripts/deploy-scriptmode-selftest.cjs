@@ -106,7 +106,7 @@ require.cache[require.resolve('../electron/deploy/ssh-service')] = {
         const r = spawnSync(bashExe || 'bash', ['-c', local], { encoding: 'utf8' })
         const out = `${r.stdout || ''}${r.stderr || ''}`
         // 流式回放：deploy-service 的阶段标记解析依赖 onLine 回调
-        if (onLine) for (const line of out.split(/\r?\n/)) if (line) onLine(line, 'stdout')
+        if (onLine) for (const line of out.split(/\r?\n/)) if (line) onLine(line + '\n', 'stdout')
         return { code: r.status ?? 1, stdout: out, stderr: '' }
       }
       return { code: 0, stdout: '', stderr: '' }
@@ -170,6 +170,8 @@ function seedScriptProject(dir) {
 }
 
 function runDeploy(projectId) {
+  // 各场景顺序复用一个模拟服务器；结束前一配置的归属，避免构造跨项目目录冲突。
+  for (const p of deployProjects.list()) if (p.id !== projectId) deployProjects.remove(p.id)
   const events = { stages: [], logs: [], done: null }
   deployService.setEmitter((ch, payload) => {
     if (ch === 'deploy:stage') events.stages.push(payload)
@@ -338,7 +340,7 @@ async function main() {
     const { record: recAuto, events: evAuto } = await runDeploy(proj2.id)
     assert.strictEqual(recAuto.status, 'success', `自动打包发布应成功: ${recAuto.message}\n${evAuto.logs.map((l) => l.text).join('\n')}`)
     assert.strictEqual(recAuto.version, '2.0.0')
-    assert.ok(fs.existsSync(path.join(proj2Dir, '.pkg-ran')), '打包命令应真实执行（.pkg-ran 标记）')
+    assert.ok(!fs.existsSync(path.join(proj2Dir, '.pkg-ran')), '打包只能在隔离副本执行，不能污染源项目')
     assert.ok(evAuto.logs.some((l) => l.text.includes('[打包] [mkpkg] building')), '打包输出应流入发布日志')
     assert.ok(evAuto.logs.some((l) => l.text.includes('产物未就绪')), '检查阶段应提示产物未就绪并推迟')
     assert.strictEqual(fs.readFileSync(path.join(SERVER_ROOT, 'CURRENT'), 'utf8').trim(), 'app-v2.0.0-011', '服务器应运行自动打出的新版本')
@@ -491,9 +493,9 @@ async function main() {
     const { record: recBump, events: evBump } = await runDeploy(proj4.id)
     assert.strictEqual(recBump.status, 'success', `版本同步发布应成功: ${recBump.message}\n${evBump.logs.map((l) => l.text).join('\n')}`)
     assert.strictEqual(recBump.version, '5.0.1')
-    assert.strictEqual(fs.readFileSync(path.join(proj4Dir, 'VERSION'), 'utf8').trim(), '5.0.1', '项目 VERSION 应被同步为发布版本')
+    assert.strictEqual(fs.readFileSync(path.join(proj4Dir, 'VERSION'), 'utf8').trim(), '5.0.0', '源项目 VERSION 保持原值；构建副本同步版本')
     const proj4Pom = fs.readFileSync(path.join(proj4Dir, 'server', 'pom.xml'), 'utf8')
-    assert.ok(proj4Pom.includes('<version>5.0.1</version>'), 'server/pom.xml 直属版本应联动升级')
+    assert.ok(proj4Pom.includes('<version>5.0.0</version>'), '源项目 pom.xml 保持原值')
     assert.ok(proj4Pom.includes('<version>3.5.0</version>'), 'pom parent 版本不受影响')
     assert.ok(evBump.logs.some((l) => l.text.includes('项目版本 5.0.0 → 5.0.1') && l.text.includes('VERSION、server/pom.xml')), '日志应说明同步了哪些文件')
     assert.strictEqual(fs.readFileSync(path.join(SERVER_ROOT, 'CURRENT'), 'utf8').trim(), 'app-v5.0.1-301', '服务器应运行同步版本后的产物')
@@ -502,7 +504,7 @@ async function main() {
     const { record: recNoBump } = await runDeploy(proj5.id)
     assert.strictEqual(recNoBump.status, 'failed')
     assert.ok(recNoBump.message.includes('打包后仍无匹配产物'), `消息应提示打包后无匹配产物: ${recNoBump.message}`)
-    assert.ok(recNoBump.message.includes('项目版本文件仍为 5.0.1（VERSION），与发布版本 6.0.0 不一致'), `消息应指出版本偏差: ${recNoBump.message}`)
+    assert.ok(recNoBump.message.includes('项目版本文件仍为 5.0.0（VERSION），与发布版本 6.0.0 不一致'), `消息应指出版本偏差: ${recNoBump.message}`)
     deployProjects.remove(proj4.id); deployProjects.remove(proj5.id)
     passed += 1
     console.log('  ✓ 手动版本自动同步：VERSION+pom 联动升级→打包读新版本→发布成功；关闭同步时失败信息指出偏差')
@@ -572,6 +574,7 @@ async function main() {
       'name="app-v${ver}-601"',
       'echo "[mkpkg] building v${ver} ..."',
       'd=".staging/$name"; rm -rf -- "$d"; mkdir -p -- "$d"',
+      '[ ! -d docs ] || cp -r docs "$d/docs"',
       'cat > "$d/upgrade.sh" <<\'EOS\'',
       '#!/usr/bin/env bash',
       'set -euo pipefail',
@@ -620,7 +623,8 @@ async function main() {
     assert.ok(
       evNotes.logs.some((l) => l.text.includes('已生成发布说明 docs/release-notes-8.0.0.md')),
       `日志应说明生成了哪个文件: ${evNotes.logs.map((l) => l.text).join('\n')}`)
-    const genNotesPath = path.join(proj7Dir, 'docs', 'release-notes-8.0.0.md')
+    assert.ok(!fs.existsSync(path.join(proj7Dir, 'docs', 'release-notes-8.0.0.md')), '发布说明不写源项目')
+    const genNotesPath = path.join(SERVER_ROOT, 'releases', 'app-v8.0.0-601', 'docs', 'release-notes-8.0.0.md')
     assert.ok(fs.existsSync(genNotesPath), '目标版本的发布说明应真实落盘')
     const genNotesText = fs.readFileSync(genNotesPath, 'utf8')
     assert.ok(genNotesText.includes('# 发布说明项目 8.0.0 发布说明'), `标题应含应用名与版本: ${genNotesText}`)
@@ -632,7 +636,7 @@ async function main() {
     // 同版本说明已存在：编排层不再生成（幂等门直接断言）
     assert.strictEqual(
       deployService.ensureReleaseNotesForPackage(
-        { name: '发布说明项目', localPath: proj7Dir, scriptMode: {} },
+        { name: '发布说明项目', localPath: path.join(SERVER_ROOT, 'releases', 'app-v8.0.0-601'), scriptMode: {} },
         { version: '8.0.0' }, { ok: false }),
       '', '同版本说明已存在 → 无需生成，返回空')
     deployProjects.remove(proj7.id)

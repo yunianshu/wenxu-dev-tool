@@ -184,7 +184,7 @@ const logBox = ref(null)
 const canPublish = computed(() => {
   if (state.deploy.running || !props.form.id || props.dirty || !props.activeTarget) return false
   const t = props.activeTarget
-  return !!(props.form.name && props.form.localPath && props.publishVersion && t.server.host && t.remotePath)
+  return !!(props.form.name && props.form.localPath && t.server.host && (props.form.deployMode === 'auto' || (props.publishVersion && t.remotePath)))
 })
 
 // ─── 发布（当前目标） ───
@@ -332,7 +332,7 @@ async function publish() {
   const t = props.activeTarget
   const oldV = onlineVersion.value || '（未知）'
   try {
-    await ElMessageBox.confirm(
+    if (props.form.deployMode !== 'auto') await ElMessageBox.confirm(
       `即将发布 ${props.form.name} ${v} 到【${t.name}】${t.server.host}:${t.remotePath}（当前线上版本 ${oldV}）。发布过程中会备份并自动构建重启，是否继续？`,
       '确认发布',
       { type: 'warning', confirmButtonText: '🚀 发布', cancelButtonText: '取消' },

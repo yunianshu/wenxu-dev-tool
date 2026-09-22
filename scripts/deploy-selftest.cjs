@@ -470,14 +470,14 @@ test('自定义：前导 / 锚定项目根，不误伤深层同名目录', () =>
       assert.fail(`deploy.sh 语法错误: ${e.stderr || e.message}`)
     }
   })
-  test('deploy-projects 归一化：deployMode 默认 docker，scriptMode 兜底非法值', () => {
+  test('deploy-projects 归一化：新项目默认 auto，scriptMode 兜底非法值', () => {
     const r = deployProjects.save({
       name: 'mode-demo', localPath: 'D:/x', composeFile: '',
       scriptMode: { artifactDir: '../evil', upgradeScript: 'a b.sh' },
       targets: [{ ...deployProjects.defaultTarget() }],
     })
     const p = deployProjects.list().find((x) => x.id === r.id)
-    assert.strictEqual(p.deployMode, 'docker')
+    assert.strictEqual(p.deployMode, 'auto')
     assert.strictEqual(p.composeFile, 'docker-compose.yml')
     assert.strictEqual(p.scriptMode.artifactDir, 'release')
     assert.strictEqual(p.scriptMode.upgradeScript, 'upgrade.sh')

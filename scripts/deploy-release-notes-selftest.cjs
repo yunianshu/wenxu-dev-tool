@@ -287,7 +287,10 @@ assert.strictEqual(head, shaC)
   let outcome = 'success'
   ssh.exec = async (_conn, cmd, onData) => {
     if (cmd.startsWith('bash ')) {
-      if (outcome === 'rollback') onData('__STAGE__:rollback\n')
+      if (outcome === 'rollback') {
+        onData('__STAGE__:rollback\n__DEPLOY_FAIL__:测试失败（已自动回滚到 1.0.3）\n')
+        return { code: 1, stdout: '' }
+      }
       if (outcome === 'canceled') deployService.cancel()
       onData('__DEPLOY_OK__:测试发布完成\n')
       return { code: 0, stdout: '' }

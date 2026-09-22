@@ -115,7 +115,7 @@ function seedProject(dir, dataSync) {
       id: 't1',
       name: '生产',
       remotePath: '/srv/app',
-      server: { host: '203.0.113.10', port: 22, username: 'root', authType: 'password' },
+      server: { host: `${path.basename(dir)}.example.invalid`, port: 22, username: 'root', authType: 'password' },
       health: { enabled: false, url: '', timeout: 90, interval: 3 },
       dataSync,
     }],

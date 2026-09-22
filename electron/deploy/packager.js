@@ -29,7 +29,8 @@ const DEFAULT_EXCLUDES = [
 function compileRule(raw) {
   let line = raw.trim()
   if (!line || line.startsWith('#')) return null
-  if (line.startsWith('!')) return null // v1 不支持反向规则，忽略
+  const include = line.startsWith('!')
+  if (include) line = line.slice(1)
   // gitignore 语义：前导 / 表示锚定项目根，必须先判断再去掉
   const anchored = line.startsWith('/')
   line = line.replace(/^\/+/, '').replace(/\/+$/, '')
@@ -43,22 +44,26 @@ function compileRule(raw) {
     .join('/')
   if (anchored || line.includes('/')) {
     // 锚定根或带路径：只从根匹配（注意不能误伤路径中段的同名目录）
-    return { re: new RegExp(`^${regexStr}(/.*)?$`, 'i') }
+    return { re: new RegExp(`^${regexStr}(/.*)?$`, 'i'), include, pattern: line }
   }
   // 纯名称/通配：匹配任意层级的段
-  return { re: new RegExp(`(^|/)${regexStr}(/.*)?$`, 'i') }
+  return { re: new RegExp(`(^|/)${regexStr}(/.*)?$`, 'i'), include, pattern: line }
 }
 
 /** 忽略规则集合 */
-function createMatcher(extraRules) {
-  const rules = [...DEFAULT_EXCLUDES, ...(extraRules || [])]
+function createMatcher(extraRules, { includeBuild = false } = {}) {
+  const defaults = includeBuild ? DEFAULT_EXCLUDES.filter((r) => !['dist', 'build', 'target'].includes(r)) : DEFAULT_EXCLUDES
+  const rules = [...defaults, ...(extraRules || [])]
     .map(compileRule)
     .filter(Boolean)
   return {
     /** relPath 使用 POSIX 分隔符；返回 true 表示忽略 */
     ignored(relPath) {
-      return rules.some((r) => r.re.test(relPath))
+      let ignored = false
+      for (const r of rules) if (r.re.test(relPath)) ignored = !r.include
+      return ignored
     },
+    mayInclude(relPath) { return rules.some((r) => r.include && r.pattern.startsWith(`${relPath}/`)) },
   }
 }
 
@@ -76,7 +81,9 @@ function isWalkableDir(ent, abs) {
 }
 
 /** 递归收集未被忽略的文件（POSIX 相对路径）；visited 按 realpath 防符号链接环路 */
-function collectFiles(rootDir, matcher, onFile) {
+function collectFiles(rootDir, matcher, onFile, safeRoot = false, exclude) {
+  const base = fs.realpathSync(rootDir)
+  const inside = (p) => { const r = path.relative(base, fs.realpathSync(p)); return !r.startsWith('..') && !path.isAbsolute(r) }
   const visited = new Set()
   const walk = (dir, rel) => {
     let realDir
@@ -95,8 +102,10 @@ function collectFiles(rootDir, matcher, onFile) {
     }
     for (const ent of entries) {
       const relPath = rel ? `${rel}/${ent.name}` : ent.name
-      if (matcher.ignored(relPath)) continue
+      if (exclude?.(relPath)) continue
       const abs = path.join(dir, ent.name)
+      if (safeRoot && ent.isSymbolicLink() && !inside(abs)) throw new Error(`发布文件越出项目目录: ${relPath}`)
+      if (matcher.ignored(relPath) && !(isWalkableDir(ent, abs) && matcher.mayInclude(relPath))) continue
       if (isWalkableDir(ent, abs)) {
         walk(abs, relPath)
       } else if (ent.isFile()) {
@@ -132,7 +141,13 @@ function buildPackage(opts) {
   const { projectDir, appName, version, onProgress } = opts || {}
   if (!fs.existsSync(projectDir)) return Promise.reject(new Error(`项目目录不存在: ${projectDir}`))
 
-  const matcher = createMatcher(readDeployIgnore(projectDir))
+  const matcher = createMatcher(readDeployIgnore(projectDir), { includeBuild: opts.includeBuild })
+  const overlays = opts.files || []
+  for (const f of overlays) {
+    if (!f.path || path.posix.isAbsolute(f.path) || f.path.includes('\\') || f.path.split('/').some((s) => !s || s === '..')) {
+      return Promise.reject(new Error('生成的部署文件路径不安全'))
+    }
+  }
   const stamp = formatStamp(new Date())
   const safeName = (appName || 'app').replace(/[^\w.-]+/g, '_')
   const fileName = `${safeName}-${version || 'unknown'}-${stamp}.zip`
@@ -165,9 +180,11 @@ function buildPackage(opts) {
     const selfZipName = fileName // 输出 zip 就写在项目目录里，绝不能把自己打进去
     collectFiles(projectDir, matcher, (abs, rel) => {
       // .deployignore 是本工具的忽略规则文件；.dockerignore 必须保留（服务器端 docker build 依赖它过滤构建上下文）
-      if (rel === selfZipName || rel === '.deployignore') return
+      if (rel === selfZipName || rel === '.deployignore' || overlays.some((f) => f.path === rel)) return
+      if (opts.exclude && opts.exclude(rel)) return
       archive.file(abs, { name: rel })
-    })
+    }, opts.safeRoot, opts.exclude)
+    for (const f of overlays) archive.append(f.content, { name: f.path })
     archive.finalize()
   })
 }

@@ -35,6 +35,7 @@ fail_now() { # 前置检查失败（尚未改动任何服务器状态），直�
 CMD="deploy"
 MODE="docker" APP_NAME="" HOME_DIR="" PACKAGE="" SHA256="" VERSION="" COMPOSE_FILE="docker-compose.yml"
 UPGRADE_SCRIPT="upgrade.sh"
+RELEASE_ID="" PROJECT_NAME=""
 BACKUP_CODE=1 BACKUP_DB=0 DB_TYPE="postgres" DB_CONTAINER="" DB_NAME="" DB_USER=""
 AUTO_ROLLBACK=1 HEALTH_URL="" HEALTH_TIMEOUT=90 HEALTH_INTERVAL=3
 KEEP_RELEASES=10 KEEP_BACKUPS=10 DELETE_UPLOAD=1
@@ -52,6 +53,8 @@ while [ $# -gt 0 ]; do
     --compose)      COMPOSE_FILE="$2"; shift 2 ;;
     --upgrade-script) UPGRADE_SCRIPT="$2"; shift 2 ;;
     --version)      VERSION="$2"; shift 2 ;;
+    --release-id)   RELEASE_ID="$2"; shift 2 ;;
+    --project-name) PROJECT_NAME="$2"; shift 2 ;;
     --backup-code)      BACKUP_CODE=1; shift ;;
     --no-backup-code)   BACKUP_CODE=0; shift ;;
     --backup-db)        BACKUP_DB=1; shift ;;
@@ -77,6 +80,11 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
+if [ -n "$PROJECT_NAME" ]; then
+  [[ "$PROJECT_NAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail_now "项目标识无效"
+  export COMPOSE_PROJECT_NAME="$PROJECT_NAME"
+fi
+if [ -n "$RELEASE_ID" ]; then [[ "$RELEASE_ID" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.+~-]*$ ]] || fail_now "版本目录无效"; fi
 
 # ───────────────────────── 全局状态 ─────────────────────────
 APP_HOME="$HOME_DIR"
@@ -127,7 +135,7 @@ check_env() {
 # 脚本部署环境：不需要 docker，按发布包类型要求 tar 或 unzip
 check_env_script() {
   command -v sha256sum >/dev/null 2>&1 || fail_now "服务器未安装 sha256sum"
-  case "$PACKAGE" in
+  case "${PACKAGE,,}" in
     *.tar.gz|*.tgz) command -v tar >/dev/null 2>&1 || fail_now "服务器未安装 tar（.tar.gz 发布包需要）" ;;
     *.zip)          command -v unzip >/dev/null 2>&1 || fail_now "服务器未安装 unzip（.zip 发布包需要）" ;;
     *) fail_now "不支持的发布包类型: $PACKAGE（支持 .tar.gz / .tgz / .zip）" ;;
@@ -244,6 +252,23 @@ health_http() {
 # 相对路径 COMPOSE_FILE 在主目录下不存在，会误判为「无容器」导致健康检查必然失败
 health_docker() {
   local dir="$1"
+  if [ -n "$PROJECT_NAME" ]; then
+    local deadline=$((SECONDS + HEALTH_TIMEOUT)) ids id state healthy all expected count
+    expected=$(cd "$dir" && docker compose -f "$COMPOSE_FILE" config --services | wc -l) || return 1
+    while [ "$SECONDS" -le "$deadline" ]; do
+      ids=$(cd "$dir" && docker compose -f "$COMPOSE_FILE" ps -a -q) || return 1
+      all=1; count=0
+      for id in $ids; do
+        count=$((count + 1))
+        state=$(docker inspect -f '{{.State.Running}}' "$id") || return 1
+        healthy=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$id") || return 1
+        [ "$state" = true ] && { [ "$healthy" = healthy ] || [ "$healthy" = none ]; } || all=0
+      done
+      if [ "$all" = 1 ] && [ "$count" -ge "$expected" ] && [ "$count" -gt 0 ]; then return 0; fi
+      sleep "$HEALTH_INTERVAL"
+    done
+    return 1
+  fi
   total=$(cd "$dir" && docker compose -f "$COMPOSE_FILE" ps -q 2>/dev/null | wc -l)
   [ "$total" -ge 1 ] || return 1
   for id in $(cd "$dir" && docker compose -f "$COMPOSE_FILE" ps -q 2>/dev/null); do
@@ -255,6 +280,7 @@ health_docker() {
 
 run_health() {
   local dir="$1"
+  if [ -n "$PROJECT_NAME" ]; then health_docker "$dir" || return 1; fi
   if [ -n "$HEALTH_URL" ]; then
     health_http
   else
@@ -293,10 +319,11 @@ do_rollback() {
     (cd "$OLD_RELEASE" && docker compose -f "$COMPOSE_FILE" up -d >/dev/null 2>&1) || true
     if run_health "$OLD_RELEASE"; then
       ok "旧版本健康检查通过"
+      echo "__DEPLOY_FAIL__:${reason}（已自动回滚到 $(basename "$OLD_RELEASE")）"
     else
       warn "旧版本健康检查未通过，请人工确认"
+      echo "__DEPLOY_FAIL__:${reason}（已切回旧版本，但恢复健康检查失败）"
     fi
-    echo "__DEPLOY_FAIL__:${reason}（已自动回滚到 $(basename "$OLD_RELEASE")）"
   else
     echo "__DEPLOY_FAIL__:${reason}（无旧版本可回滚）"
   fi
@@ -432,8 +459,11 @@ do_rollback_script() {
   if [ -n "$old" ] && [ -d "$RELEASES/$old" ]; then
     set_current "$old"
     log "CURRENT 切回旧版本: $old，正在重启…"
-    run_release_script "$RELEASES/$old" start.sh >/dev/null 2>&1 || true
-    echo "__DEPLOY_FAIL__:${reason}（已自动回滚到 $old）"
+    if run_release_script "$RELEASES/$old" start.sh >/dev/null 2>&1 && { [ -z "$HEALTH_URL" ] || health_http; }; then
+      echo "__DEPLOY_FAIL__:${reason}（已自动回滚到 $old）"
+    else
+      echo "__DEPLOY_FAIL__:${reason}（已切回旧版本，但恢复启动或健康检查失败）"
+    fi
   else
     echo "__DEPLOY_FAIL__:${reason}（无旧版本可回滚，新版本已停止）"
   fi
@@ -483,7 +513,7 @@ do_deploy_script() {
   local incoming="$RELEASES/.incoming.$$" entries n
   rm -rf -- "$incoming"
   mkdir -p -- "$incoming"
-  case "$PACKAGE" in
+  case "${PACKAGE,,}" in
     *.tar.gz|*.tgz) tar -xzf "$pkg" -C "$incoming" || { rm -rf -- "$incoming"; fail_rollback "解压失败: $pkg"; } ;;
     *.zip)          unzip -q -o "$pkg" -d "$incoming" || { rm -rf -- "$incoming"; fail_rollback "解压失败: $pkg"; } ;;
   esac
@@ -587,7 +617,8 @@ do_deploy() {
 
   # 解压新版本（方案 §11.4）
   stage extract
-  NEW_RELEASE="$RELEASES/$VERSION"
+  NEW_RELEASE="$RELEASES/${RELEASE_ID:-$VERSION}"
+  if [ -n "$OLD_RELEASE" ] && [ "$OLD_RELEASE" = "$NEW_RELEASE" ]; then fail_now "当前版本目录正在运行，请生成新的发布版本"; fi
   rm -rf "$NEW_RELEASE"
   mkdir -p "$NEW_RELEASE"
   unzip -q -o "$pkg" -d "$NEW_RELEASE" || fail_rollback "解压失败: $pkg"
@@ -595,7 +626,7 @@ do_deploy() {
 
   # 共享配置（方案 §11.5）：.env 由 shared 目录软链，不随版本删除
   if [ -f "$SHARED/.env" ] && [ ! -e "$NEW_RELEASE/.env" ]; then
-    ln -s "$SHARED/.env" "$NEW_RELEASE/.env"
+    if [ -n "$PROJECT_NAME" ]; then cp "$SHARED/.env" "$NEW_RELEASE/.env"; chmod 600 "$NEW_RELEASE/.env"; else ln -s "$SHARED/.env" "$NEW_RELEASE/.env"; fi
     ok "已链接共享配置 shared/.env"
   fi
   # compose 文件在子目录时（如 deploy/docker-compose.yml），
@@ -610,9 +641,10 @@ do_deploy() {
 
   # Docker 构建（方案 §12）
   stage build
+  (cd "$NEW_RELEASE" && docker compose -f "$COMPOSE_FILE" config --quiet) || fail_rollback "Compose 配置校验失败"
   log "Docker 镜像构建中（docker compose build）…"
   (cd "$NEW_RELEASE" && docker compose -f "$COMPOSE_FILE" build) \
-    || do_rollback "Docker 镜像构建失败"
+    || fail_rollback "Docker 镜像构建失败（旧版本保持运行）"
   ok "Docker 镜像构建完成"
 
   # 启动服务：先停旧容器释放端口，再启动新版本

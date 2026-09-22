@@ -234,7 +234,7 @@ try {
   const b = data.projects.find((p) => p.id === 'dp_target_b')
   assert('A2 目标项目落盘为 2 个环境', b && b.targets.length === 2, `targets=${b && b.targets.length}`)
   const copied = b && b.targets[1]
-  assert('A2 复制来的环境带源项目主机与部署目录', copied && copied.server.host === SOURCE_HOST && copied.remotePath === SOURCE_REMOTE,
+  assert('A2 复制来的环境带源项目主机但不继承部署目录', copied && copied.server.host === SOURCE_HOST && copied.remotePath === '',
     `host=${copied && copied.server.host} remote=${copied && copied.remotePath}`)
   assert('A2 复制来的环境保留源环境名与独立 id', copied && copied.name === '生产环境' && copied.id !== 't_a_1', `name=${copied && copied.name} id=${copied && copied.id}`)
 } catch (e) {
@@ -242,7 +242,7 @@ try {
 }
 
 assert('A3 复制后【服务器（当前目标）】主机切换为源项目的主机', ev.after && ev.after.host === SOURCE_HOST, `host=${ev.after && ev.after.host}`)
-assert('A3 复制后部署目录切换为源项目的目录', ev.after && ev.after.remote === SOURCE_REMOTE, `remote=${ev.after && ev.after.remote}`)
+assert('A3 复制后部署目录留空待当前项目独立配置', ev.after && ev.after.remote === '', `remote=${ev.after && ev.after.remote}`)
 assert('A4 复制后当前环境名切换为复制来的环境', ev.after && ev.after.targetSelect.includes('生产环境'), `targetSelect=${ev.after && ev.after.targetSelect}`)
 assert('A4 「部署环境」栏 host → 目录文案同步更新', ev.after && ev.after.barHost.includes(SOURCE_HOST), `barHost=${ev.after && ev.after.barHost}`)
 assert('A4 环境下拉包含两个环境', Array.isArray(ev.targetOptionTexts) && ev.targetOptionTexts.length === 2, `options=${JSON.stringify(ev.targetOptionTexts)}`)
@@ -252,10 +252,10 @@ if (ev.afterCancel) {
   console.log(`  重开抽屉: ${JSON.stringify(ev.afterReopen)}`)
   assert('A5 点「取消」后抽屉关闭', ev.afterCancel.visible === false, `visible=${ev.afterCancel.visible}`)
   assert('A5 「取消」不会把已落盘的复制结果回滚掉（表单仍是复制来的服务器）',
-    ev.afterCancel.host === SOURCE_HOST && ev.afterCancel.remote === SOURCE_REMOTE,
+    ev.afterCancel.host === SOURCE_HOST && ev.afterCancel.remote === '',
     `host=${ev.afterCancel.host} remote=${ev.afterCancel.remote}`)
   assert('A5 重开抽屉仍显示复制来的服务器信息',
-    ev.afterReopen && ev.afterReopen.visible === true && ev.afterReopen.host === SOURCE_HOST && ev.afterReopen.remote === SOURCE_REMOTE,
+    ev.afterReopen && ev.afterReopen.visible === true && ev.afterReopen.host === SOURCE_HOST && ev.afterReopen.remote === '',
     JSON.stringify(ev.afterReopen))
 }
 

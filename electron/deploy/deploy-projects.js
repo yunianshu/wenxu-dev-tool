@@ -81,13 +81,15 @@ function defaultProject() {
     tags: [],
     notes: '',
     version: { strategy: 'auto', manual: '' },
-    // 部署形态：docker = Compose 编排（默认）；script = 项目自带脚本（发布包 + upgrade.sh/start.sh/stop.sh）
-    deployMode: 'docker',
+    // 默认自动发布；docker/script 保留显式 Compose 与项目脚本部署。
+    deployMode: 'auto',
+    productionTargetId: '',
+    autoDeploy: { port: 0 },
     composeFile: 'docker-compose.yml',
     // 脚本部署：产物目录（相对项目根，放 tar.gz/tgz/zip 发布包）与升级入口脚本名；
     // 环境引导开关：服务器缺 Java17 / pg_dump 时自动装用户态环境（不动系统）；
-    // 打包命令：产物目录没有匹配版本的发布包时，在项目根自动执行（如 bash package.sh）；
-    // 版本同步：手动发布版本与项目版本文件不一致时，打包前自动升级项目版本声明；
+    // 打包命令：配置后每次在隔离项目副本中执行（如 bash package.sh）；
+    // 版本同步：只更新本次构建副本的版本声明，失败不改变源项目；
     // 发布说明：项目遵循「release-notes-<版本>.md 随版本提供」约定而目标版本缺失时，打包前自动生成初稿
     scriptMode: { artifactDir: 'release', upgradeScript: 'upgrade.sh', bootstrapJava: false, bootstrapPgdump: false, packageCommand: '', packageTimeoutSec: 900, autoBumpVersion: true, autoReleaseNotes: true },
     // 项目级发布策略：跨环境统一的开关与保留份数；数据库备份配置按环境存放于 targets[].db
@@ -134,8 +136,10 @@ function normalizeProject(p) {
   // 非法值清空由发布前检查报错，杜绝路径注入
   const manual = String(c.version.manual || '').trim()
   c.version.manual = /^[\w][\w.+~-]*$/.test(manual) && manual.length <= 64 ? manual : ''
-  // 部署形态：仅 docker / script，未知值回退 docker
-  c.deployMode = source.deployMode === 'script' ? 'script' : 'docker'
+  // 已有服务器配置保留旧部署行为；未配置的新项目默认自动发布。
+  c.deployMode = ['auto', 'script', 'docker'].includes(source.deployMode)
+    ? source.deployMode : (source.server || source.deployMode || source.targets?.some((t) => t.server?.host) ? 'docker' : 'auto')
+  c.autoDeploy = { port: Math.min(65535, Math.max(0, Math.floor(Number(source.autoDeploy?.port) || 0))) }
   c.composeFile = String(c.composeFile || 'docker-compose.yml').trim()
   // 产物目录/脚本名进入远端命令，仅放行安全字符（防注入/防越界）
   c.scriptMode.artifactDir = String(c.scriptMode.artifactDir || 'release').trim()
@@ -143,7 +147,7 @@ function normalizeProject(p) {
   if (!/^[\w./-]+$/.test(c.scriptMode.artifactDir) || c.scriptMode.artifactDir.includes('..')) {
     c.scriptMode.artifactDir = 'release'
   }
-  if (!/^[\w.-]+$/.test(c.scriptMode.upgradeScript)) {
+  if (!/^[\w./-]+$/.test(c.scriptMode.upgradeScript) || c.scriptMode.upgradeScript.split('/').some((s) => !s || s === '.' || s === '..')) {
     c.scriptMode.upgradeScript = 'upgrade.sh'
   }
   c.scriptMode.bootstrapJava = c.scriptMode.bootstrapJava === true
@@ -308,19 +312,13 @@ function save(input) {
     return t
   })
 
-  let copiedInfo = null
   if (idx >= 0) projects[idx] = { ...old, ...incoming }
   else {
-    // 新建项目默认带入（spec R6）：从最近配置过的其他项目复制部署配置；
-    // 部分复制——只继承未显式配置的段，不覆盖调用方已填写的 scriptMode/deploy 等
-    const source = pickCopySource(projects, incoming.id)
-    if (source) {
-      copiedInfo = { copiedFrom: source.name, copiedTargets: applyCopyConfigPartial(source, incoming) }
-    }
+    // 项目专属参数不能跨项目继承；服务器连接仅在用户显式复制时复用。
     projects.push(incoming)
   }
   persistAll(projects)
-  return { ok: true, id: incoming.id, ...copiedInfo }
+  return { ok: true, id: incoming.id }
 }
 
 function remove(projectId) {
@@ -330,65 +328,18 @@ function remove(projectId) {
 }
 
 /**
- * 整套复制部署配置到目标项目（spec R1-R3）：部署形态/版本策略/部署选项 + 全部 targets。
- * 在原始数据层操作，加密凭据（server.secret/passphrase、dataSync.importSecret）字节原样保留——
+ * 显式复制服务器连接到目标项目；项目专属部署参数不复制。
+ * 在原始数据层操作，加密凭据（server.secret/passphrase）字节原样保留——
  * 不走 mergeSecret（会把已加密 secret 当明文二次加密）。复制的目标一律重新生成 id。
  * 返回复制的环境数量。
  */
 function applyCopyConfig(from, to) {
-  to.deployMode = from.deployMode
-  to.composeFile = from.composeFile
-  to.version = JSON.parse(JSON.stringify(from.version || { strategy: 'auto', manual: '' }))
-  to.deploy = JSON.parse(JSON.stringify(from.deploy || defaultProject().deploy))
-  to.scriptMode = JSON.parse(JSON.stringify(from.scriptMode || defaultProject().scriptMode))
-  const copied = (from.targets || []).map((t) => ({ ...JSON.parse(JSON.stringify(t)), id: genId() }))
+  const copied = (from.targets || []).filter((t) => t.server?.host).map((t) => ({
+    ...defaultTarget(), name: t.name, server: JSON.parse(JSON.stringify(t.server)),
+  }))
   to.targets.push(...copied)
   to.updatedAt = Date.now()
   return copied.length
-}
-
-/** 配置段是否仍为默认值：所有键的值都与默认一致且无默认之外的键（用户未显式修改） */
-function sectionUntouched(provided, defaults) {
-  const p = provided || {}
-  const keys = Object.keys(p)
-  for (const k of keys) {
-    if (!(k in defaults)) return false
-    if (JSON.stringify(p[k]) !== JSON.stringify(defaults[k])) return false
-  }
-  return true
-}
-
-/**
- * 新建项目默认带入（spec R6）的部分复制：只继承用户未显式配置的段。
- * 整段覆盖会静默丢弃调用方/界面已填写的 scriptMode（如打包命令）、deploy 选项等，
- * 表现为「保存后配置消失」——显式设置过的段必须原样保留。
- */
-function applyCopyConfigPartial(from, to) {
-  const d = defaultProject()
-  if (to.deployMode === d.deployMode) to.deployMode = from.deployMode
-  if (String(to.composeFile || '') === d.composeFile) to.composeFile = from.composeFile
-  if (sectionUntouched(to.version, d.version) && from.version) {
-    to.version = JSON.parse(JSON.stringify(from.version))
-  }
-  if (sectionUntouched(to.deploy, d.deploy)) {
-    to.deploy = JSON.parse(JSON.stringify(from.deploy || d.deploy))
-  }
-  if (sectionUntouched(to.scriptMode, d.scriptMode)) {
-    to.scriptMode = JSON.parse(JSON.stringify(from.scriptMode || d.scriptMode))
-  }
-  const copied = (from.targets || []).map((t) => ({ ...JSON.parse(JSON.stringify(t)), id: genId() }))
-  to.targets.push(...copied)
-  to.updatedAt = Date.now()
-  return copied.length
-}
-
-/** 新建项目默认带入规则（spec R6）：最近更新且至少配置过一个服务器主机的其他项目 */
-function pickCopySource(projects, excludeId) {
-  const candidates = projects.filter((p) =>
-    p.id !== excludeId && (p.targets || []).some((t) => t.server && t.server.host)
-  )
-  if (!candidates.length) return null
-  return candidates.reduce((a, b) => ((b.updatedAt || 0) > (a.updatedAt || 0) ? b : a))
 }
 
 /** 显式复制入口（部署设置抽屉「从其他项目复制」） */

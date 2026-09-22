@@ -5,9 +5,21 @@
  */
 const { spawnSync } = require('child_process')
 const path = require('path')
+const fs = require('fs')
+const testEnv = { ...process.env }
+// Windows 的系统 bash 可能指向 WSL；这些本地脚本夹具需要与 Windows 路径兼容的 Git Bash。
+if (process.platform === 'win32') {
+  const gitBin = path.join(process.env.ProgramFiles || 'C:/Program Files', 'Git', 'bin')
+  if (fs.existsSync(path.join(gitBin, 'bash.exe'))) {
+    const key = Object.keys(testEnv).find((k) => k.toLowerCase() === 'path') || 'Path'
+    testEnv[key] = gitBin + path.delimiter + (testEnv[key] || '')
+  }
+}
 
 const SUITES = [
   'deploy-selftest.cjs',
+  'deploy-auto-selftest.cjs',
+  'deploy-auto-shell-selftest.cjs',
   'deploy-scriptmode-selftest.cjs',
   'deploy-datasync-selftest.cjs',
   'deploy-ai-selftest.cjs',
@@ -34,7 +46,7 @@ const SUITES = [
 
 let failed = 0
 for (const suite of SUITES) {
-  const r = spawnSync(process.execPath, [path.join(__dirname, suite)], { encoding: 'utf8', timeout: 300000 })
+  const r = spawnSync(process.execPath, [path.join(__dirname, suite)], { encoding: 'utf8', timeout: 300000, env: testEnv })
   const tail = String(r.stdout || '').trim().split('\n').slice(-2).join(' | ')
   const bad = r.status !== 0
   if (bad) failed += 1

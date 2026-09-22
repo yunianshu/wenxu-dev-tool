@@ -9,6 +9,7 @@
           <TopbarProjectSelect />
         </div>
         <el-button v-if="currentProject" @click="aiOpen = true"><el-icon><MagicStick /></el-icon>AI 部署助手</el-button>
+        <el-button v-if="currentProject" type="primary" @click="productionOpen = true">设置正式服务器</el-button>
         <el-button v-if="currentProject" @click="configOpen = true"><el-icon><Setting /></el-icon>部署设置</el-button>
         <el-button v-if="currentProject" :loading="testing" :disabled="!form.id || dirty" @click="testConnection"><el-icon><Link /></el-icon>测试连接</el-button>
       </div>
@@ -24,18 +25,20 @@
     <!-- 当前部署目标与连接状态 -->
     <el-card shadow="never" class="card bar-card">
       <div class="bar">
-        <span class="bar-label">部署环境</span>
+        <span class="bar-label">{{ form.deployMode === 'auto' ? '自动发布' : '部署环境' }}</span>
         <el-select
+          v-if="form.deployMode !== 'auto'"
           v-model="activeTargetId"
           placeholder="选择环境"
           style="width: 220px"
         >
           <el-option v-for="target in form.targets" :key="target.id" :value="target.id" :label="target.name || '未命名环境'" />
         </el-select>
-        <span class="target-host mono">{{ activeTarget?.server?.host || '未配置主机' }} → {{ activeTarget?.remotePath || '未配置部署目录' }}</span>
+        <span v-if="form.deployMode === 'auto'" class="target-host mono">{{ activeTarget?.server?.host || '请设置正式服务器' }}</span>
+        <span v-else class="target-host mono">{{ activeTarget?.server?.host || '未配置主机' }} → {{ activeTarget?.remotePath || '未配置部署目录' }}</span>
         <div class="spacer" />
         <el-tag v-if="dirty" type="warning" effect="plain" size="small">有未保存修改</el-tag>
-        <el-tag v-else-if="activeTarget?.server?.host && activeTarget?.remotePath" type="success" effect="plain" size="small">配置就绪</el-tag>
+        <el-tag v-else-if="activeTarget?.server?.host" type="info" effect="plain" size="small">发布时自动检查</el-tag>
         <el-tag v-else type="info" effect="plain" size="small">需要配置</el-tag>
       </div>
       <el-alert v-if="connResult" :type="connResult.ok ? 'success' : 'error'" :closable="true" class="conn-alert" @close="connResult = null">
@@ -50,6 +53,9 @@
         </template>
       </el-alert>
     </el-card>
+
+    <el-alert v-if="form.deployMode === 'auto'" title="选择正式服务器后即可发布。程序会识别项目、准备部署文件和运行环境，再构建上线；首次缺少部署文件时使用设置中的 AI。" type="info" :closable="false" />
+    <ProductionServerDialog v-model="productionOpen" :target="productionTarget" :service-port="form.autoDeploy?.port" @save="saveProduction" />
 
     <DeployConfigDrawer
       ref="configDrawerRef"
@@ -103,6 +109,7 @@ import DeployConfigDrawer from '../components/deploy/DeployConfigDrawer.vue'
 import DeployAiAssistant from '../components/deploy/DeployAiAssistant.vue'
 import DeployRunPanel from '../components/deploy/DeployRunPanel.vue'
 import DeployHistoryTable from '../components/deploy/DeployHistoryTable.vue'
+import ProductionServerDialog from '../components/deploy/ProductionServerDialog.vue'
 import { emptyTarget, emptyProject, fmtDur } from '../components/deploy/deploy-form'
 
 defineEmits(['navigate'])
@@ -111,6 +118,8 @@ const topbarReady = useTopbarReady()
 
 const form = reactive(emptyProject())
 const configOpen = ref(false)
+const productionOpen = ref(false)
+const productionTarget = computed(() => form.targets.find((t) => t.id === form.productionTargetId) || null)
 const aiOpen = ref(false)
 const configDrawerRef = ref(null)
 const activeTargetId = ref('')
@@ -206,7 +215,7 @@ function fillForm(p, preferredTargetId = '') {
   Object.assign(form, merged)
   const want = preferredTargetId && merged.targets.some((t) => t.id === preferredTargetId)
     ? preferredTargetId
-    : merged.targets[0].id
+    : (merged.targets.find((t) => t.id === merged.productionTargetId) || merged.targets.find((t) => t.server?.host) || merged.targets[0]).id
   activeTargetId.value = want
   detectVersion()
 }
@@ -253,7 +262,7 @@ function newProject() {
   resetRunDisplay()
 }
 
-/** 从源项目整套复制部署配置（主进程含凭据复制），完成后刷新表单并选中新追加的第一个环境 */
+/** 复制服务器连接（含加密凭据），完成后选中新追加的第一个环境。 */
 async function onCopyConfig(fromProjectId) {
   // 复制前已存在的环境 id：复制后据此找出新追加的环境。
   // 不能用下标（prevTargetCount）判定——抽屉里可能有尚未保存的新增环境，下标会对不上
@@ -291,20 +300,15 @@ async function onPlanApplied() {
 }
 
 async function saveProject(successMsg = '配置已保存') {  if (!form.name) { ElMessage.warning('请填写项目名称'); return false }
-  const prevTargetCount = form.targets.length
   const payload = JSON.parse(JSON.stringify(form))
   if (!payload.targets.length) payload.targets = [emptyTarget()]
   // 部署目录留空时按目标随名称自动建议，用户仍可随时修改
   for (const t of payload.targets) {
-    if (!t.remotePath && form.name) t.remotePath = `/opt/apps/${form.name}`
+    if (form.deployMode !== 'auto' && !t.remotePath && form.name) t.remotePath = `/opt/apps/${form.name}-${form.id.slice(-6)}`
   }
   const r = await window.gitReport.deployProjectsSave(payload)
   if (r && r.ok) {
     ElMessage.success(successMsg)
-    // 新建项目默认带入（spec R6）：主进程自动复制最近配置过的项目
-    if (r.copiedTargets > 0) {
-      ElMessage.success(`已按默认规则带入「${r.copiedFrom}」的部署配置（${r.copiedTargets} 个环境）`)
-    }
     await loadSharedProjects()
     await loadProjects()
     state.deploy.currentProjectId = r.id
@@ -312,16 +316,27 @@ async function saveProject(successMsg = '配置已保存') {  if (!form.name) { 
     const p = state.deploy.projects.find((x) => x.id === r.id)
     if (p) {
       fillForm(p, activeTargetId.value) // 保存不切换当前选中的部署环境
-      if (r.copiedTargets > 0) {
-        const firstNew = form.targets[prevTargetCount]
-        if (firstNew) activeTargetId.value = firstNew.id
-      }
     }
     configOpen.value = false
     return true
   }
   ElMessage.error('保存失败')
   return false
+}
+
+async function saveProduction({ target, port }) {
+  const base = emptyTarget()
+  // 正式目标不沿用其他项目的目录、数据库和版本配置。
+  const current = form.targets.findIndex((t) => t.id === target.id)
+  const clean = { ...base, id: target.id, name: '正式环境', server: target.server }
+  if (current >= 0) form.targets.splice(current, 1, clean)
+  else form.targets.push(clean)
+  form.productionTargetId = clean.id
+  form.deployMode = 'auto'
+  form.autoDeploy = { port }
+  form.version = { strategy: 'auto', manual: '' }
+  activeTargetId.value = clean.id
+  await saveProject('正式服务器已保存，可以一键发布')
 }
 
 /** 发布卡「新版本」（spec R7）：切手动版本并保存，发布按钮立即生效 */
@@ -380,12 +395,17 @@ onMounted(() => {
     reloadHistory()
     const r = d && d.record
     if (!r) return
+    if (r.projectId === form.id && form.deployMode === 'auto') {
+      const selectedTarget = activeTargetId.value
+      await loadProjects()
+      if (form.targets.some((t) => t.id === selectedTarget)) activeTargetId.value = selectedTarget
+    }
     const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
     const head = `<b>${esc(r.projectName)}</b>${r.targetName ? ` · ${esc(r.targetName)}` : ''} ${esc(r.version)} → ${esc(r.host)}`
     if (r.status === 'success') {
       if (r.targetId === activeTargetId.value) state.deploy.currentVersion = r.version
       await ElMessageBox.alert(
-        `${head}<br/>耗时 ${fmtDur(r.durationMs)}<br/><br/>✓ 发布成功`,
+        `${head}<br/>耗时 ${fmtDur(r.durationMs)}<br/><br/>✓ 发布成功${r.serviceUrl ? `<br/>访问地址：${esc(r.serviceUrl)}` : ''}`,
         '发布成功',
         { dangerouslyUseHTMLString: true, confirmButtonText: '好的' },
       )

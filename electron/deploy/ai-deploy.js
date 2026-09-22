@@ -282,8 +282,17 @@ function scanLocal(project) {
   report.entryCount = rootEntries.length
   report.entries = rootEntries.map((e) => (e.isDirectory() ? `${e.name}/` : e.name)).sort().slice(0, 80)
 
-  report.stack = STACK_MARKERS.filter(([f]) => fs.existsSync(path.join(root, f)))
-    .map(([file, kind, label]) => ({ file, kind, label }))
+  const scanStack = (dir, prefix, depth) => {
+    for (const [file, kind, label] of STACK_MARKERS) {
+      if (fs.existsSync(path.join(dir, file))) report.stack.push({ file: prefix + file, kind, label })
+    }
+    if (depth >= 2) return
+    for (const e of listDirSafe(dir)) {
+      if (!e.isDirectory() || e.name.startsWith('.') || /^(node_modules|target|build|dist|vendor|venv|release|releases|tests|design|docs)$/i.test(e.name)) continue
+      scanStack(path.join(dir, e.name), `${prefix}${e.name}/`, depth + 1)
+    }
+  }
+  scanStack(root, '', 0)
 
   for (const spec of DEPLOY_FILE_SPECS) {
     if (fs.existsSync(path.join(root, spec.rel))) report.deployFiles.present.push(spec)
@@ -1542,6 +1551,7 @@ function applyPlan(projectId, targetId, plan) {
 }
 
 module.exports = {
+  redactAiText,
   scanLocal, scanRemote, diagnose, writeFiles, applyPlan, generateFileContent,
   buildHeuristicPlan, mergePlan, assertWritablePath, parseCompose, parseEnvKeys, extractJson,
   buildPrompt, pickFileContentsForAi, detectExistingDeployment,
