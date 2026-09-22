@@ -171,13 +171,14 @@ const EVAL1 = `(async () => {
   await waitFor(() => !messageBox(), 4000)
 
   // B5：切到 Beta 项目 → 显示 Beta 自己的记录 9.9.9，不残留 Alpha 的 1.2.3
-  r.swProject = await selectBy('.app-topbar .project-select', 'Beta项目')
+  // 页头项目选择器统一到顶栏插槽后类名为 .topbar-project-select（原 .app-topbar .project-select 在部署页已隐藏）
+  r.swProject = await selectBy('.topbar-project-select', 'Beta项目')
   r.b5ok = await waitOnline('9.9.9')
   r.b5text = onlineText()
   r.b5noResidue = !onlineText().includes('1.2.3')
 
   // 切回 Alpha → 再次显示 1.2.3
-  r.swBack = await selectBy('.app-topbar .project-select', 'Alpha项目')
+  r.swBack = await selectBy('.topbar-project-select', 'Alpha项目')
   r.b5back = await waitOnline('1.2.3')
   r.b5backText = onlineText()
   done()

@@ -6,6 +6,16 @@ const path = require('path')
 const crypto = require('crypto')
 const { Writable } = require('stream')
 const { execFileSync } = require('child_process')
+// Git 自带的 GNU tar 会把 "C:\..." 的盘符当作远程主机（tar: Cannot connect to C: resolve failed），
+// 而它常排在 PATH 里系统的前面；优先用系统自带 bsdtar（zip 与 tar.gz 都能处理）。
+const TAR_BIN = (() => {
+  const systemRoot = process.env.SystemRoot || process.env.windir
+  if (process.platform === 'win32' && systemRoot) {
+    const bsdtar = path.join(systemRoot, 'System32', 'tar.exe')
+    if (fs.existsSync(bsdtar)) return bsdtar
+  }
+  return 'tar'
+})()
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deploy-auto-test-'))
 const electronPath = require.resolve('electron')
 require.cache[electronPath] = { id: electronPath, filename: electronPath, loaded: true, exports: {
@@ -67,7 +77,7 @@ ssh.exec = async (_, command, onLine) => {
     }
     assert(command.includes('--project-name') && command.includes('--release-id'))
     assert(command.includes(auto.COMPOSE))
-    const entries = execFileSync('tar', ['-tf', outputZip], { encoding: 'utf8' })
+    const entries = execFileSync(TAR_BIN, ['-tf', outputZip], { encoding: 'utf8' })
     assert(entries.includes(auto.COMPOSE) && entries.includes('.onedeploy/Dockerfile'))
     assert(entries.includes('dist/app.js'), '本地产物可进入 Docker 构建快照')
     assert(!entries.split(/\r?\n/).some((f) => f === '.env'), '运行凭据不得进入 ZIP')
@@ -185,7 +195,7 @@ function project(name) {
   })
   await test('脚本包契约上传前校验', async () => {
     const flat = path.join(root, 'flat'); fs.mkdirSync(flat); fs.writeFileSync(path.join(flat, 'upgrade.sh'), 'exit 0'); fs.writeFileSync(path.join(flat, 'start.sh'), 'exit 0')
-    const tarFile = path.join(root, 'flat.tar.gz'); execFileSync('tar', ['-czf', tarFile, '-C', flat, 'upgrade.sh', 'start.sh'])
+    const tarFile = path.join(root, 'flat.tar.gz'); execFileSync(TAR_BIN, ['-czf', tarFile, '-C', flat, 'upgrade.sh', 'start.sh'])
     await assert.rejects(() => validateArtifact(tarFile), /顶层目录/)
   })
   console.log(`\n自动发布自测通过（${passed} 组断言）`)
