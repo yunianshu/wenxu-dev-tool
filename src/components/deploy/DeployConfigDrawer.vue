@@ -32,6 +32,9 @@
           </el-radio-group>
         </div>
         <el-alert v-if="form.deployMode === 'auto'" title="自动识别项目并在服务器构建，缺少部署文件时使用已配置 AI；无需配置打包命令和目录。" type="info" :closable="false" />
+        <div v-if="form.deployMode === 'auto'" class="f-row">
+          <span class="f-label">服务端口</span><el-input-number v-model="form.autoDeploy.port" :min="0" :max="65535" /><span class="f-mini">0 为该项目自动分配</span>
+        </div>
         <div v-if="form.deployMode === 'docker'" class="f-row">
           <span class="f-label">Compose</span>
           <el-input v-model="form.composeFile" placeholder="docker-compose.yml（支持 compose.yaml 等常见命名自动回退）" style="flex: 1" />
@@ -109,55 +112,16 @@
         </template>
         <template v-if="activeTarget">
           <div class="f-row">
-            <span class="f-label">主机地址</span>
-            <el-input v-model="activeTarget.server.host" placeholder="192.168.1.100 或 server.example.com" style="flex: 1" />
-            <el-input-number v-model="activeTarget.server.port" :min="1" :max="65535" controls-position="right" style="width: 100px" />
+            <span class="f-label">部署服务器</span>
+            <el-select :model-value="activeTarget.serverId" placeholder="选择服务器" clearable style="flex: 1" @change="selectServer">
+              <el-option v-for="server in servers" :key="server.id" :value="server.id" :label="`${server.name} · ${server.host}`" />
+            </el-select>
+            <el-button @click="emit('manage-servers')">服务器管理</el-button>
           </div>
-          <div class="f-row">
-            <span class="f-label">用户名</span>
-            <el-input v-model="activeTarget.server.username" placeholder="root" style="width: 200px" />
-            <el-radio-group v-model="activeTarget.server.authType" size="small">
-              <el-radio-button value="password">密码</el-radio-button>
-              <el-radio-button value="key">私钥</el-radio-button>
-            </el-radio-group>
-          </div>
-          <div v-if="activeTarget.server.authType === 'password'" class="f-row">
-            <span class="f-label">密码</span>
-            <el-input
-              v-model="activeTarget.server.secret"
-              type="password"
-              show-password
-              style="flex: 1"
-              :placeholder="clearSecretPending ? '已标记清除（保存后生效）' : activeTarget.server.secretConfigured ? `${activeTarget.server.secretMasked}（留空保持不变）` : 'SSH 登录密码'"
-              @update:model-value="activeTarget.server.clearSecret = false"
-            />
-            <el-button v-if="activeTarget.server.secretConfigured && !clearSecretPending" text type="danger" size="small" @click="clearSecret">
-              清除
-            </el-button>
-            <el-button v-else-if="clearSecretPending" text size="small" @click="undoClearSecret">
-              撤销清除
-            </el-button>
-          </div>
-          <template v-else>
-            <div class="f-row">
-              <span class="f-label">私钥路径</span>
-              <el-input v-model="activeTarget.server.keyPath" placeholder="C:\Users\you\.ssh\id_rsa" style="flex: 1" />
-              <el-button @click="browseKey"><el-icon><Folder /></el-icon></el-button>
-            </div>
-            <div class="f-row">
-              <span class="f-label">私钥口令</span>
-              <el-input
-                v-model="activeTarget.server.passphrase"
-                type="password"
-                show-password
-                style="flex: 1"
-                :placeholder="activeTarget.server.passphraseConfigured ? '已保存（留空保持不变）' : '无口令可留空'"
-              />
-            </div>
-          </template>
+          <p class="f-mini selected-server" :data-host="activeTarget.server.host">{{ activeTarget.server.host ? `${activeTarget.server.username}@${activeTarget.server.host}:${activeTarget.server.port}（登录信息统一在服务器管理维护）` : '请先添加或选择服务器' }}</p>
           <div class="f-row">
             <span class="f-label">部署目录</span>
-            <el-input v-model="activeTarget.remotePath" placeholder="/opt/apps/myapp" style="flex: 1" />
+            <el-input v-model="activeTarget.remotePath" :readonly="form.deployMode === 'auto'" :placeholder="form.deployMode === 'auto' ? '发布时为此项目分配独立安装目录' : '/opt/apps/myapp'" style="flex: 1" />
           </div>
         </template>
               </el-card>
@@ -297,7 +261,7 @@
     <!-- 从其他项目复制部署配置 -->
     <el-dialog v-model="copyDialogVisible" title="从其他项目复制部署配置" width="480px" append-to-body>
       <el-alert type="warning" :closable="false" show-icon class="copy-alert">
-        仅复制服务器连接与登录凭据，部署目录、版本、数据库和构建参数由当前项目独立配置。
+        仅复制服务器选择，登录信息由服务器管理统一维护，部署目录、版本、数据库和构建参数由当前项目独立配置。
         现有环境保留。当前未保存的修改将丢弃。
       </el-alert>
       <div class="f-row">
@@ -335,8 +299,9 @@ const props = defineProps({
   detected: { type: Object, default: () => ({ version: '', source: '' }) },
   /** 部署项目列表（复制配置时的源项目候选） */
   projects: { type: Array, default: () => [] },
+  servers: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['update:modelValue', 'update:activeTargetId', 'save', 'reset-conn', 'copy-config'])
+const emit = defineEmits(['update:modelValue', 'update:activeTargetId', 'save', 'reset-conn', 'copy-config', 'manage-servers'])
 
 /** 当前编辑的部署目标（响应式：切换目标后服务器/健康检查卡随之切换） */
 const activeTarget = computed(() => {
@@ -344,8 +309,15 @@ const activeTarget = computed(() => {
   return t || props.form.targets[0] || null
 })
 
-/** 密码清除标记（撤销入口与占位提示依赖） */
-const clearSecretPending = computed(() => activeTarget.value?.server?.clearSecret === true)
+function selectServer(id) {
+  const t = activeTarget.value
+  if (!t) return
+  t.serverId = id || ''
+  t.server = { ...(props.servers.find((s) => s.id === id) || emptyTarget().server) }
+  delete t.server.projects
+  if (props.form.deployMode === 'auto') { t.remotePath = ''; delete t.autoSudo }
+  emit('reset-conn')
+}
 
 // ─── 数据同步导入钩子：开关代理（写入 dataSync.importMode）───
 const importEnabled = computed({
@@ -354,19 +326,6 @@ const importEnabled = computed({
     if (activeTarget.value?.dataSync) activeTarget.value.dataSync.importMode = v ? 'command' : 'none'
   },
 })
-
-// ─── SSH 凭据清除（标记制：保存时由主进程 mergeSecret 落地；此处同步界面状态）───
-function clearSecret() {
-  const s = activeTarget.value && activeTarget.value.server
-  if (!s) return
-  s.clearSecret = true
-  s.secret = ''
-}
-function undoClearSecret() {
-  const s = activeTarget.value && activeTarget.value.server
-  if (!s) return
-  s.clearSecret = false
-}
 
 // ─── 取消回滚：抽屉直接编辑父级 form，取消必须恢复打开时的快照，否则修改残留（脏标记挂着、发布被禁用）───
 let openSnapshot = null
@@ -391,7 +350,13 @@ function cancelEdit() {
 function rebaseline() {
   openSnapshot = JSON.parse(JSON.stringify(props.form))
 }
-defineExpose({ rebaseline })
+function refreshServerSnapshot(servers) {
+  for (const target of openSnapshot?.targets || []) {
+    const server = servers.find((s) => s.id === target.serverId)
+    if (server) { target.server = { ...server }; delete target.server.projects }
+  }
+}
+defineExpose({ rebaseline, refreshServerSnapshot })
 
 // ─── 部署目标（多环境）管理 ───
 async function addTarget() {
@@ -455,11 +420,6 @@ function confirmCopy() {
 async function browseLocal() {
   const dir = await window.gitReport.pickDirectory()
   if (dir) props.form.localPath = dir
-}
-async function browseKey() {
-  // 私钥是文件（如 ~/.ssh/id_rsa），必须用文件选择器而非目录选择器
-  const file = await window.gitReport.pickFile()
-  if (file && activeTarget.value) activeTarget.value.server.keyPath = file
 }
 </script>
 

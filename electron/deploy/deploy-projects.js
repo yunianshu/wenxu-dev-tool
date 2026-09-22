@@ -2,9 +2,9 @@
  * 部署项目配置管理 —— 对应方案 §5.1 / §21 / §22：
  *   - 多项目配置（名称、本地目录、版本策略、部署选项）
  *   - 每个项目支持多个部署目标 targets[]（测试/生产等多环境）：
- *     各目标独立的服务器（host/端口/用户/认证/密钥）、远程部署目录、健康检查与数据库备份配置
- *   - 持久化到 userData/deploy-projects.json；旧版单服务器配置自动迁移为 targets[0]
- *   - SSH 密码/私钥口令按目标分别经 safeStorage 加密落盘，明文不出主进程
+ *     各目标引用共享服务器，远程部署目录、健康检查与数据库备份独立配置
+ *   - 持久化到 userData/deploy-projects.json；旧连接自动迁移到 servers 集合
+ *   - SSH 密码/私钥口令由服务器统一经 safeStorage 加密落盘，明文不出主进程
  */
 const fs = require('fs')
 const path = require('path')
@@ -63,6 +63,7 @@ function defaultTarget() {
   return {
     id: genId(),
     name: '默认环境',
+    serverId: '',
     server: defaultServer(),
     remotePath: '',
     health: { enabled: true, url: '', timeout: 90, interval: 3 },
@@ -207,14 +208,102 @@ function maskSecret(s) {
   return `••••••${s.slice(-3)}`
 }
 
+function normalizeServer(s) {
+  return {
+    id: s.id || genId(), name: String(s.name || s.host || '服务器').trim(),
+    host: String(s.host || '').trim(), port: Number(s.port || 22),
+    username: String(s.username || 'root').trim(), authType: s.authType === 'key' ? 'key' : 'password',
+    keyPath: String(s.keyPath || '').trim(),
+    ...(s.secret ? { secret: s.secret } : {}), ...(s.passphrase ? { passphrase: s.passphrase } : {}),
+  }
+}
+
+function serverView(s) {
+  const secret = store.decryptText(s.secret), pass = store.decryptText(s.passphrase)
+  const out = { ...s, secretConfigured: !!secret, secretMasked: secret ? maskSecret(secret) : '', passphraseConfigured: !!pass }
+  delete out.secret; delete out.passphrase
+  return out
+}
+
+/** 凭据解密失败不能视为空值并错误合并；仍保留原加密信息。 */
+function connectionKey(s) {
+  const credential = (v) => !v ? '' : store.decryptText(v) || JSON.stringify(v)
+  return JSON.stringify([s.host.toLowerCase(), s.port, s.username, s.authType, s.keyPath, credential(s.secret), credential(s.passphrase)])
+}
+
+function registerServer(doc, raw) {
+  const server = normalizeServer({ ...raw, id: '' })
+  const found = doc.servers.find((s) => connectionKey(s) === connectionKey(server))
+  if (found) return found.id
+  doc.servers.push(server)
+  return server.id
+}
+
+/** 项目和服务器一起替换落盘，迁移不会留下半份引用。 */
+function writeDocument(doc) {
+  const projects = doc.projects.map((p) => ({ ...p, targets: p.targets.map((t) => {
+    const out = { ...t }
+    if (out.serverId) delete out.server
+    return out
+  }) }))
+  fs.mkdirSync(path.dirname(file()), { recursive: true })
+  const temp = `${file()}.${process.pid}.tmp`
+  try {
+    fs.writeFileSync(temp, JSON.stringify({ schemaVersion: 2, servers: doc.servers, projects }, null, 2), { encoding: 'utf8', mode: 0o600 })
+    fs.renameSync(temp, file())
+  } finally { if (fs.existsSync(temp)) fs.unlinkSync(temp) }
+}
+
+function loadDocument() {
+  let raw = {}
+  if (fs.existsSync(file())) raw = JSON.parse(fs.readFileSync(file(), 'utf8'))
+  const doc = { servers: (raw.servers || []).map(normalizeServer), projects: (raw.projects || []).map(normalizeProject) }
+  // 旧项目即使尚未配置连接，也要固定归一化生成的目标 ID，不能每次读取都换 ID。
+  let migrated = raw.schemaVersion !== 2 && doc.projects.length > 0
+  for (const p of doc.projects) for (const t of p.targets) {
+    if (!t.serverId && t.server.host) { t.serverId = registerServer(doc, t.server); migrated = true }
+    if (t.serverId) {
+      const server = doc.servers.find((s) => s.id === t.serverId)
+      t.server = server ? { ...server } : defaultServer()
+    }
+  }
+  if (migrated) writeDocument(doc)
+  return doc
+}
+
+function listServers() {
+  const doc = loadDocument()
+  return doc.servers.map((s) => ({ ...serverView(s), projects: doc.projects.filter((p) => p.targets.some((t) => t.serverId === s.id)).map((p) => ({ id: p.id, name: p.name })) }))
+}
+
+function saveServer(input = {}) {
+  const doc = loadDocument()
+  const old = input.id ? doc.servers.find((s) => s.id === input.id) : null
+  if (input.id && !old) return { ok: false, error: '服务器不存在，请刷新列表' }
+  const s = normalizeServer(input)
+  if (!s.host || /[\s/]/.test(s.host) || !s.username || !Number.isInteger(s.port) || s.port < 1 || s.port > 65535) return { ok: false, error: '请填写有效的服务器地址、账号与 SSH 端口（地址不含 http://）' }
+  for (const [key, clear] of [['secret', 'clearSecret'], ['passphrase', 'clearPassphrase']]) {
+    s[clear] = input[clear] === true
+    mergeSecret(s, old?.[key], key, clear)
+  }
+  if (old) doc.servers[doc.servers.indexOf(old)] = s
+  else doc.servers.push(s)
+  writeDocument(doc)
+  return { ok: true, id: s.id }
+}
+
+function removeServer(id) {
+  const doc = loadDocument()
+  const used = doc.projects.filter((p) => p.targets.some((t) => t.serverId === id))
+  if (used.length) return { ok: false, error: `服务器仍被以下项目使用：${used.map((p) => p.name).join('、')}。请先切换或解除项目关联` }
+  doc.servers = doc.servers.filter((s) => s.id !== id)
+  writeDocument(doc)
+  return { ok: true }
+}
+
 /** 读取全部项目（脱敏）：明文凭据不出主进程 */
 function list() {
-  let projects = []
-  try {
-    const raw = JSON.parse(fs.readFileSync(file(), 'utf8'))
-    projects = Array.isArray(raw.projects) ? raw.projects : []
-  } catch { /* 首次使用返回空 */ }
-  return projects.map(normalizeProject).map((p) => {
+  return loadAllRaw().map((p) => {
     p.targets = p.targets.map((t) => {
       const secret = store.decryptText(t.server && t.server.secret)
       const pass = store.decryptText(t.server && t.server.passphrase)
@@ -237,12 +326,7 @@ function list() {
 }
 
 function loadAllRaw() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(file(), 'utf8'))
-    return (Array.isArray(raw.projects) ? raw.projects : []).map(normalizeProject)
-  } catch {
-    return []
-  }
+  return loadDocument().projects
 }
 
 /** 主进程专用：取某项目某目标的明文凭据（targetId 省略时用第一个目标） */
@@ -264,9 +348,8 @@ function getDataSyncCredentials(projectId, targetId) {
   return store.decryptText(t && t.dataSync && t.dataSync.importSecret)
 }
 
-function persistAll(projects) {
-  fs.mkdirSync(path.dirname(file()), { recursive: true })
-  fs.writeFileSync(file(), JSON.stringify({ projects }, null, 2), { encoding: 'utf8', mode: 0o600 })
+function persistAll(projects, doc = loadDocument()) {
+  writeDocument({ ...doc, projects })
 }
 
 /**
@@ -292,7 +375,8 @@ function mergeSecret(s, oldSecret, key, clearKey) {
  * 保存项目（新增或更新）。targets 为完整数组，按 id 匹配旧目标保留凭据。
  */
 function save(input) {
-  const projects = loadAllRaw()
+  const doc = loadDocument()
+  const projects = doc.projects
   const incoming = normalizeProject(JSON.parse(JSON.stringify(input || {})))
   if (!incoming.id) incoming.id = genId()
   if (!incoming.createdAt) incoming.createdAt = Date.now()
@@ -300,11 +384,23 @@ function save(input) {
 
   const idx = projects.findIndex((p) => p.id === incoming.id)
   const old = idx >= 0 ? projects[idx] : null
+  if (incoming.targets.some((t) => t.serverId && !doc.servers.some((s) => s.id === t.serverId))) return { ok: false, error: '所选服务器不存在，请重新选择' }
 
   incoming.targets = incoming.targets.map((t) => {
     const oldT = old && old.targets.find((x) => x.id === t.id)
-    mergeSecret(t.server, oldT && oldT.server && oldT.server.secret, 'secret', 'clearSecret')
-    mergeSecret(t.server, oldT && oldT.server && oldT.server.passphrase, 'passphrase', 'clearPassphrase')
+    if (t.serverId) {
+      // 项目表单里的 server 只是查询快照，不能覆盖共享服务器的最新连接与口令。
+      t.server = { ...doc.servers.find((s) => s.id === t.serverId) }
+      if (oldT && oldT.serverId !== t.serverId && incoming.deployMode === 'auto') {
+        t.remotePath = ''; delete t.autoSudo
+        t.health = { ...defaultTarget().health }
+      }
+    } else {
+      const oldConnection = oldT?.serverId ? null : oldT?.server
+      mergeSecret(t.server, oldConnection?.secret, 'secret', 'clearSecret')
+      mergeSecret(t.server, oldConnection?.passphrase, 'passphrase', 'clearPassphrase')
+      if (t.server.host) t.serverId = registerServer(doc, t.server)
+    }
     // 数据同步导入凭据：与 server.secret 同一合并规则
     if (t.dataSync) {
       mergeSecret(t.dataSync, oldT && oldT.dataSync && oldT.dataSync.importSecret, 'importSecret', 'clearImportSecret')
@@ -317,7 +413,7 @@ function save(input) {
     // 项目专属参数不能跨项目继承；服务器连接仅在用户显式复制时复用。
     projects.push(incoming)
   }
-  persistAll(projects)
+  persistAll(projects, doc)
   return { ok: true, id: incoming.id }
 }
 
@@ -328,14 +424,13 @@ function remove(projectId) {
 }
 
 /**
- * 显式复制服务器连接到目标项目；项目专属部署参数不复制。
- * 在原始数据层操作，加密凭据（server.secret/passphrase）字节原样保留——
- * 不走 mergeSecret（会把已加密 secret 当明文二次加密）。复制的目标一律重新生成 id。
+ * 显式复制服务器引用到目标项目；项目专属部署参数不复制。
+ * SSH 凭据继续由共享服务器保管，目标只复用 serverId。复制的目标一律重新生成 id。
  * 返回复制的环境数量。
  */
 function applyCopyConfig(from, to) {
   const copied = (from.targets || []).filter((t) => t.server?.host).map((t) => ({
-    ...defaultTarget(), name: t.name, server: JSON.parse(JSON.stringify(t.server)),
+    ...defaultTarget(), name: t.name, serverId: t.serverId, server: JSON.parse(JSON.stringify(t.server)),
   }))
   to.targets.push(...copied)
   to.updatedAt = Date.now()
@@ -355,4 +450,4 @@ function copyConfig({ fromProjectId, toProjectId } = {}) {
   return { ok: true, id: to.id, copiedTargets }
 }
 
-module.exports = { list, save, remove, copyConfig, getCredentials, getDataSyncCredentials, defaultProject, defaultTarget, normalizeProject }
+module.exports = { list, save, remove, copyConfig, listServers, saveServer, removeServer, getCredentials, getDataSyncCredentials, defaultProject, defaultTarget, normalizeProject }

@@ -19,6 +19,7 @@ if (process.platform === 'win32') {
 const SUITES = [
   'deploy-selftest.cjs',
   'deploy-auto-selftest.cjs',
+  'deploy-servers-selftest.cjs',
   'deploy-auto-shell-selftest.cjs',
   'deploy-scriptmode-selftest.cjs',
   'deploy-datasync-selftest.cjs',

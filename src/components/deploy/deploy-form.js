@@ -8,6 +8,7 @@ export function emptyTarget() {
   return {
     id: genId(),
     name: '环境 1',
+    serverId: '',
     server: {
       host: '', port: 22, username: 'root', authType: 'password', keyPath: '',
       secret: '', clearSecret: false, passphrase: '', clearPassphrase: false,

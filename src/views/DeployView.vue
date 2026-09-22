@@ -9,11 +9,12 @@
           <TopbarProjectSelect />
         </div>
         <el-button v-if="currentProject" @click="aiOpen = true"><el-icon><MagicStick /></el-icon>AI 部署助手</el-button>
-        <el-button v-if="currentProject" type="primary" @click="productionOpen = true">设置正式服务器</el-button>
+        <el-button type="primary" @click="serverManagerOpen = true">服务器管理</el-button>
         <el-button v-if="currentProject" @click="configOpen = true"><el-icon><Setting /></el-icon>部署设置</el-button>
         <el-button v-if="currentProject" :loading="testing" :disabled="!form.id || dirty" @click="testConnection"><el-icon><Link /></el-icon>测试连接</el-button>
       </div>
     </Teleport>
+    <ServerManagerDialog v-model="serverManagerOpen" :servers="servers" :busy="state.deploy.running" @changed="onServersChanged" />
 
     <EmptyState
       v-if="!currentProject" icon="Promotion" title="先选择一个项目"
@@ -34,7 +35,10 @@
         >
           <el-option v-for="target in form.targets" :key="target.id" :value="target.id" :label="target.name || '未命名环境'" />
         </el-select>
-        <span v-if="form.deployMode === 'auto'" class="target-host mono">{{ activeTarget?.server?.host || '请设置正式服务器' }}</span>
+        <el-select :model-value="activeTarget?.serverId || ''" placeholder="选择部署服务器" style="width: 260px" :disabled="state.deploy.running || dirty" @change="selectDeploymentServer">
+          <el-option v-for="server in servers" :key="server.id" :value="server.id" :label="`${server.name} · ${server.host}`" />
+        </el-select>
+        <span v-if="form.deployMode === 'auto'" class="target-host mono">{{ activeTarget?.remotePath || '安装目录按项目自动分配' }}</span>
         <span v-else class="target-host mono">{{ activeTarget?.server?.host || '未配置主机' }} → {{ activeTarget?.remotePath || '未配置部署目录' }}</span>
         <div class="spacer" />
         <el-tag v-if="dirty" type="warning" effect="plain" size="small">有未保存修改</el-tag>
@@ -54,8 +58,7 @@
       </el-alert>
     </el-card>
 
-    <el-alert v-if="form.deployMode === 'auto'" title="选择正式服务器后即可发布。程序会识别项目、准备部署文件和运行环境，再构建上线；首次缺少部署文件时使用设置中的 AI。" type="info" :closable="false" />
-    <ProductionServerDialog v-model="productionOpen" :target="productionTarget" :service-port="form.autoDeploy?.port" @save="saveProduction" />
+    <el-alert v-if="form.deployMode === 'auto'" title="在服务器管理中维护一次连接，各项目选择复用。安装目录、服务端口和数据按项目隔离，点击发布后自动准备环境并构建上线。" type="info" :closable="false" />
 
     <DeployConfigDrawer
       ref="configDrawerRef"
@@ -64,6 +67,8 @@
       :form="form"
       :detected="detected"
       :projects="state.deploy.projects"
+      :servers="servers"
+      @manage-servers="serverManagerOpen = true"
       @save="saveProject"
       @copy-config="onCopyConfig"
       @reset-conn="connResult = null"
@@ -109,7 +114,7 @@ import DeployConfigDrawer from '../components/deploy/DeployConfigDrawer.vue'
 import DeployAiAssistant from '../components/deploy/DeployAiAssistant.vue'
 import DeployRunPanel from '../components/deploy/DeployRunPanel.vue'
 import DeployHistoryTable from '../components/deploy/DeployHistoryTable.vue'
-import ProductionServerDialog from '../components/deploy/ProductionServerDialog.vue'
+import ServerManagerDialog from '../components/deploy/ServerManagerDialog.vue'
 import { emptyTarget, emptyProject, fmtDur } from '../components/deploy/deploy-form'
 
 defineEmits(['navigate'])
@@ -118,8 +123,8 @@ const topbarReady = useTopbarReady()
 
 const form = reactive(emptyProject())
 const configOpen = ref(false)
-const productionOpen = ref(false)
-const productionTarget = computed(() => form.targets.find((t) => t.id === form.productionTargetId) || null)
+const serverManagerOpen = ref(false)
+const servers = ref([])
 const aiOpen = ref(false)
 const configDrawerRef = ref(null)
 const activeTargetId = ref('')
@@ -180,6 +185,7 @@ async function loadProjects() {
     // 这里必须重新拉取。曾因「state.projects.items 非空就跳过拉取」而复用改动前的缓存，
     // 表现为「复制项目配置后界面毫无变化」——环境列表与服务器卡片都停在旧数据上。
     await loadSharedProjects()
+    servers.value = await window.gitReport.deployServersList()
     state.deploy.projects = state.projects.items
   } catch { state.deploy.projects = [] }
   state.deploy.currentProjectId = state.projects.currentId
@@ -324,19 +330,30 @@ async function saveProject(successMsg = '配置已保存') {  if (!form.name) { 
   return false
 }
 
-async function saveProduction({ target, port }) {
-  const base = emptyTarget()
-  // 正式目标不沿用其他项目的目录、数据库和版本配置。
-  const current = form.targets.findIndex((t) => t.id === target.id)
-  const clean = { ...base, id: target.id, name: '正式环境', server: target.server }
-  if (current >= 0) form.targets.splice(current, 1, clean)
-  else form.targets.push(clean)
-  form.productionTargetId = clean.id
-  form.deployMode = 'auto'
-  form.autoDeploy = { port }
-  form.version = { strategy: 'auto', manual: '' }
-  activeTargetId.value = clean.id
-  await saveProject('正式服务器已保存，可以一键发布')
+async function selectDeploymentServer(serverId) {
+  const server = servers.value.find((s) => s.id === serverId)
+  if (!server || !activeTarget.value) return
+  const target = activeTarget.value
+  if (target.serverId !== serverId && form.deployMode === 'auto') { target.remotePath = ''; delete target.autoSudo }
+  target.serverId = serverId
+  target.server = { ...server }; delete target.server.projects
+  if (form.deployMode === 'auto') { target.name = '正式环境'; form.productionTargetId = target.id }
+  connResult.value = null
+  state.deploy.currentVersion = ''
+  await saveProject('已选择服务器，可以一键发布')
+}
+
+async function onServersChanged() {
+  // 只刷新共享连接，保留部署抽屉中尚未保存的项目路径等编辑。
+  servers.value = await window.gitReport.deployServersList()
+  await loadSharedProjects()
+  state.deploy.projects = state.projects.items
+  for (const target of form.targets) {
+    const server = servers.value.find((s) => s.id === target.serverId)
+    if (server) { target.server = { ...server }; delete target.server.projects }
+  }
+  configDrawerRef.value?.refreshServerSnapshot(servers.value)
+  connResult.value = null
 }
 
 /** 发布卡「新版本」（spec R7）：切手动版本并保存，发布按钮立即生效 */

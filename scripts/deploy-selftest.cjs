@@ -262,12 +262,14 @@ test('自定义：前导 / 锚定项目根，不误伤深层同名目录', () =>
     assert.strictEqual(deployProjects.getCredentials(saved.id, saved.targets[0].id).password, 'pass#123')
     assert.strictEqual(deployProjects.list().find((x) => x.id === saved.id).name, 'demo2')
   })
-  test('clearSecret 只清除指定目标', () => {
+  test('服务器管理清除口令只影响该服务器，项目保存不能修改共享口令', () => {
     const saved = deployProjects.list()[0]
     const [t1, t2] = saved.targets
     const payload = JSON.parse(JSON.stringify(saved))
     payload.targets[1].server.clearSecret = true
     deployProjects.save(payload)
+    assert.strictEqual(deployProjects.getCredentials(saved.id, t2.id).password, 'prod#456')
+    deployProjects.saveServer({ ...deployProjects.listServers().find((s) => s.id === t2.serverId), clearSecret: true })
     assert.strictEqual(deployProjects.getCredentials(saved.id, t2.id).password, '')
     assert.strictEqual(deployProjects.getCredentials(saved.id, t1.id).password, 'pass#123')
     const after = deployProjects.list().find((x) => x.id === saved.id)

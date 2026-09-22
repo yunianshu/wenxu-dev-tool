@@ -699,6 +699,9 @@ function registerIpc() {
   ipcMain.handle('deploy:projects:save', (_e, p) => deployProjects.save(p))
   ipcMain.handle('deploy:projects:copyConfig', (_e, args) => deployProjects.copyConfig(args))
   ipcMain.handle('deploy:projects:remove', (_e, id) => deployProjects.remove(id))
+  ipcMain.handle('deploy:servers:list', () => deployProjects.listServers())
+  ipcMain.handle('deploy:servers:save', (_e, server) => deployService.isBusy() ? { ok: false, error: '发布进行中，请完成后修改服务器' } : deployProjects.saveServer(server))
+  ipcMain.handle('deploy:servers:remove', (_e, id) => deployService.isBusy() ? { ok: false, error: '发布进行中，请完成后修改服务器' } : deployProjects.removeServer(id))
   ipcMain.handle('deploy:detectVersion', (_e, project) => deployService.resolveVersion(project || {}))
   ipcMain.handle('deploy:testConnection', async (_e, { projectId, targetId }) => {
     try {

@@ -119,6 +119,9 @@ contextBridge.exposeInMainWorld('gitReport', {
   debugGenerate: (dir) => ipcRenderer.invoke('debug:generate', dir),
   // ─── 一键部署模块（OneDeploy） ───
   deployProjectsList: () => ipcRenderer.invoke('deploy:projects:list'),
+  deployServersList: () => ipcRenderer.invoke('deploy:servers:list'),
+  deployServersSave: (server) => ipcRenderer.invoke('deploy:servers:save', toPlain(server)),
+  deployServersRemove: (id) => ipcRenderer.invoke('deploy:servers:remove', id),
   deployProjectsSave: (p) => ipcRenderer.invoke('deploy:projects:save', toPlain(p)),
   deployProjectsRemove: (id) => ipcRenderer.invoke('deploy:projects:remove', id),
   deployProjectsCopyConfig: (args) => ipcRenderer.invoke('deploy:projects:copyConfig', args),

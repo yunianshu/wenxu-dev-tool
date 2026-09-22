@@ -488,7 +488,7 @@ async function main() {
   // ── ⑫ applyPlan：写回配置且保留凭据 ──
   const rawPath = path.join(userData, 'deploy-projects.json')
   const raw = JSON.parse(fs.readFileSync(rawPath, 'utf8'))
-  raw.projects[0].targets[0].server.secret = { enc: '', plain: 'ssh-password' }
+  raw.servers.find((s) => s.id === raw.projects[0].targets[0].serverId).secret = { enc: '', plain: 'ssh-password' }
   raw.projects[0].targets[0].dataSync.importSecret = { enc: '', plain: 'import-secret' }
   fs.writeFileSync(rawPath, JSON.stringify(raw, null, 2), 'utf8')
 

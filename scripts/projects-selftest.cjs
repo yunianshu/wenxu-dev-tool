@@ -103,7 +103,7 @@ test('保存新凭据：secret 结构化落盘、再次保存空凭据原样保�
   const r = projectService.save({ name: '带凭据项目', targets: [{ name: '生产', server: { host: 'h', secret: 'plain-pass-123' } }] })
   assert.strictEqual(r.ok, true)
   const raw1 = JSON.parse(fs.readFileSync(dataFile, 'utf8'))
-  const srv1 = raw1.projects.find((p) => p.id === r.id).targets[0].server
+  const srv1 = raw1.servers.find((s) => s.id === raw1.projects.find((p) => p.id === r.id).targets[0].serverId)
   // encryptText 返回 {enc, plain} 结构；safeStorage 可用时 enc 为密文，不可用走明文兜底（与 AI Key 同规则）
   assert.ok(srv1.secret && typeof srv1.secret === 'object' && 'enc' in srv1.secret && 'plain' in srv1.secret,
     `secret 应为 {enc, plain} 结构：${JSON.stringify(srv1.secret)}`)
@@ -114,7 +114,7 @@ test('保存新凭据：secret 结构化落盘、再次保存空凭据原样保�
   const r2 = projectService.save({ ...listed, name: '带凭据项目2' })
   assert.strictEqual(r2.ok, true)
   const raw2 = JSON.parse(fs.readFileSync(dataFile, 'utf8'))
-  const srv2 = raw2.projects.find((p) => p.id === r.id).targets[0].server
+  const srv2 = raw2.servers.find((s) => s.id === raw2.projects.find((p) => p.id === r.id).targets[0].serverId)
   assert.deepStrictEqual(srv2.secret, bytes1, '凭据字节应原样保留')
   // 主进程可取回明文
   const cred = deployProjects.getCredentials(r.id)

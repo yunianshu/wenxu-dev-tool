@@ -95,7 +95,7 @@ const EVAL = `(async () => {
     return { ok: true, selected: selectEl.textContent.trim() }
   }
   // 【服务器（当前目标）】卡：主机地址输入框占位符唯一，部署目录同理
-  const hostInput = () => drawer() && drawer().querySelector('input[placeholder^="192.168.1.100"]')
+  const hostInput = () => { const el=drawer() && drawer().querySelector('.selected-server'); return el ? {value:el.dataset.host} : null }
   const remoteInput = () => drawer() && drawer().querySelector('input[placeholder^="/opt/apps"]')
   const nameInput = () => drawer() && drawer().querySelector('input[placeholder="如 myapp"]')
   // 抽屉内「部署目标」环境下拉的当前选中项文案
@@ -234,8 +234,9 @@ try {
   const b = data.projects.find((p) => p.id === 'dp_target_b')
   assert('A2 目标项目落盘为 2 个环境', b && b.targets.length === 2, `targets=${b && b.targets.length}`)
   const copied = b && b.targets[1]
-  assert('A2 复制来的环境带源项目主机但不继承部署目录', copied && copied.server.host === SOURCE_HOST && copied.remotePath === '',
-    `host=${copied && copied.server.host} remote=${copied && copied.remotePath}`)
+  const copiedServer = copied && data.servers.find(s => s.id === copied.serverId)
+  assert('A2 复制来的环境引用源项目服务器但不继承部署目录', copiedServer && copiedServer.host === SOURCE_HOST && copied.remotePath === '',
+    `host=${copiedServer && copiedServer.host} remote=${copied && copied.remotePath}`)
   assert('A2 复制来的环境保留源环境名与独立 id', copied && copied.name === '生产环境' && copied.id !== 't_a_1', `name=${copied && copied.name} id=${copied && copied.id}`)
 } catch (e) {
   assert('A2 磁盘断言', false, e.message)
