@@ -55,6 +55,8 @@ const SUITES = [
   'project-chat-selftest.cjs',
   'ai-lifecycle-selftest.cjs',
   'ui-state-selftest.cjs',
+  'selftest-legacy-secret-migration.cjs',
+  'selftest-legacy-deploy-migration.cjs',
 ]
 
 let failed = 0

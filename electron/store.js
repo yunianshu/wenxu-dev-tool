@@ -277,7 +277,7 @@ function decryptText(secret, options = {}) {
   if (!secret) return ''
   if (secret.keyRef) return readKeyring(secret.keyRef)
   if (secret.enc) {
-    if (nodeBackend && !options.allowUnavailable) throw new Error('旧版 Electron 加密凭据需在设置中重新输入')
+    if (nodeBackend && !options.allowUnavailable) throw new Error('旧版 Electron 加密凭据无法解密，需要重新输入')
     try {
       if (safeStorage.isEncryptionAvailable()) {
         return safeStorage.decryptString(Buffer.from(secret.enc, 'base64'))
@@ -287,4 +287,10 @@ function decryptText(secret, options = {}) {
   return secret.plain || ''
 }
 
-module.exports = { load, save, getApiKey, getZentaoPwd, getHanprintPwd, encryptText, decryptText }
+/** 回收凭据库条目（迁移回滚、替换凭据后清理旧值） */
+function deleteSecret(id) {
+  if (!nodeBackend || !id) return
+  keyringEntry(id).deletePassword()
+}
+
+module.exports = { load, save, getApiKey, getZentaoPwd, getHanprintPwd, encryptText, decryptText, deleteSecret }

@@ -83,4 +83,53 @@ function migrateLegacyConfig(configPath, saveSecret, deleteSecret) {
   }
 }
 
-module.exports = { loadLegacyKey, decryptLegacyText, migrateLegacyConfig }
+/**
+ * 部署配置（deploy-projects.json）里的旧密文同法转存：服务器密码/私钥口令、
+ * 数据同步导入密码。同一密文可能被多个目标引用，按密文去重、只写一条凭据库记录。
+ */
+function migrateLegacyDeploySecrets(docPath, saveSecret, deleteSecret) {
+  if (process.platform !== 'win32' || !fs.existsSync(docPath)) return false
+  let old
+  try { old = JSON.parse(fs.readFileSync(docPath, 'utf8')) } catch { return false }
+  const secrets = [
+    ...(old.servers || []).flatMap((s) => [s && s.secret, s && s.passphrase]),
+    ...(old.projects || []).flatMap((p) => (p.targets || []).flatMap((t) => [
+      t.server && t.server.secret, t.server && t.server.passphrase, t.dataSync && t.dataSync.importSecret,
+    ])),
+  ].filter((item) => item && typeof item === 'object' && item.enc && !item.keyRef)
+  if (!secrets.length) return false
+  const key = loadLegacyKey(path.join(path.dirname(docPath), 'Local State'))
+  if (!key) return false
+  const created = []
+  const byCipher = new Map()
+  let tempPath = ''
+  try {
+    for (const item of secrets) {
+      if (!byCipher.has(item.enc)) {
+        const plain = decryptLegacyText(key, item.enc)
+        let id = null
+        if (plain !== null) {
+          try { id = saveSecret(plain) || null } catch { id = null }
+        }
+        if (id) created.push(id)
+        byCipher.set(item.enc, id)
+      }
+      const id = byCipher.get(item.enc)
+      if (id) item.keyRef = id
+    }
+    if (!created.length) return false
+    tempPath = `${docPath}.migrate-${process.pid}-${randomUUID()}`
+    fs.writeFileSync(tempPath, JSON.stringify(old, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+    fs.renameSync(tempPath, docPath)
+    tempPath = ''
+    return true
+  } catch {
+    for (const id of created) try { deleteSecret(id) } catch { /* 旧密文仍在配置中 */ }
+    return false
+  } finally {
+    key.fill(0)
+    if (tempPath) try { fs.rmSync(tempPath, { force: true }) } catch { /* 不清理非本次临时文件 */ }
+  }
+}
+
+module.exports = { loadLegacyKey, decryptLegacyText, migrateLegacyConfig, migrateLegacyDeploySecrets }

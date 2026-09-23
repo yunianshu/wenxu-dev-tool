@@ -286,7 +286,21 @@ function writeDocument(doc) {
   } finally { if (fs.existsSync(temp)) fs.unlinkSync(temp) }
 }
 
+let legacySecretsMigrated = false
+
+/** 旧版 Electron 密文一次性转存系统凭据库；失败不阻断读取，密文保留供下次重试。 */
+function migrateLegacySecrets() {
+  if (legacySecretsMigrated) return
+  legacySecretsMigrated = true
+  if (process.env.PLM_NODE_BACKEND !== '1') return
+  try {
+    const { migrateLegacyDeploySecrets } = require('../legacy-safe-storage')
+    migrateLegacyDeploySecrets(file(), (plain) => store.encryptText(plain).keyRef, (id) => store.deleteSecret(id))
+  } catch { /* 迁移异常不影响读取旧配置 */ }
+}
+
 function loadDocument() {
+  migrateLegacySecrets()
   let raw = {}
   if (fs.existsSync(file())) raw = JSON.parse(fs.readFileSync(file(), 'utf8'))
   const doc = { servers: (raw.servers || []).map(normalizeServer), projects: (raw.projects || []).map(normalizeProject) }
@@ -378,9 +392,13 @@ function getCredentials(projectId, targetId) {
   if (!p) return null
   const t = p.targets.find((x) => x.id === targetId) || p.targets[0]
   if (!t) return { password: '', passphrase: '' }
-  return {
-    password: store.decryptText(t.server && t.server.secret),
-    passphrase: store.decryptText(t.server && t.server.passphrase),
+  try {
+    return {
+      password: store.decryptText(t.server && t.server.secret),
+      passphrase: store.decryptText(t.server && t.server.passphrase),
+    }
+  } catch {
+    throw new Error('服务器凭据仍是旧版加密内容，请在「服务器管理」中重新输入密码或私钥口令后重试')
   }
 }
 
@@ -388,7 +406,11 @@ function getCredentials(projectId, targetId) {
 function getDataSyncCredentials(projectId, targetId) {
   const p = loadAllRaw().find((x) => x.id === projectId)
   const t = p && (p.targets.find((x) => x.id === targetId) || p.targets[0])
-  return store.decryptText(t && t.dataSync && t.dataSync.importSecret)
+  try {
+    return store.decryptText(t && t.dataSync && t.dataSync.importSecret)
+  } catch {
+    throw new Error('数据同步导入密码仍是旧版加密内容，请在部署配置的「数据同步」中重新输入后重试')
+  }
 }
 
 function persistAll(projects, doc = loadDocument()) {
