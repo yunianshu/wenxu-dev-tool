@@ -231,6 +231,12 @@ function maskSecret(s) {
   return `••••••${s.slice(-3)}`
 }
 
+/** 旧版密文仅用于展示迁移状态，绝不在列表读取时阻断整个项目集合。 */
+function displaySecret(value) {
+  const plain = store.decryptText(value, { allowUnavailable: true })
+  return { plain, needsReentry: process.env.PLM_NODE_BACKEND === '1' && !!value?.enc && !plain }
+}
+
 function normalizeServer(s) {
   return {
     id: s.id || genId(), name: String(s.name || s.host || '服务器').trim(),
@@ -242,15 +248,18 @@ function normalizeServer(s) {
 }
 
 function serverView(s) {
-  const secret = store.decryptText(s.secret), pass = store.decryptText(s.passphrase)
-  const out = { ...s, secretConfigured: !!secret, secretMasked: secret ? maskSecret(secret) : '', passphraseConfigured: !!pass }
+  const secret = displaySecret(s.secret), pass = displaySecret(s.passphrase)
+  const out = { ...s,
+    secretConfigured: !!secret.plain, secretMasked: secret.plain ? maskSecret(secret.plain) : '', secretNeedsReentry: secret.needsReentry,
+    passphraseConfigured: !!pass.plain, passphraseNeedsReentry: pass.needsReentry,
+  }
   delete out.secret; delete out.passphrase
   return out
 }
 
 /** 凭据解密失败不能视为空值并错误合并；仍保留原加密信息。 */
 function connectionKey(s) {
-  const credential = (v) => !v ? '' : store.decryptText(v) || JSON.stringify(v)
+  const credential = (v) => !v ? '' : store.decryptText(v, { allowUnavailable: true }) || JSON.stringify(v)
   return JSON.stringify([s.host.toLowerCase(), s.port, s.username, s.authType, s.keyPath, credential(s.secret), credential(s.passphrase)])
 }
 
@@ -336,20 +345,23 @@ function removeServer(id) {
 function list() {
   return loadAllRaw().map((p) => {
     p.targets = p.targets.map((t) => {
-      const secret = store.decryptText(t.server && t.server.secret)
-      const pass = store.decryptText(t.server && t.server.passphrase)
+      const secret = displaySecret(t.server && t.server.secret)
+      const pass = displaySecret(t.server && t.server.passphrase)
       const s = { ...t.server }
       delete s.secret
       delete s.passphrase
-      s.secretConfigured = !!secret
-      s.secretMasked = secret ? maskSecret(secret) : ''
-      s.passphraseConfigured = !!pass
+      s.secretConfigured = !!secret.plain
+      s.secretMasked = secret.plain ? maskSecret(secret.plain) : ''
+      s.secretNeedsReentry = secret.needsReentry
+      s.passphraseConfigured = !!pass.plain
+      s.passphraseNeedsReentry = pass.needsReentry
       // 数据同步导入凭据：加密对象不出主进程，只回配置状态与掩码
       const ds = { ...(t.dataSync || {}) }
-      const importSecret = store.decryptText(ds.importSecret)
+      const importSecret = displaySecret(ds.importSecret)
       delete ds.importSecret
-      ds.importSecretConfigured = !!importSecret
-      if (importSecret) ds.importSecretMasked = maskSecret(importSecret)
+      ds.importSecretConfigured = !!importSecret.plain
+      ds.importSecretNeedsReentry = importSecret.needsReentry
+      if (importSecret.plain) ds.importSecretMasked = maskSecret(importSecret.plain)
       return { ...t, server: s, dataSync: ds }
     })
     return p

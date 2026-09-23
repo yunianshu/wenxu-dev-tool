@@ -10,7 +10,7 @@
  * Windows 就为每个控制台程序新分配一个控制台，默认终端（Windows Terminal）弹窗。
  *
  * 验证策略（真实依赖，不用 Mock）：
- *   1. 内层进程与生产完全一致——electron.exe + ELECTRON_RUN_AS_NODE=1（无控制台）；
+ *   1. 内层进程使用 Electron Node 模式或随包 Node（均无可见控制台）；
  *   2. 调用 dsh 真实的 @deepseek-ai/dsh-subprocess-local（LocalSubprocessRuntime.spawn），
  *      走真实 Windows Job 路径（runner 进程 + CreateProcessW），spawn 真实 pwsh；
  *   3. 用 koffi（dsh 依赖树自带）EnumWindows 枚举可见终端类窗口
@@ -22,6 +22,7 @@
  *   node scripts/harness-popup-selftest.cjs                     # 期望：不弹窗（修复后）
  *   node scripts/harness-popup-selftest.cjs --expect popup      # 期望：弹窗（复现根因）
  *   node scripts/harness-popup-selftest.cjs --runtime <dir>     # 指定 dsh 运行时目录
+ *   node scripts/harness-popup-selftest.cjs --node <node.exe>    # 验证 Tauri 随包 Node 路径
  *                                                               #（默认 build/harness-runtime/dsh）
  * 仅 Windows 可跑；非 Windows 平台跳过。
  */
@@ -39,6 +40,7 @@ function argValue(name, fallback) {
 
 const EXPECT = argValue('expect', 'clean') // clean | popup
 const RUNTIME_DIR = path.resolve(argValue('runtime', path.join(ROOT, 'build', 'harness-runtime', 'dsh')))
+const NODE_EXE = argValue('node', '')
 
 /** 内层脚本：以生产方式（electron-as-node、无控制台）跑 dsh 真实子进程服务 */
 const INNER = `
@@ -138,7 +140,8 @@ function main() {
     return 0
   }
   const electronExe = path.join(ROOT, 'node_modules', 'electron', 'dist', 'electron.exe')
-  if (!fs.existsSync(electronExe)) throw new Error(`未找到 Electron：${electronExe}`)
+  const runnerExe = NODE_EXE ? path.resolve(NODE_EXE) : electronExe
+  if (!fs.existsSync(runnerExe)) throw new Error(`未找到运行时：${runnerExe}`)
   const entry = path.join(RUNTIME_DIR, 'node_modules', '@deepseek-ai', 'dsh-subprocess-local', 'lib', 'index.js')
   if (!fs.existsSync(entry)) throw new Error(`未找到 dsh 运行时：${RUNTIME_DIR}`)
 
@@ -146,8 +149,8 @@ function main() {
   fs.writeFileSync(innerFile, INNER, 'utf8')
 
   console.log(`=== Harness 弹窗自测（期望=${EXPECT}，运行时=${RUNTIME_DIR}） ===`)
-  const child = spawn(electronExe, [innerFile], {
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', POPUP_RUNTIME_DIR: RUNTIME_DIR },
+  const child = spawn(runnerExe, [innerFile], {
+    env: { ...process.env, ...(NODE_EXE ? {} : { ELECTRON_RUN_AS_NODE: '1' }), POPUP_RUNTIME_DIR: RUNTIME_DIR },
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   })

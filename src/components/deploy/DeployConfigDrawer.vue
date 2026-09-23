@@ -120,6 +120,7 @@
             <el-button @click="emit('manage-servers')">服务器管理</el-button>
           </div>
           <p class="f-mini selected-server" :data-host="activeTarget.server.host">{{ activeTarget.server.host ? `${activeTarget.server.username}@${activeTarget.server.host}:${activeTarget.server.port}（登录信息统一在服务器管理维护）` : '请先添加或选择服务器' }}</p>
+          <p v-if="activeTarget.server.secretNeedsReentry || activeTarget.server.passphraseNeedsReentry" class="f-mini">旧版服务器凭据需在「服务器管理」中重新输入；项目配置仍已保留。</p>
           <div class="f-row">
             <span class="f-label">部署目录</span>
             <el-input v-model="activeTarget.remotePath" :readonly="form.deployMode === 'auto'" :placeholder="form.deployMode === 'auto' ? '发布时为此项目分配独立安装目录' : '/opt/apps/myapp'" style="flex: 1" />
@@ -266,7 +267,7 @@
                 v-model="activeTarget.dataSync.importSecret"
                 type="password"
                 show-password
-                :placeholder="activeTarget.dataSync.importSecretConfigured ? `${activeTarget.dataSync.importSecretMasked || '••••••'}（留空保持，输入新值替换）` : '应用登录密码'"
+                :placeholder="activeTarget.dataSync.importSecretNeedsReentry ? '旧版应用密码需重新输入' : activeTarget.dataSync.importSecretConfigured ? `${activeTarget.dataSync.importSecretMasked || '••••••'}（留空保持，输入新值替换）` : '应用登录密码'"
                 style="width: 220px"
                 @update:model-value="activeTarget.dataSync.clearImportSecret = false"
               />

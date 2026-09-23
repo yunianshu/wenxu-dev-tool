@@ -1,4 +1,6 @@
 use serde_json::{json, Value};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Write},
@@ -75,6 +77,8 @@ impl Backend {
             .stderr(Stdio::inherit())
             .env("PLM_PACKAGED", if packaged { "1" } else { "0" })
             .env("PLM_RESOURCES_DIR", &resources);
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW：GUI 应用启动 Node 后台不弹控制台。
         let mut child = command
             .spawn()
             .map_err(|error| format!("Node 后台启动失败：{error}"))?;

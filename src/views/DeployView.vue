@@ -160,11 +160,11 @@ const dirty = computed(() => {
     const c = JSON.parse(JSON.stringify(o))
     for (const t of c.targets || []) {
       const s = t.server || {}
-      for (const k of ['secret', 'passphrase', 'clearSecret', 'clearPassphrase', 'secretConfigured', 'secretMasked', 'passphraseConfigured']) delete s[k]
+      for (const k of ['secret', 'passphrase', 'clearSecret', 'clearPassphrase', 'secretConfigured', 'secretMasked', 'secretNeedsReentry', 'passphraseConfigured', 'passphraseNeedsReentry']) delete s[k]
       // 数据同步导入凭据同规则排除：list() 脱敏后无 importSecret/clearImportSecret 键，
       // 而 fillForm 合并默认值会补回（''/false），不排除则加载后恒报脏、测试连接被禁用
       const ds = t.dataSync || {}
-      for (const k of ['importSecret', 'clearImportSecret', 'importSecretConfigured', 'importSecretMasked']) delete ds[k]
+      for (const k of ['importSecret', 'clearImportSecret', 'importSecretConfigured', 'importSecretMasked', 'importSecretNeedsReentry']) delete ds[k]
     }
     return stable(c)
   }

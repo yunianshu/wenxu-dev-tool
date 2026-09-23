@@ -39,6 +39,26 @@ try {
   assert.ok(deployRef)
   assert.equal(store.decryptText(secret), 'isolated-test-password')
   assert.throws(() => store.decryptText({ enc: 'b2xkLWNpcGhlcnRleHQ=' }), /重新输入/)
+  const projectsPath = path.join(dir, 'deploy-projects.json')
+  const legacySecret = { enc: 'b2xkLWNpcGhlcnRleHQ=', plain: '' }
+  fs.writeFileSync(projectsPath, JSON.stringify({ schemaVersion: 2,
+    servers: [{ id: 'legacy-server', name: '旧服务器', host: 'example.invalid', secret: legacySecret }],
+    projects: [{ id: 'legacy-project', name: '旧项目', targets: [{ id: 'legacy-target', serverId: 'legacy-server',
+      dataSync: { importSecret: legacySecret } }] }],
+  }))
+  const projects = require('../electron/project-service')
+  const deployProjects = require('../electron/deploy/deploy-projects')
+  const listed = projects.list()
+  assert.equal(listed.length, 1)
+  assert.equal(listed[0].name, '旧项目')
+  assert.equal(listed[0].targets[0].server.secretNeedsReentry, true)
+  assert.equal(listed[0].targets[0].dataSync.importSecretNeedsReentry, true)
+  assert.equal(deployProjects.listServers()[0].secretNeedsReentry, true)
+  assert.throws(() => deployProjects.getCredentials('legacy-project'), /重新输入/)
+  assert.equal(projects.save(listed[0]).ok, true)
+  const preserved = JSON.parse(fs.readFileSync(projectsPath, 'utf8'))
+  assert.deepEqual(preserved.servers[0].secret, legacySecret)
+  assert.deepEqual(preserved.projects[0].targets[0].dataSync.importSecret, legacySecret)
   const cleared = store.load()
   cleared.ai.clearKey = true
   assert.equal(store.save(cleared), true)

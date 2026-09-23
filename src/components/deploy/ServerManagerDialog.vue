@@ -1,6 +1,7 @@
 <template>
   <el-dialog :model-value="modelValue" title="服务器管理" width="760px" @update:model-value="$emit('update:modelValue', $event)">
     <p class="server-hint">服务器由所有项目共用。登录信息只需维护一次，安装目录与服务端口在各项目中独立配置。</p>
+    <el-alert v-if="servers.some(s => s.secretNeedsReentry || s.passphraseNeedsReentry)" title="旧版服务器凭据无法由新版直接解密，请编辑对应服务器重新输入密码或私钥口令；项目与原密文仍保留。" type="warning" :closable="false" show-icon />
     <el-table :data="servers" empty-text="还没有服务器，添加后即可在项目中选择">
       <el-table-column prop="name" label="名称" width="150" />
       <el-table-column label="连接"><template #default="{ row }">{{ row.username }}@{{ row.host }}:{{ row.port }}</template></el-table-column>
@@ -18,12 +19,12 @@
       <el-form-item label="登录账号"><el-input v-model="draft.username" placeholder="root" /></el-form-item>
       <el-form-item label="登录方式"><el-radio-group v-model="draft.authType"><el-radio value="password">密码</el-radio><el-radio value="key">私钥</el-radio></el-radio-group></el-form-item>
       <el-form-item v-if="draft.authType === 'password'" label="登录密码">
-        <el-input v-model="draft.secret" type="password" show-password :placeholder="draft.secretConfigured ? '已保存，留空保持' : '服务器登录密码'" />
+        <el-input v-model="draft.secret" type="password" show-password :placeholder="draft.secretNeedsReentry ? '旧版密码需重新输入' : draft.secretConfigured ? '已保存，留空保持' : '服务器登录密码'" />
         <el-checkbox v-if="draft.secretConfigured" v-model="draft.clearSecret">清除已保存密码</el-checkbox>
       </el-form-item>
       <template v-else>
         <el-form-item label="私钥路径"><el-input v-model="draft.keyPath" placeholder="本机 SSH 私钥文件" /></el-form-item>
-        <el-form-item label="私钥口令"><el-input v-model="draft.passphrase" type="password" show-password :placeholder="draft.passphraseConfigured ? '已保存，留空保持' : '如有，填写私钥口令'" /><el-checkbox v-if="draft.passphraseConfigured" v-model="draft.clearPassphrase">清除已保存口令</el-checkbox></el-form-item>
+        <el-form-item label="私钥口令"><el-input v-model="draft.passphrase" type="password" show-password :placeholder="draft.passphraseNeedsReentry ? '旧版口令需重新输入' : draft.passphraseConfigured ? '已保存，留空保持' : '如有，填写私钥口令'" /><el-checkbox v-if="draft.passphraseConfigured" v-model="draft.clearPassphrase">清除已保存口令</el-checkbox></el-form-item>
       </template>
       <p v-if="draft.projects?.length" class="server-hint">保存将更新 {{ draft.projects.map(p => p.name).join('、') }} 的服务器连接，项目目录保持不变。</p>
       <el-form-item><el-button @click="draft = null">取消编辑</el-button><el-button type="primary" :loading="saving" :disabled="busy || !draft.host.trim() || !draft.username.trim()" @click="save">保存服务器</el-button></el-form-item>
