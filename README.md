@@ -273,8 +273,8 @@ npm run build:linux     # Linux AppImage + deb
 
 Tauri 产物输出至 `src-tauri/target/release/bundle/`。旧 Electron 构建命令为 `build:electron` / `build:electron:win` / `build:electron:mac` / `build:electron:linux`，产物仍输出至 `release/`。
 Windows 安装器会检查 WebView2；目标机器没有运行时时，安装过程需联网下载安装。应用自身的 Node 与 Harness 均已包含在安装包中。
-本地更新通道（`npm run install:local` / `update:local`）安装成功后会**自动清理
-`release/` 下的旧版本目录**，只保留当前版本，避免逐版本累积占满磁盘。需要单独清理时：
+本机一键更新：`npm run update:local`（等价于 `build:win` + `install:local`）——打包 Tauri NSIS 安装包、静默安装到 `%LOCALAPPDATA%\Personnel PLM` 并自动启动，安装成功后**清理 `src-tauri/target/release/bundle/nsis/` 下的旧安装包**，只保留当前版本。
+Electron 基线的本地更新为 `npm run update:local:electron`，它会自动清理 `release/` 下的旧版本目录，只保留当前版本，避免逐版本累积占满磁盘。需要单独清理时：
 
 ```bash
 node scripts/prune-releases.cjs --dry-run  # 先看将删除哪些（不动文件）
