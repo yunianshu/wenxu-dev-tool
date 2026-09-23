@@ -1,6 +1,6 @@
 # Tauri 架构迁移 ExecPlan
 
-状态：执行中。开始：2026-09-23 10:02（Asia/Shanghai）。
+状态：Windows 实现与验证完成；macOS/Linux 真机验证待运行。开始：2026-09-23 10:02（Asia/Shanghai）。
 
 ## 目标与边界
 
@@ -20,7 +20,7 @@
 3. [完成 Windows 验证] 真实窗口、配置与项目增删、Git 工作进程扫描、PTY 往返、关闭询问和单实例均通过隔离验证；macOS/Linux 待 CI 验证。
 4. [完成 Windows 验证] Harness 子 Webview、真实内置服务、全屏切换已通过；更新失败回滚合成测试通过；新凭据已接系统凭据库，Electron 旧密文需用户在设置页重新输入。
 5. [完成 Windows 验证] 默认开发/构建和三平台 CI 已切换 Tauri。最终 Windows NSIS 85.38 MiB（旧版 158.96 MiB，约减少 46.3%）；macOS/Linux 尚未实际构建。
-6. [完成 Windows 验证] 全套自测通过；从最终安装包解出的程序已确认 Harness 内嵌、圆角图标及关闭后主进程/服务端口清理。待按仓库规则提交、推送并跟踪三平台 CI 结果。
+6. [完成 Windows 验证] 全套自测通过；从最终安装包解出的程序已确认 Harness 内嵌、圆角图标及关闭后主进程/服务端口清理。迁移与图标提交 `f53f74a` 已推送至 `main`。三平台 CI 需具有 Actions 权限的环境手动触发；当前 `gh` 未登录，尚无 macOS/Linux 实际构建结果。
 
 ## 本轮补充
 
