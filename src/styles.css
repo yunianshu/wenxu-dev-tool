@@ -1023,6 +1023,7 @@ body {
   border-top: 1px solid var(--line);
 }
 .settings-sections { width: fit-content; flex-shrink: 0; }
+.settings-ui { padding: 16px 32px; }
 .settings-about { max-width: 760px; padding: 28px 32px; }
 .settings-about h2 { margin: 4px 0 8px; }
 .settings-about > p { color: var(--text-muted); line-height: 1.7; }

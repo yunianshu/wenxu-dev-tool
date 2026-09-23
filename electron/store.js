@@ -11,6 +11,7 @@ const { createHash, randomUUID } = require('crypto')
 const nodeBackend = process.env.PLM_NODE_BACKEND === '1'
 const keyring = nodeBackend ? require('@napi-rs/keyring') : null
 const KEYRING_SERVICE = `com.prt.devprojectmanager.${createHash('sha256').update(app.getPath('userData')).digest('hex').slice(0, 16)}`
+let legacyMigrationAttempted = false
 
 function keyringEntry(id) {
   // Linux 禁止回退到重启即丢失的 kernel keyutils；不可用时保存失败并保留旧值。
@@ -93,6 +94,13 @@ function maskKey(key) {
 }
 
 function load() {
+  if (nodeBackend && !legacyMigrationAttempted) {
+    legacyMigrationAttempted = true
+    try {
+      const { migrateLegacyConfig } = require('./legacy-safe-storage')
+      migrateLegacyConfig(file(), (plain) => saveKeyring(plain), (id) => keyringEntry(id).deletePassword())
+    } catch { /* 迁移异常不影响读取旧配置，密文保留供重试或手动恢复 */ }
+  }
   try {
     const raw = fs.readFileSync(file(), 'utf8')
     const cfg = { ...DEFAULTS, ...JSON.parse(raw) }
