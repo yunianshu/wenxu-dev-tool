@@ -7,7 +7,7 @@
  *
  * 判据（断言最终业务状态，不验证调用痕迹）：
  *   1) terminalList 里会话 cwd 变为切换后的目录（主进程状态）
- *   2) 窗格标题栏 small 文本变为新目录的 shortPath（页面显示）
+ *   2) 窗格标题和路径分别变为新目录名及 shortPath（页面显示）
  *
  * 用法：node scripts/terminal-cwd-e2e.cjs（先 npm run build:renderer）
  *       E2E_EXE=<win-unpacked 的 exe> 时直接跑打包产物
@@ -82,25 +82,29 @@ const FLOW = `(async () => {
   // 3) 等标题栏显示新目录（写可能抢在 shell 就绪前被吃掉，重发几次）
   const shortPath = (p) => p.split(/[\\\\/]/).filter(Boolean).slice(-2).join('/')
   let afterHeader = ''
+  let afterTitle = ''
   let afterPtyCwd = ''
   for (let i = 0; i < 50; i += 1) {
     if (i > 0 && i % 6 === 0) {
       await window.gitReport.terminalWrite(session.id, 'Set-Location -LiteralPath ' + JSON.stringify(${JSON.stringify(CHILD_DIR)}).replace(/"/g, "'") + '\\r')
     }
     afterHeader = headerSmall()
+    afterTitle = headerTitle()
     afterPtyCwd = (await sessions()).find((s) => s.id === session.id)?.cwd || ''
-    if (afterHeader === shortPath(${JSON.stringify(CHILD_DIR)})) break
+    if (afterHeader === shortPath(${JSON.stringify(CHILD_DIR)}) && afterTitle === ${JSON.stringify(path.basename(CHILD_DIR))}) break
     await wait(500)
   }
   return {
-    ok: afterHeader === shortPath(${JSON.stringify(CHILD_DIR)}),
+    ok: beforeTitle === ${JSON.stringify(path.basename(PROJECT_DIR))}
+      && afterHeader === shortPath(${JSON.stringify(CHILD_DIR)})
+      && afterTitle === ${JSON.stringify(path.basename(CHILD_DIR))},
     beforeTitle,
+    afterTitle,
     beforeHeader,
     beforePtyCwd,
     afterHeader,
     afterPtyCwd,
     expected: shortPath(${JSON.stringify(CHILD_DIR)}),
-    titleUnchanged: headerTitle() === beforeTitle,
   }
 })()`
 
@@ -137,7 +141,7 @@ child.on('exit', () => {
   let parsed = null
   try { parsed = JSON.parse(hits[hits.length - 1][1]) } catch { /* 下面统一报失败 */ }
   console.log('eval 结果：', JSON.stringify(parsed, null, 2))
-  const ok = !!parsed?.ok && parsed.titleUnchanged !== false
+  const ok = !!parsed?.ok
   console.log(ok ? 'E2E 通过：cd 后窗格标题/路径已实时更新' : 'E2E 失败')
   console.log('截图：', path.join(SANDBOX, 'shot.png'))
   if (!ok) process.exitCode = 1

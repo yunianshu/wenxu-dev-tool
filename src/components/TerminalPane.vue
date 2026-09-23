@@ -3,7 +3,7 @@
     <header class="term-pane-head">
       <span class="term-dot" :class="statusClass" />
       <div class="term-pane-title">
-        <strong>{{ pane.projectName || '未命名项目' }}</strong>
+        <strong>{{ currentDirName }}</strong>
         <small :title="displayCwd">{{ shortCwd }}</small>
       </div>
       <div class="term-pane-actions">
@@ -78,6 +78,7 @@ const error = ref('')
 // 归属（项目目录改了要重开会话），不能被 cd 改写，否则挂载期的「目录变化→重开」
 // watch 会误判成项目目录变更把会话关掉
 const displayCwd = computed(() => props.pane.sessionCwd || props.pane.cwd || '')
+const currentDirName = computed(() => displayCwd.value.split(/[\\/]/).filter(Boolean).at(-1) || props.pane.projectName || '未命名项目')
 const shortCwd = computed(() => shortPath(displayCwd.value))
 const statusClass = computed(() => {
   if (error.value) return 'is-error'
