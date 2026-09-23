@@ -664,10 +664,24 @@ async function recomputePlan() {
     if (!endTime.value) payload.crossDay = effectiveCrossDay()
     const r = await window.gitReport.fillPlan(toPlain(payload))
     if (r.ok) applyPlan(r)
-  } catch { /* 重算失败保留原计划 */ } finally {
+    else failRecompute(r.error)
+  } catch (err) {
+    failRecompute(err && err.message)
+  } finally {
     state.fillReport.running = false
     if (pendingRecompute) { pendingRecompute = false; recomputePlan() }
   }
+}
+
+/**
+ * 重算失败：勾选回退到计划里的口径并提示。
+ * 不回退会留下「界面工时/占比是旧值、勾选是新值」的状态，提交时按 plan 取数，
+ * 用户以为改掉了实际没有——填报数据直接落到平台，不能静默。
+ */
+function failRecompute(reason) {
+  const current = plan.value
+  if (current && Array.isArray(current.selectedIds)) state.fillReport.selectedIds = [...current.selectedIds]
+  ElMessage.error(`重算失败，已保留上次计划${reason ? `：${reason}` : ''}`)
 }
 
 async function generate() {

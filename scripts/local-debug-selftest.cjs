@@ -53,6 +53,19 @@ async function main() {
     passed += 1
     console.log('  ✓ 真实 cmd.exe 执行 start.bat 且工作目录正确')
 
+    // ── 4. 解释器缺失必须在返回前拦下 ──
+    // spawn 的 ENOENT 是异步事件，主进程那时已回 ok:true：界面会提示「已启动」而实际没有窗口
+    const savedPath = process.env.PATH
+    process.env.PATH = ''
+    try {
+      assert.throws(() => localDebugService.run(tempDir), /未找到 cmd\.exe/, 'PATH 中无解释器时应拒绝启动')
+    } finally {
+      process.env.PATH = savedPath
+    }
+    assert.ok(localDebugService.status(tempDir).hasStartBat, '探测不应受 PATH 影响')
+    passed += 1
+    console.log('  ✓ 解释器不在 PATH 时拒绝运行并给出明确原因')
+
     console.log(`\n本地调试服务自测通过（${passed} 组断言）`)
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true })

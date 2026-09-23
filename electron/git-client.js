@@ -34,10 +34,12 @@ function debug(...args) {
   if (process.env.GIT_WORKER_DEBUG === '1') console.log('[git-worker]', ...args)
 }
 
+/** 投递消息；返回 false 表示当前没有可投递的工作进程（调用方必须自行失败，不能留下悬挂的 pending） */
 function post(message) {
-  if (!child) return
-  if (!isReady) { outbox.push(message); return }
+  if (!child) return false
+  if (!isReady) { outbox.push(message); return true }
   try { child.postMessage(message) } catch { outbox.push(message) }
+  return true
 }
 
 function flushOutbox() {
@@ -105,14 +107,19 @@ function ensureChild() {
 
 /**
  * 发起一次工作进程调用。无超时（与原先主进程直连 git 的行为一致）；
- * 工作进程崩溃时由 handleExit 统一 reject，不会永久悬挂。
+ * 工作进程崩溃时由 handleExit 统一 reject。
+ * 工作进程恰好在 await 期间退出时 handleExit 已清空 pending，此处的投递会失败——
+ * 必须就地失败，否则该调用既不 resolve 也不 reject，IPC 永久悬挂（界面停在「正在收集」）。
  */
 async function call(cmd, args) {
   await ensureChild()
   const id = ++seq
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject })
-    post({ id, cmd, args })
+    if (!post({ id, cmd, args })) {
+      pending.delete(id)
+      reject(new Error('git 工作进程不可用（可能已退出），请重新扫描'))
+    }
   })
 }
 

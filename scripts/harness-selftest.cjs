@@ -113,8 +113,10 @@ async function waitStatus(svc, target, timeoutMs) {
   check('B2 未安装时给出安装提示', s4.status === 'error' && /npm i -g @deepseek-ai\/dsh/.test(s4.error), `error=${s4.error}`)
 
   // ── B8 自启动失败自动重试一次（retryOnFail）──
-  // 假 dsh：标记文件存在时保持沉默（触发超时），不存在时打印就绪行后驻留
-  const fakeDir = path.join(os.tmpdir(), `pm-harness-fake-${Date.now()}`)
+  // 假 dsh：标记文件存在时保持沉默（触发超时），不存在时打印就绪行后驻留。
+  // 目录名故意带空格：cmd /d /s /c 的命令行没按 ""<命令>" <参数…>" 构造时（或缺 windowsVerbatimArguments），
+  // 只会去执行「...\pm-harness」这一段，进程立即非零退出
+  const fakeDir = path.join(os.tmpdir(), `pm-harness fake-${Date.now()}`)
   fs.mkdirSync(fakeDir, { recursive: true })
   const fakeCli = path.join(fakeDir, 'fake-dsh.cmd')
   const flag = path.join(fakeDir, 'fail-flag')

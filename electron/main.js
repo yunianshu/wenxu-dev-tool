@@ -396,14 +396,14 @@ function registerIpc() {
   // 配置
   ipcMain.handle('config:load', () => store.load())
   ipcMain.handle('config:save', (_e, cfg) => {
+    // 变更判定必须在写盘之前取基线：save 之后两次 load 读到的是同一份盘上内容，永远判定为「未变化」
+    const before = store.load()
     const r = store.save(cfg)
     if (r !== true) return { ok: false, error: '配置写入失败（数据目录只读或磁盘异常），修改未保存' }
     // 根目录/排除规则变化 → 失效扫描缓存并重新预热（新配置的仓库列表与提交即时就绪）
-    const before = store.load()
-    const after = store.load()
     const sig = (c) => JSON.stringify([c.roots || [], (c.excludes || []).slice().sort()])
-    if (sig(before) !== sig(after)) {
-      gitService.invalidateScanCache()
+    if (sig(before) !== sig(store.load())) {
+      gitService.invalidateScanCache().catch((err) => console.error('[git] 扫描缓存失效失败：', err.message))
       warmupPipeline()
     }
     return { ok: true }

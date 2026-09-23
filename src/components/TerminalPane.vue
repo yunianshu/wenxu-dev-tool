@@ -7,7 +7,7 @@
         <small :title="displayCwd">{{ shortCwd }}</small>
       </div>
       <div class="term-pane-actions">
-        <el-dropdown v-if="shellOptions.length > 1" trigger="click" size="small" @command="restartWith">
+        <el-dropdown v-if="shellOptions.length > 1" trigger="click" size="small" popper-class="terminal-menu-popper" @command="restartWith">
           <button type="button" class="term-mini" :title="`当前：${pane.shellLabel || '自动'}`">
             {{ pane.shellLabel || '自动' }}<el-icon><ArrowDown /></el-icon>
           </button>
@@ -93,6 +93,13 @@ let disposers = []
 let fitTimer = null
 /** attach 回放到达前先清屏，避免「实时数据 + 缓冲快照」重复显示 */
 let pendingReplay = false
+/**
+ * 会话创建代际：卸载或重开会话都令在途请求作废。
+ * 不作废就会留下「无人认领的 pty 会话」——窗格已关闭 / 已重开，迟到的 sessionId
+ * 只被 emit 出去、没有窗格持有它，进程一直挂着，直到主进程 12 个会话上限后新终端全部失败。
+ */
+let sessionToken = 0
+let disposed = false
 
 // ─── 输出合并批写（防 TUI 帧被拆碎渲染） ───
 // ConPTY 会把 TUI（codex 等 ratatui 应用）的一帧重绘拆成多个小包送来，实测帧内
@@ -271,7 +278,8 @@ watch(() => [props.fontSize, props.fontFamily], ([size, family]) => {
 
 async function ensureSession() {
   const pane = props.pane
-  if (pane.sessionId || !pane.cwd) return
+  if (pane.sessionId || !pane.cwd || disposed) return
+  const token = ++sessionToken
   error.value = ''
   try {
     // 先按当前视图尺寸 fit 再建会话：term 刚 open 时是默认 80×24，
@@ -285,6 +293,7 @@ async function ensureSession() {
     // 也不能拿目录当匹配条件：会话可能被用户 cd 到别的目录（cwd 跟随 shell 实时变），
     // 按目录匹配会把好好活着的会话误判成孤儿关掉
     const existing = await window.gitReport.terminalList()
+    if (token !== sessionToken) return
     const mine = (existing?.sessions || []).filter((s) => s.paneId && s.paneId === pane.paneId)
     const hit = mine.find((s) => !s.exited)
     // 本窗格名下其余的只能是已退出未清走的残留，顺手清掉
@@ -294,6 +303,7 @@ async function ensureSession() {
     if (hit) {
       pendingReplay = true
       const res = await window.gitReport.terminalAttach(hit.id)
+      if (token !== sessionToken) { pendingReplay = false; return }
       if (!res?.ok) throw new Error(res?.error || '恢复会话失败')
       term.reset()
       term.write(res.output || '')
@@ -312,6 +322,11 @@ async function ensureSession() {
       rows: term.rows,
       shellId: pane.shellId,
     })
+    if (token !== sessionToken) {
+      // 已被卸载或重开取代：就地回收，绝不留无人认领的会话
+      if (res?.ok) window.gitReport.terminalClose(res.session.id).catch(() => {})
+      return
+    }
     if (!res?.ok) throw new Error(res?.error || '创建终端会话失败')
     reportSession({
       sessionId: res.session.id,
@@ -421,6 +436,8 @@ watch(() => props.pane.cwd, async (next, prev) => {
 
 onBeforeUnmount(() => {
   // 只销毁视图，不关闭会话：切页后 CLI 继续在后台跑
+  disposed = true
+  sessionToken += 1 // 作废在途创建：迟到的会话由 ensureSession 就地回收
   if (fitTimer) clearTimeout(fitTimer)
   discardPendingOutput()
   observer?.disconnect()
@@ -431,20 +448,20 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-/* 窗格：深色终端区 + 浅色标题条，与应用的浅色外壳形成明确分区 */
+/* 窗格标题与终端同属深色工作区，焦点通过细强调线提示。 */
 .term-pane {
   position: relative;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
+  border: 1px solid #343e49;
+  border-radius: 7px;
   background: #12161d;
 }
 
 .term-pane.is-focused {
-  border-color: var(--brand-accent);
-  box-shadow: 0 0 0 1px rgba(14, 122, 109, .35);
+  border-color: #4aa797;
+  box-shadow: inset 0 2px 0 #4aa797;
 }
 
 .term-pane-head {
@@ -452,10 +469,10 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
-  padding: 0 8px;
-  height: 34px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
+  padding: 0 12px;
+  height: 38px;
+  background: #1c232c;
+  border-bottom: 1px solid #303944;
 }
 
 .term-dot {
@@ -466,7 +483,7 @@ onBeforeUnmount(() => {
   background: #c9cfd6;
 }
 
-.term-dot.is-live { background: #49a878; }
+.term-dot.is-live { background: #64cbb4; }
 .term-dot.is-dead { background: #c9a227; }
 .term-dot.is-error { background: #d9534f; }
 
@@ -480,7 +497,7 @@ onBeforeUnmount(() => {
 
 .term-pane-title strong {
   font-size: 13px;
-  color: var(--brand-text);
+  color: #edf2f5;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -488,7 +505,7 @@ onBeforeUnmount(() => {
 
 .term-pane-title small {
   font-size: 11px;
-  color: var(--brand-text-sub);
+  color: #8f9dad;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -510,15 +527,17 @@ onBeforeUnmount(() => {
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--text-muted);
+  color: #9ba8b6;
   font-size: 12px;
   cursor: pointer;
 }
 
 .term-mini:hover {
-  border-color: var(--line-strong);
-  color: var(--brand-text);
+  border-color: #45515e;
+  background: #2c3540;
+  color: #fff;
 }
+.term-mini:focus-visible { outline: 2px solid #64cbb4; outline-offset: -2px; }
 
 .term-host {
   flex: 1;

@@ -47,11 +47,24 @@ function status(dir) {
 function run(dir) {
   const p = batPath(dir)
   if (!fs.existsSync(p)) throw new Error('项目目录未找到 start.bat，可先生成模板')
+  // spawn 的失败是异步事件，主进程早已返回 ok：这里先同步确认解释器存在，
+  // 否则界面会提示「已启动」而实际什么都没打开（看不到任何窗口与报错）
+  if (!hasOnPath('cmd.exe')) throw new Error('未找到 cmd.exe（系统 PATH 异常或被杀毒软件拦截），无法运行 start.bat')
   // cmd /c 执行批处理；不加 detached（Windows 下 detached 会使命令静默失效）
   const child = spawn('cmd.exe', ['/c', p], { cwd: dir, stdio: 'ignore' })
-  child.once('error', () => { /* 异步错误不致崩溃，窗口内会自行显示 */ })
+  child.once('error', (err) => console.error('[local-debug] start.bat 启动失败：', err.message))
   child.unref()
   return { cwd: dir, batPath: p, child }
+}
+
+/** PATH 中是否存在可执行文件（与 terminal-service 同口径：逐目录探测，不依赖 which） */
+function hasOnPath(name) {
+  const exts = process.platform === 'win32' ? ['', '.exe', '.cmd', '.bat'] : ['']
+  return String(process.env.PATH || '').split(path.delimiter).filter(Boolean).some((dir) => {
+    return exts.some((ext) => {
+      try { return fs.statSync(path.join(dir, name + ext)).isFile() } catch { return false }
+    })
+  })
 }
 
 function generate(dir) {

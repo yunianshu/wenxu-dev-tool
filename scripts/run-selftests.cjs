@@ -38,9 +38,11 @@ const SUITES = [
   'deploy-packager-symlink-selftest.cjs',
   'report-history-selftest.cjs',
   'git-service-selftest.cjs',
+  'git-client-selftest.cjs',
   'fill-report-selftest.cjs',
   'fill-consistency-selftest.cjs',
   'harness-defaults-selftest.cjs',
+  'harness-selftest.cjs',
   'harness-orphan-lock-selftest.cjs',
   'harness-runtime-selftest.cjs',
   'harness-update-selftest.cjs',
@@ -57,6 +59,8 @@ const SUITES = [
   'ui-state-selftest.cjs',
   'selftest-legacy-secret-migration.cjs',
   'selftest-legacy-deploy-migration.cjs',
+  // Tauri 后台真实存储路径（凭据库读写、旧密文保留）：改 store.js 或 electron-compat 后必须跑到
+  'selftest-tauri-store.cjs',
 ]
 
 let failed = 0

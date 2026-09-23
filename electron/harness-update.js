@@ -255,7 +255,8 @@ async function check(opts = {}) {
   } catch (err) {
     const message = (err && err.message) || String(err)
     runtime.checking = false
-    writeState({ lastCheckAt: Date.now(), lastError: `检查更新失败：${message}` })
+    // 失败不推进 lastCheckAt：开机时网络/VPN 未就绪导致的失败，不能把下一次自动检查推到 6 小时后
+    writeState({ lastError: `检查更新失败：${message}` })
     log('检查更新失败：', message)
     return emit({ notify: false })
   }

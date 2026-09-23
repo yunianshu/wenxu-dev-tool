@@ -4,12 +4,16 @@
          投递后既省下一条标题栏的高度给终端，也让顶栏承载真实操作。
          沉浸全屏时顶栏整体不存在（v-if），所以用 v-if 而不是 disabled。 -->
     <Teleport v-if="topbarReady" to="#app-topbar-slot">
-      <div class="topbar-page">
-        <h1 class="topbar-page-title">终端工作台</h1>
+      <div class="topbar-page terminal-topbar-page">
+        <div class="terminal-topbar-identity">
+          <span class="terminal-topbar-mark" aria-hidden="true">›_</span>
+          <h1 class="topbar-page-title">终端工作台</h1>
+          <span class="terminal-pane-total">{{ panes.length }} 个窗格</span>
+        </div>
         <div class="terminal-toolbar">
-          <el-dropdown trigger="click" :disabled="!canAddPane" @command="addPane">
-            <el-button type="primary" :disabled="!canAddPane" :title="panes.length >= MAX_PANES ? `最多同时开 ${MAX_PANES} 个窗格` : ''">
-              <el-icon><Plus /></el-icon>添加窗格
+          <el-dropdown trigger="click" popper-class="terminal-menu-popper" :disabled="!canAddPane" @command="addPane">
+            <el-button class="terminal-add-button" type="primary" :disabled="!canAddPane" :title="panes.length >= MAX_PANES ? `最多同时开 ${MAX_PANES} 个窗格` : ''">
+              <el-icon><Plus /></el-icon>新建终端
               <el-icon class="el-icon--right"><ArrowDown /></el-icon>
             </el-button>
             <template #dropdown>
@@ -26,7 +30,9 @@
           <!-- 分屏方式：图标化（方框 + 分割线示意怎么切格子），文字挪到 hover 提示。
                五个文字分段并排会横向吃掉一大片，而这里表达的本来就适合图形化。
                窗格多于一屏格子时行数会自动往下加，比例由 track 数对齐（见 layout） -->
-          <el-radio-group v-model="gridMode">
+          <span class="terminal-toolbar-divider" aria-hidden="true" />
+          <span class="terminal-toolbar-label">布局</span>
+          <el-radio-group v-model="gridMode" class="terminal-layout-control">
             <el-tooltip
               v-for="opt in GRID_OPTIONS"
               :key="opt.value"
@@ -50,8 +56,9 @@
             </el-tooltip>
           </el-radio-group>
 
-          <el-button class="terminal-font-settings-trigger" @click="fontSettingsVisible = true">字体设置</el-button>
-          <el-button v-if="panes.length" @click="closeAll">全部关闭</el-button>
+          <span class="terminal-toolbar-divider" aria-hidden="true" />
+          <el-button class="terminal-quiet-button" @click="fontSettingsVisible = true">字体</el-button>
+          <el-button v-if="panes.length" class="terminal-quiet-button" @click="closeAll">关闭全部</el-button>
         </div>
       </div>
     </Teleport>
@@ -65,7 +72,7 @@
     </p>
 
     <div v-else-if="!panes.length" class="terminal-empty">
-      <p>从右上角「添加窗格」选择项目，最多四个同屏。</p>
+      <p>从右上角「新建终端」选择项目，最多四个同屏。</p>
       <p class="terminal-empty-sub">同一个项目可以开多个窗格（例如一个跑 dev server、一个敲 git），上次的布局会自动记住。</p>
     </div>
 
@@ -261,8 +268,12 @@ const openPaneCount = computed(() => {
   return counts
 })
 
+/** 磁盘布局读取完成前不许新建：恢复会整体替换 panes，期间新建的窗格会被顶掉，
+ *  而恢复若被跳过（panes 非空），紧接着的防抖落盘会把磁盘布局永久覆盖成这一个窗格 */
+const restoreDone = ref(false)
+
 /** 还能不能再加：只受窗格总数限制（同一项目重复开不算重复） */
-const canAddPane = computed(() => panes.value.length < MAX_PANES && addableProjects.value.length > 0)
+const canAddPane = computed(() => restoreDone.value && panes.value.length < MAX_PANES && addableProjects.value.length > 0)
 
 /** 窗格标识：随窗格落盘，切页/重启后据它认回自己的 pty 会话 */
 function newPaneId() {
@@ -344,6 +355,10 @@ function applyDrag(target, start, index, delta) {
   target.value = next
 }
 
+/** 拖拽期间挂在 window 上的监听清理函数：视图卸载时也要调用，
+ *  否则残留监听会继续闭包引用已卸载组件的比例数组，下次进入页面拖拽时叠加计算 */
+let endDrag = null
+
 function startColumnDrag(index, event) {
   event.preventDefault()
   const rect = gridRef.value?.getBoundingClientRect()
@@ -354,7 +369,9 @@ function startColumnDrag(index, event) {
   const onUp = () => {
     window.removeEventListener('mousemove', onMove)
     window.removeEventListener('mouseup', onUp)
+    endDrag = null
   }
+  endDrag = onUp
   window.addEventListener('mousemove', onMove)
   window.addEventListener('mouseup', onUp)
 }
@@ -369,7 +386,9 @@ function startRowDrag(index, event) {
   const onUp = () => {
     window.removeEventListener('mousemove', onMove)
     window.removeEventListener('mouseup', onUp)
+    endDrag = null
   }
+  endDrag = onUp
   window.addEventListener('mousemove', onMove)
   window.addEventListener('mouseup', onUp)
 }
@@ -487,6 +506,7 @@ onMounted(async () => {
   shellOptions.value = opt?.options || []
   // 首次进入才从磁盘恢复布局；切页回来直接复用内存里的窗格（id 不变才能认回会话）
   if (!panes.value.length) await restoreLayout()
+  restoreDone.value = true
   await nextTick()
   activeIndex.value = 0
   // 从项目页「在终端工作台打开」跳转过来：优先聚焦该项目
@@ -498,6 +518,7 @@ onMounted(async () => {
 /** 切到其他页面会卸载本视图：立即落盘（不等 400ms 防抖）。
  *  否则「改完布局就切页、紧接着关掉应用」时，防抖里那次改动会随进程一起消失 */
 onBeforeUnmount(() => {
+  if (endDrag) endDrag() // 拖拽中切页：摘掉 window 上的全局监听
   if (saveTimer) writeLayout()
 })
 
@@ -542,58 +563,93 @@ function focusProject(projectId) {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: var(--tool-page-gap);
+  padding: 10px;
+  background: #12161d;
 }
 
+.terminal-topbar-page { gap: 18px; }
+.terminal-topbar-identity { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.terminal-topbar-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: #203b39;
+  color: #69d2b9;
+  font: 700 17px/1 var(--brand-mono);
+  letter-spacing: -.12em;
+  padding-right: 3px;
+}
+.terminal-topbar-identity .topbar-page-title { color: #f2f5f7; font-size: 14px; }
+.terminal-pane-total { color: #83909e; font-size: 12px; white-space: nowrap; }
 .terminal-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  gap: 7px;
+  flex-wrap: nowrap;
 }
-/* 统一高度：主按钮的全局 min-height:40px（点击区域底线）会把它顶得比相邻的
-   radio 组与次要按钮高一截，工具栏里这三个控件应当齐平。
-   radio 的内部节点不带本组件的 scope id，必须走 :deep() 才能命中 */
-.terminal-toolbar .el-button { min-height: 36px; }
-/* 分屏方式（图标分段控件）：
-   ① 选中态用浅底 + 主色字。原先是实心主色，与左侧「添加窗格」的实心主色块并排，
-      两个绿块互相抢焦点，反而看不出哪个才是主操作。
-      （不用 Element Plus 的 --el-radio-button-checked-* 变量：实测在 .el-radio-group
-      上覆盖不生效，这里直接命中选中态的 inner 元素）
-   ② 图标随文字色走（stroke: currentColor），选中时整块图标一起变主色。
-   ③ 边框自绘：Element Plus 2.9 给每段单独画 outline，相邻段两条错开叠成 2px 深竖线，
-      上下却只有单条 1px 浅灰，白底上直接消失（#b9c0ca 也救不回来，实测）。
-      改成整组 border 外框 + 段间内侧分隔线，四边同粗同色。
-      注意外框不能用 box-shadow/outline 画在组外——顶栏插槽 topbar-slot 是
-      overflow:auto hidden（横向滚动条），组外扩 1px 的上下两条边正好被纵向 hidden
-      裁掉（像素级实测过）；border 画在自身 border box 内，不受祖先裁剪影响。
-      border 占掉的 2px 用 inner 高度 36→34 补回，外壳总高与相邻按钮保持 36 齐平。 */
+.terminal-toolbar-divider { width: 1px; height: 18px; margin: 0 5px; background: #3b4652; }
+.terminal-toolbar-label { color: #83909e; font-size: 12px; white-space: nowrap; }
+.terminal-toolbar :deep(.el-button) { min-height: 32px; height: 32px; margin-left: 0; border-radius: 6px; }
+.terminal-toolbar :deep(.terminal-add-button) {
+  --el-button-bg-color: #167c70;
+  --el-button-border-color: #167c70;
+  --el-button-hover-bg-color: #209483;
+  --el-button-hover-border-color: #209483;
+  --el-button-active-bg-color: #11695f;
+  --el-button-active-border-color: #11695f;
+  padding: 0 11px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.terminal-toolbar :deep(.terminal-quiet-button) {
+  --el-button-bg-color: transparent;
+  --el-button-border-color: transparent;
+  --el-button-text-color: #b2bdca;
+  --el-button-hover-bg-color: #29313b;
+  --el-button-hover-border-color: #29313b;
+  --el-button-hover-text-color: #fff;
+  padding: 0 9px;
+  font-size: 12px;
+}
 .terminal-toolbar :deep(.el-radio-group) {
-  border: 1px solid #909399;
-  border-radius: var(--el-border-radius-base);
+  border: 1px solid #39434e;
+  border-radius: 6px;
+  overflow: hidden;
 }
 .terminal-toolbar :deep(.el-radio-button__inner) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 34px;
-  padding: 0 8px;
+  min-height: 30px;
+  padding: 0 7px;
   outline: none;
+  border: 0;
+  border-radius: 0;
+  background: #202731;
+  color: #9ba8b6;
 }
-/* 段间分隔线：inset 画在非首段左内侧，不用 border 以免各段宽度差 1px。
-   先于选中态声明——选中段的左侧主色线（下条规则）按同特异性后者胜出盖掉它 */
 .terminal-toolbar :deep(.el-radio-button + .el-radio-button .el-radio-button__inner) {
-  box-shadow: inset 1px 0 0 #909399;
+  box-shadow: inset 1px 0 0 #39434e;
 }
 .terminal-toolbar :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  background-color: var(--accent-soft);
-  color: var(--accent-strong);
-  border-color: var(--brand-accent);
-  box-shadow: -1px 0 0 0 var(--brand-accent);
+  background: #294c49;
+  color: #9be5d3;
+  box-shadow: none;
+}
+.terminal-toolbar :deep(.el-radio-button__inner:hover) {
+  color: #fff;
+  background: #303b46;
+}
+.terminal-toolbar :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner:hover) {
+  color: #b4f2e3;
+  background: #315b55;
 }
 /* outline 移除后保留键盘焦点指示 */
 .terminal-toolbar :deep(.el-radio-button__original-radio:focus-visible + .el-radio-button__inner) {
-  outline: 2px solid var(--brand-accent);
+  outline: 2px solid #64cbb4;
   outline-offset: -2px;
 }
 /* 图标用实心块直接画格子：描边线条在这个尺寸下会被亚像素冲淡（横线尤其明显），
@@ -612,7 +668,7 @@ function focusProject(projectId) {
 .terminal-hint,
 .terminal-empty {
   margin: 8px 0 0;
-  color: var(--text-muted);
+  color: #a8b3c0;
   font-size: 14px;
   line-height: 1.8;
 }
@@ -623,7 +679,7 @@ function focusProject(projectId) {
 }
 
 .terminal-empty-sub {
-  color: var(--brand-text-sub);
+  color: #778492;
   font-size: 13px;
 }
 

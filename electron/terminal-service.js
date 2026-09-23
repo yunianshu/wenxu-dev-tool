@@ -63,8 +63,13 @@ function openTerminal(dir, opts = {}) {
     spawnOpts = { detached: true, stdio: 'ignore' }
   }
 
+  // spawn 的失败（ENOENT/EACCES）是异步事件，主进程早已返回 ok：界面会提示「已打开终端」
+  // 却看不到任何窗口。解释器不在 PATH 时在这里同步拦下，更罕见的情形至少留下日志。
+  if (!findOnPath(cmd.replace(/\.exe$/i, ''))) {
+    throw new Error(`未找到 ${cmd}（系统 PATH 异常或被杀毒软件拦截），无法打开终端`)
+  }
   const child = spawn(cmd, args, spawnOpts)
-  child.once('error', () => { /* detached 终端进程的异步错误不影响主进程 */ })
+  child.once('error', (err) => console.error('[terminal] 打开终端失败：', err.message))
   child.unref()
   return { cwd: dir, child }
 }

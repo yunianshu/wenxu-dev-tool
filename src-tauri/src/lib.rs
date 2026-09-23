@@ -22,9 +22,14 @@ pub fn run() {
             backend::backend_host_response
         ])
         .setup(|app| {
-            let node_backend =
-                backend::Backend::start(app.handle().clone()).map_err(std::io::Error::other)?;
-            app.manage(node_backend);
+            // 后台起不来不等于要静默退出：窗口照常显示，由界面提示「后台服务未启动」，
+            // 关窗也不再被拦截。release 没有日志落点，直接结束进程时用户只看到「双击没反应」。
+            match backend::Backend::start(app.handle().clone()) {
+                Ok(node_backend) => {
+                    app.manage(node_backend);
+                }
+                Err(error) => eprintln!("Node 后台启动失败，界面功能不可用：{error}"),
+            }
             let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出程序", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
@@ -70,8 +75,13 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if let Some(node_backend) = window.app_handle().try_state::<backend::Backend>() {
                     if !node_backend.is_quitting() {
-                        api.prevent_close();
-                        node_backend.request_close();
+                        // 关窗语义（每次询问/最小化到托盘/直接退出）由后台决定，必须能收到回执。
+                        // 后台已退出或管道已断时不能再拦：否则点 × 毫无反应，用户只剩托盘菜单能退出。
+                        if node_backend.is_alive() && node_backend.request_close().is_ok() {
+                            api.prevent_close();
+                        } else {
+                            let _ = window.destroy();
+                        }
                     }
                 }
             }

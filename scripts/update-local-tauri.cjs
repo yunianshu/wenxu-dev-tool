@@ -25,9 +25,13 @@ if (fs.existsSync(cargoExe)) {
     env.PATH = `${cargoBin}${path.delimiter}${env.PATH}`
     console.log(`[update-local] 已把 ${cargoBin} 加入 PATH`)
   }
-} else if (!spawnSync('cargo', ['--version'], { env, shell: process.platform === 'win32' }).status) {
-  console.error('[update-local] 失败: 找不到 cargo（Rust 工具链），请先安装 rustup')
-  process.exit(1)
+} else {
+  // cargo 正常执行时 status 为 0，用 !status 判断会把「可用」判成「找不到」
+  const probe = spawnSync('cargo', ['--version'], { env, shell: process.platform === 'win32' })
+  if (probe.error || probe.status !== 0) {
+    console.error('[update-local] 失败: 找不到 cargo（Rust 工具链），请先安装 rustup')
+    process.exit(1)
+  }
 }
 
 /** npm 在 Windows 上是 npm.cmd，必须经 shell；命令固定在本脚本内，不拼接外部输入 */

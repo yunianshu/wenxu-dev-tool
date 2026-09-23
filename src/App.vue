@@ -19,12 +19,13 @@
            把项目下拉挂在标题旁（工作台 / 部署），见各视图的 Teleport -->
       <AppTopbar
         v-if="!state.ui.fullscreen"
+        :terminal="view === 'terminal'"
         :projects="state.projects.items"
         :current-id="state.projects.currentId"
         hide-project-switcher
         @select-project="selectProject"
       />
-      <main class="content-area" :class="{ 'content-area--flush': view === 'harness' || view === 'terminal' }">
+      <main class="content-area" :class="{ 'content-area--flush': view === 'harness' || view === 'terminal', 'content-area--terminal': view === 'terminal' }">
         <transition name="view-fade" mode="out-in">
           <DashboardView v-if="view === 'dashboard'" key="dashboard" @navigate="navigate" @create-project="openProjectEditor()" />
           <ProjectsView v-else-if="view === 'projects'" key="projects" @navigate="navigate" @create-project="openProjectEditor()" @edit-project="openProjectEditor" />
@@ -38,6 +39,19 @@
           <SettingsView v-else key="settings" :initial-section="settingsSection" @show-changelog="changelogVisible = true" />
         </transition>
       </main>
+      <!-- 后台不可用：所有数据操作都无法执行，必须给出可读原因与重试/退出入口，
+           否则界面只是「点了没反应」，连窗口都可能关不掉 -->
+      <div v-if="backendDown" class="backend-down">
+        <div class="backend-down-card">
+          <h3 class="backend-down-title">后台服务未运行</h3>
+          <p class="backend-down-text">项目、报告、部署与终端都依赖本机后台进程，当前操作无法执行。</p>
+          <p class="backend-down-text">请关闭应用后重新打开；若反复出现，检查杀毒软件是否拦截了应用目录下的 node.exe。</p>
+          <div class="backend-down-actions">
+            <el-button type="primary" :loading="backendRetrying" @click="retryBackend">重试连接</el-button>
+            <el-button @click="closeApp">关闭应用</el-button>
+          </div>
+        </div>
+      </div>
     </section>
 
     <ChangelogDialog v-model="changelogVisible" />
@@ -90,6 +104,44 @@ function afterFirstPaint() {
 const sidebarAnimatable = ref(false)
 /** 用户是否已手动开合过侧栏：用于压过迟到的偏好读取（见 restoreSidebarPref） */
 let sidebarTouched = false
+
+/**
+ * 后台可用性。Tauri 版全部数据都经随包 Node 后台（IPC 桥只转发），
+ * 后台进程被杀软拦下、崩溃或被外部结束时，界面不会报错、只是每个操作都没反应——
+ * 这里主动探测并给出可读提示，同时让用户能重试或直接关闭应用。
+ */
+const backendDown = ref(false)
+const backendRetrying = ref(false)
+
+async function probeBackend(retries = 3) {
+  for (let i = 0; i <= retries; i += 1) {
+    try {
+      await window.gitReport.uiPrefsLoad()
+      backendDown.value = false
+      return true
+    } catch {
+      // 冷启动时后台可能仍在拉起，退避重试后再判定
+      await new Promise((resolve) => setTimeout(resolve, 1200))
+    }
+  }
+  backendDown.value = true
+  return false
+}
+
+async function retryBackend() {
+  backendRetrying.value = true
+  try { await probeBackend(1) } finally { backendRetrying.value = false }
+}
+
+/** 后台已停时不能走 IPC 关窗（同一条链路已断），直接调窗口 API */
+async function closeApp() {
+  if (!window.__TAURI_INTERNALS__) {
+    await window.gitReport.winClose?.()
+    return
+  }
+  const { getCurrentWindow } = await import('@tauri-apps/api/window')
+  await getCurrentWindow().close()
+}
 
 /** 侧栏收起状态（外观偏好）：按上次退出时的状态恢复。
  *  恢复过程本身不加动画（见 sidebarAnimatable），避免每次启动都看到侧栏滑一次 */
@@ -199,6 +251,14 @@ onMounted(async () => {
   try { state.ui.fullscreen = !!(await window.gitReport.winIsFullScreen()) } catch { /* 主进程未就绪 */ }
   // 关闭询问：主进程 close 拦截后广播，这里弹与项目 UI 一致的询问框，结果回传执行
   window.gitReport.onWinAskClose?.(showCloseAsk)
+
+  // 后台存活：起不来或被结束时给出可读提示（不阻塞首屏，探测结果出来才盖浮层）
+  if (window.__TAURI_INTERNALS__) {
+    import('@tauri-apps/api/event')
+      .then(({ listen }) => listen('backend-exit', () => { backendDown.value = true }))
+      .catch(() => { /* 环境不支持时只靠下面的探测 */ })
+  }
+  probeBackend()
 
   // 侧栏偏好不阻塞启动（与项目加载无关），独立恢复
   restoreSidebarPref()

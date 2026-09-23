@@ -11,3 +11,4 @@ build/harness-runtime.json
 build/harness-updater/
 build/harness-updater.tar.gz
 build/harness-updater.json
+/output

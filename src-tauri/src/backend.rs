@@ -38,6 +38,9 @@ pub struct Backend {
     sequence: AtomicU64,
     child: Arc<Mutex<Child>>,
     quitting: AtomicBool,
+    /// 后台是否仍在运行：读线程结束（管道关闭）或看门狗发现进程退出时置否。
+    /// 关窗会把决定权交给后台（询问/最小化/退出三种偏好），后台不在时不能再拦关闭。
+    alive: Arc<AtomicBool>,
 }
 
 impl Backend {
@@ -86,9 +89,11 @@ impl Backend {
         let output = child.stdout.take().ok_or("Node 后台标准输出不可用")?;
         let child = Arc::new(Mutex::new(child));
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+        let alive = Arc::new(AtomicBool::new(true));
 
         let reader_pending = Arc::clone(&pending);
         let reader_app = app.clone();
+        let reader_alive = Arc::clone(&alive);
         thread::spawn(move || {
             for line in BufReader::new(output).lines() {
                 let Ok(line) = line else { break };
@@ -125,10 +130,12 @@ impl Backend {
             for (_, sender) in reader_pending.lock().unwrap().drain() {
                 let _ = sender.send(Err("Node 后台连接已断开".into()));
             }
+            reader_alive.store(false, Ordering::Relaxed);
             let _ = reader_app.emit("backend-exit", ());
         });
 
         let watcher = Arc::clone(&child);
+        let watcher_alive = Arc::clone(&alive);
         thread::spawn(move || loop {
             let exited = watcher
                 .lock()
@@ -137,6 +144,7 @@ impl Backend {
                 .map(|status| status.is_some())
                 .unwrap_or(true);
             if exited {
+                watcher_alive.store(false, Ordering::Relaxed);
                 break;
             }
             thread::sleep(Duration::from_millis(200));
@@ -148,6 +156,7 @@ impl Backend {
             sequence: AtomicU64::new(0),
             child,
             quitting: AtomicBool::new(false),
+            alive,
         })
     }
 
@@ -177,9 +186,15 @@ impl Backend {
         let _ = self.child.lock().unwrap().kill();
     }
 
-    pub fn request_close(&self) {
-        let _ =
-            self.send(&json!({ "type": "request", "id": 0, "channel": "win:close", "args": null }));
+    /// 关窗请求交后台决定（询问/最小化/退出三种偏好）。返回 Err 表示管道已断，
+    /// 调用方必须自行放行关闭，不能让窗口卡在「关不掉」。
+    pub fn request_close(&self) -> Result<(), String> {
+        self.send(&json!({ "type": "request", "id": 0, "channel": "win:close", "args": null }))
+    }
+
+    /// 后台进程是否仍在运行
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
     }
 
     pub fn is_quitting(&self) -> bool {

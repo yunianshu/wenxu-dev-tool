@@ -431,7 +431,6 @@ const EXCLUDE_GROUPS = [
   { label: 'SDK / 运行时', items: ['FlutterSDK', 'android-sdk', 'androidsdk', 'jdk'] },
   { label: 'IDE / 系统', items: ['.idea', '__MACOSX', 'Program Files'] },
 ]
-const EXCLUDE_PRESETS = EXCLUDE_GROUPS.flatMap((g) => g.items)
 
 const newRoot = ref('')
 const scanning = ref(false)
@@ -678,28 +677,40 @@ let unsubScanDone = null
 const INFO_CONCURRENCY = 6
 let infoQueue = []
 let infoWorkers = []
+// 已入队路径：同一仓库在被多次发现（App.vue 与本页都监听同一事件）时只补一次详情
+const infoQueued = new Set()
 // worker 代际：重扫/卸载时递增，旧代循环检测到失配后立即退出
 // （否则旧 worker 在扫描期间不会退出，多次重扫后按 6 递增无限累积）
 let infoEpoch = 0
 
+/** 缺详情且未入队时排入详情队列（row 必须是响应式代理，写 info 才会触发刷新） */
+function enqueueInfo(row, key) {
+  if (!row || row.info || infoQueued.has(key)) return
+  infoQueued.add(key)
+  infoQueue.push(row)
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 onMounted(() => {
-  // 首次启动确保排除目录有默认值（App 已加载 config 到 state.config）
-  if (!state.config.excludes || !state.config.excludes.length) {
-    state.config.excludes = [...EXCLUDE_PRESETS]
-    saveConfig()
-  }
+  // 排除目录为空是用户的显式选择（主进程默认值在配置缺字段时已由 store 补齐），不能当作首次启动重置
   unsubProgress = window.gitReport.onScanProgress((p) => {
     progressText.value = `扫描中… 已处理 ${p.scanned} 个目录`
   })
   unsubRepoFound = window.gitReport.onScanRepoFound((repoPath) => {
     if (!scanning.value) return
     const key = pathKey(repoPath)
-    if (state.discoveredRepos.some((repo) => pathKey(repo.path) === key)) return
-    const row = { path: repoPath, shortName: shortPath(repoPath), info: null }
-    state.discoveredRepos.push(row)
-    infoQueue.push(row)
+    const existing = state.discoveredRepos.find((repo) => pathKey(repo.path) === key)
+    if (existing) {
+      // 同一事件在 App.vue 也有处理器（负责权威列表），两者顺序不确定：
+      // 行已存在时仍要补进详情队列，否则远程地址/分支/最近提交三列长期为空
+      enqueueInfo(existing, key)
+      return
+    }
+    state.discoveredRepos.push({ path: repoPath, shortName: shortPath(repoPath), info: null })
+    // 通过数组读回响应式代理：直接写本地原始对象不会触发依赖，表格不会刷新
+    const row = state.discoveredRepos[state.discoveredRepos.length - 1]
+    enqueueInfo(row, key)
   })
   unsubScanDone = window.gitReport.onScanDone(() => {
     scanning.value = false
@@ -707,6 +718,7 @@ onMounted(() => {
   })
   // 启动预热已发现的仓库没有详情，进入列表时补充加载远程地址、分支和最近提交。
   infoQueue = state.discoveredRepos.filter((row) => !row.info)
+  for (const row of infoQueue) infoQueued.add(pathKey(row.path))
   if (infoQueue.length) ensureInfoWorkers()
   // 已配置 AI 接口时静默拉取模型列表，填充下拉
   if (state.config.ai?.keyConfigured && state.config.ai?.baseUrl) {
@@ -824,6 +836,7 @@ async function doScan() {
   infoEpoch += 1 // 旧 worker 立即失效，避免重复扫描累积轮询循环
   state.discoveredRepos.length = 0
   infoQueue = []
+  infoQueued.clear()
   infoWorkers = []
   scanning.value = true
   progressText.value = '开始扫描…'

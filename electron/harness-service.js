@@ -293,10 +293,14 @@ function spawnHarness(launch, args, cwd) {
     })
   }
   // 显式走 cmd /d /s /c：比 shell:true 少一层隐式拼接（避免 DEP0190），
-  // 参数均为固定字面量，不引入外部输入
+  // 参数均为固定字面量，不引入外部输入。
+  // /s 会剥掉整行最外层的一对引号，所以命令要写成 ""<命令>" <参数…>"；
+  // 且必须 windowsVerbatimArguments：Node 默认按 MSVCRT 规则把内层引号转义成 \"，
+  // 而 cmd 不认这种转义，会把整行当成一个文件名（实测启动失败、退出码 1）。
+  // 只给命令自身加引号也不行：路径含空格时 cmd 只认到 C:\Program。
   const comspec = process.env.ComSpec || process.env.COMSPEC || 'cmd.exe'
-  const line = [launch.command, ...args].join(' ')
-  return spawn(comspec, ['/d', '/s', '/c', line], options)
+  const line = `""${launch.command}" ${args.join(' ')}"`
+  return spawn(comspec, ['/d', '/s', '/c', line], { ...options, windowsVerbatimArguments: true })
 }
 
 async function doStart(opts = {}, token = startSeq) {

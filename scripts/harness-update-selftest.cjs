@@ -178,11 +178,16 @@ function startRegistry(latest, state) {
   check('U3b 同一新版本不重复提示', !events.some((e) => e.notify === true))
 
   // ── U4 源不可用 ──
+  const checkedAtBeforeFail = JSON.parse(fs.readFileSync(path.join(root, 'harness-update.json'), 'utf8')).lastCheckAt
   registryState.failWith = 500
   const failedCheck = await update.check({ force: true, registry })
   check('U4 源不可用时如实记录错误且不误报有新版本',
     failedCheck.error.includes('500') && failedCheck.install.status === 'idle',
     failedCheck.error)
+  // 失败也记账会把「开机时网络/VPN 未就绪」的一次失败顺延成 6 小时不再自动检查
+  check('U4b 检查失败不推进 lastCheckAt',
+    JSON.parse(fs.readFileSync(path.join(root, 'harness-update.json'), 'utf8')).lastCheckAt === checkedAtBeforeFail,
+    `${checkedAtBeforeFail}`)
   registryState.failWith = 0
 
   // ── U5 应用内热更新（桩 npm 造树） ──

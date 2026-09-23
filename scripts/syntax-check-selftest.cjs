@@ -4,8 +4,10 @@
  * 背景：main.js 属于「只在 Electron 启动时才解析」的文件——渲染层构建、单元自测、打包冒烟
  * 都不会解析它。曾因一次编辑吞掉换行产生 `})ipcMain.handle(...)`，导致打包后应用启动即弹
  * 「A JavaScript error occurred in the main process」，而所有测试都是绿的。
- * 因此这里对 electron/ 与 scripts/ 下所有 .js/.cjs 逐个做 `node --check`，把这类语法错误
+ * 因此这里对 electron/、backend/ 与 scripts/ 下所有 .js/.cjs 逐个做 `node --check`，把这类语法错误
  * 拦在提交之前；同时校验打包产物里的 main.js（若存在 release 目录）能通过语法检查。
+ * backend/entry.cjs 是 Tauri 版真正的后台入口（src-tauri/src/backend.rs 启动的就是它），
+ * 同样属于「只在启动时才解析」的文件，必须进这份清单。
  */
 const assert = require('assert')
 const fs = require('fs')
@@ -29,7 +31,7 @@ function checkSyntax(file) {
   return r.status === 0 ? null : String(r.stderr || '').split('\n').slice(0, 4).join(' | ')
 }
 
-const files = [...listJs(path.join(root, 'electron')), ...listJs(path.join(root, 'scripts'))]
+const files = [...listJs(path.join(root, 'electron')), ...listJs(path.join(root, 'backend')), ...listJs(path.join(root, 'scripts'))]
   .filter((f) => !/node_modules/.test(f))
 assert.ok(files.length > 20, `待检查的脚本数量异常：${files.length}`)
 
