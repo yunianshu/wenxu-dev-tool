@@ -143,6 +143,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Close, FullScreen } from '@element-plus/icons-vue'
 import { state } from '../store'
 import { toPlain } from '../utils/ipc'
+import { watchBlockingOverlay } from '../utils/blockingOverlay'
 
 const snapshot = ref({
   status: 'stopped', port: 0, pid: 0, url: '', displayUrl: '',
@@ -155,6 +156,10 @@ const isTauri = !!window.__TAURI_INTERNALS__
 let tauriWebview = null
 let resizeObserver = null
 let webviewGeneration = 0
+/** 应用浮层是否打开（由 watchBlockingOverlay 维护）与原生子视图当前是否被藏起 */
+let appOverlayOpen = false
+let webviewHidden = false
+let overlayStop = null
 const settingsVisible = ref(false)
 const portInput = ref(3080)
 const autoStartInput = ref(true)
@@ -294,10 +299,22 @@ async function positionTauriWebview() {
   await tauriWebview.setSize(new LogicalSize(Math.max(1, Math.round(rect.width)), Math.max(1, Math.round(rect.height - top))))
 }
 
+/**
+ * 应用浮层（更新确认框、服务设置、关闭询问）打开期间藏起原生子视图。
+ * 原生子视图永远盖在主页面之上，不藏的话浮层在屏幕上完全不可见，只剩外壳变暗。
+ */
+function applyTauriWebviewVisibility() {
+  if (!isTauri || !tauriWebview) return
+  if (appOverlayOpen === webviewHidden) return
+  webviewHidden = appOverlayOpen
+  void (appOverlayOpen ? tauriWebview.hide() : tauriWebview.show()).catch(() => { webviewHidden = !appOverlayOpen })
+}
+
 async function closeTauriWebview() {
   webviewGeneration += 1
   const old = tauriWebview
   tauriWebview = null
+  webviewHidden = false
   if (old) await old.close().catch(() => {})
 }
 
@@ -305,6 +322,7 @@ async function replaceTauriWebview() {
   const generation = ++webviewGeneration
   const old = tauriWebview
   tauriWebview = null
+  webviewHidden = false
   if (old) await old.close().catch(() => {})
   if (!running.value || !tauriHostRef.value || generation !== webviewGeneration) return
   const rect = tauriHostRef.value.getBoundingClientRect()
@@ -320,6 +338,7 @@ async function replaceTauriWebview() {
       tauriWebview = view
       onNavigated()
       void positionTauriWebview()
+      applyTauriWebviewVisibility()
     } else void view.close().catch(() => {})
   })
   view.once('tauri://error', (error) => {
@@ -445,6 +464,11 @@ onMounted(async () => {
     resizeObserver = new ResizeObserver(() => { void positionTauriWebview() })
     resizeObserver.observe(document.documentElement)
     window.addEventListener('resize', positionTauriWebview)
+    // 浮层开关（确认框/对话框）→ 藏起或显示原生子视图，否则浮层被它整块遮住
+    overlayStop = watchBlockingOverlay((open) => {
+      appOverlayOpen = open
+      applyTauriWebviewVisibility()
+    })
   }
   unsubscribe = window.gitReport.onHarnessStatus(apply)
   await refresh()
@@ -464,6 +488,8 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   window.removeEventListener('resize', positionTauriWebview)
+  overlayStop?.()
+  overlayStop = null
   if (isTauri) void closeTauriWebview()
   if (unsubscribe) unsubscribe()
   window.removeEventListener('keydown', onKeydown)
