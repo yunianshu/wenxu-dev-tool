@@ -32,7 +32,8 @@
     "build:electron:win": "npm run build:renderer && electron-builder --win --publish=never",
     "build:electron:mac": "npm run build:renderer && electron-builder --mac --publish=never",
     "build:electron:linux": "npm run build:renderer && electron-builder --linux --publish=never",
-    "install:local": "node scripts/install-local.cjs",
+    "install:local": "node scripts/install-local-tauri.cjs",
+    "install:local:electron": "node scripts/install-local.cjs",
     "gen:icons": "electron scripts/gen-icons.cjs && tauri icon build/icon.png --output src-tauri/icons",
     "verify:icons": "electron scripts/verify-icons.cjs"
   },
