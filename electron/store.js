@@ -6,6 +6,26 @@
 const { app, safeStorage } = require('electron')
 const fs = require('fs')
 const path = require('path')
+const { createHash, randomUUID } = require('crypto')
+
+const nodeBackend = process.env.PLM_NODE_BACKEND === '1'
+const keyring = nodeBackend ? require('@napi-rs/keyring') : null
+const KEYRING_SERVICE = `com.prt.devprojectmanager.${createHash('sha256').update(app.getPath('userData')).digest('hex').slice(0, 16)}`
+
+function keyringEntry(id) {
+  // Linux 禁止回退到重启即丢失的 kernel keyutils；不可用时保存失败并保留旧值。
+  return process.platform === 'linux'
+    ? new keyring.Entry(KEYRING_SERVICE, id, { linux: { store: 'secret-service' } })
+    : new keyring.Entry(KEYRING_SERVICE, id)
+}
+function saveKeyring(text, id = randomUUID()) {
+  keyringEntry(id).setPassword(String(text))
+  return id
+}
+function readKeyring(id) {
+  if (!id || !nodeBackend) return ''
+  try { return keyringEntry(id).getPassword() || '' } catch { return '' }
+}
 
 function file() {
   return path.join(app.getPath('userData'), 'config.json')
@@ -53,6 +73,7 @@ const DEFAULTS = {
 /** 从 AI 配置对象解密出明文 Key（keyEnc 优先，兼容旧版明文 apiKey） */
 function decryptKey(ai) {
   if (!ai) return ''
+  if (ai.keyRef) return readKeyring(ai.keyRef)
   if (ai.keyEnc) {
     try {
       if (safeStorage.isEncryptionAvailable()) {
@@ -81,21 +102,25 @@ function load() {
     const key = decryptKey(cfg.ai)
     // 明文 Key 不出主进程：仅下发「是否已配置 + 脱敏片段」
     cfg.ai.keyConfigured = !!key
+    cfg.ai.keyNeedsReentry = nodeBackend && !!cfg.ai.keyEnc && !key
     cfg.ai.keyMasked = key ? maskKey(key) : ''
     cfg.ai.apiKey = ''
     delete cfg.ai.keyEnc
+    delete cfg.ai.keyRef
     cfg.zentao = { ...DEFAULTS.zentao, ...(cfg.zentao || {}) }
     // 公司内网地址固定默认：历史配置里留空时回落默认值，填过其他地址则原样保留
     if (!String(cfg.zentao.baseUrl || '').trim()) cfg.zentao.baseUrl = DEFAULTS.zentao.baseUrl
-    const pwd = decryptText(cfg.zentao.pwdEnc)
+    const pwd = decryptText(cfg.zentao.pwdEnc, { allowUnavailable: true })
     cfg.zentao.pwdConfigured = !!pwd
+    cfg.zentao.pwdNeedsReentry = nodeBackend && !!cfg.zentao.pwdEnc?.enc && !pwd
     cfg.zentao.pwdMasked = pwd ? maskKey(pwd) : ''
     delete cfg.zentao.pwdEnc
     cfg.hanprint = { ...DEFAULTS.hanprint, ...(cfg.hanprint || {}) }
     if (!String(cfg.hanprint.baseUrl || '').trim()) cfg.hanprint.baseUrl = DEFAULTS.hanprint.baseUrl
     if (!String(cfg.hanprint.clientId || '').trim()) cfg.hanprint.clientId = DEFAULTS.hanprint.clientId
-    const hpPwd = decryptText(cfg.hanprint.pwdEnc)
+    const hpPwd = decryptText(cfg.hanprint.pwdEnc, { allowUnavailable: true })
     cfg.hanprint.pwdConfigured = !!hpPwd
+    cfg.hanprint.pwdNeedsReentry = nodeBackend && !!cfg.hanprint.pwdEnc?.enc && !hpPwd
     cfg.hanprint.pwdMasked = hpPwd ? maskKey(hpPwd) : ''
     delete cfg.hanprint.pwdEnc
     cfg.harness = { ...DEFAULTS.harness, ...(cfg.harness || {}) }
@@ -138,14 +163,19 @@ function save(cfg) {
       delete c.ai.clearKey
       delete c.ai.keyConfigured
       delete c.ai.keyMasked
+      delete c.ai.keyNeedsReentry
       delete c.ai.apiKey
       delete c.ai.keyEnc
+      delete c.ai.keyRef
       if (!clear && !newKey) {
         // 未输入新 Key 也未要求清除：保留磁盘既有 Key（字节原样，不触发解密）
         const oldAi = old.ai || {}
-        if (oldAi.keyEnc) c.ai.keyEnc = oldAi.keyEnc
+        if (oldAi.keyRef) c.ai.keyRef = oldAi.keyRef
+        else if (oldAi.keyEnc) c.ai.keyEnc = oldAi.keyEnc
         else if (oldAi.apiKey) c.ai.apiKey = oldAi.apiKey
       } else if (!clear && newKey) {
+        if (nodeBackend) c.ai.keyRef = saveKeyring(newKey, 'ai-key')
+        else {
         try {
           if (safeStorage.isEncryptionAvailable()) {
             c.ai.keyEnc = safeStorage.encryptString(newKey).toString('base64')
@@ -154,6 +184,7 @@ function save(cfg) {
           }
         } catch {
           c.ai.apiKey = newKey
+        }
         }
       }
       // clear → 不带 keyEnc / apiKey，即清除
@@ -165,6 +196,7 @@ function save(cfg) {
       delete c.zentao.clearPwd
       delete c.zentao.pwdConfigured
       delete c.zentao.pwdMasked
+      delete c.zentao.pwdNeedsReentry
       delete c.zentao.password
       delete c.zentao.pwdEnc
       if (!clearPwd && !newPwd) {
@@ -181,6 +213,7 @@ function save(cfg) {
       delete c.hanprint.clearPwd
       delete c.hanprint.pwdConfigured
       delete c.hanprint.pwdMasked
+      delete c.hanprint.pwdNeedsReentry
       delete c.hanprint.password
       delete c.hanprint.pwdEnc
       if (!clearPwd && !newPwd) {
@@ -190,6 +223,13 @@ function save(cfg) {
       }
     }
     fs.writeFileSync(file(), JSON.stringify(c, null, 2), { encoding: 'utf8', mode: 0o600 })
+    if (nodeBackend) {
+      const previous = [old.ai?.keyRef, old.zentao?.pwdEnc?.keyRef, old.hanprint?.pwdEnc?.keyRef].filter(Boolean)
+      const current = new Set([c.ai?.keyRef, c.zentao?.pwdEnc?.keyRef, c.hanprint?.pwdEnc?.keyRef].filter(Boolean))
+      for (const id of previous) {
+        if (!current.has(id)) try { keyringEntry(id).deletePassword() } catch { /* 旧项不存在或系统暂时不可用 */ }
+      }
+    }
     return true
   } catch {
     return false
@@ -215,6 +255,7 @@ function getHanprintPwd() {
 
 /** 通用文本加密（safeStorage），供部署模块加密 SSH 凭据使用；失败回退明文并标记 plain */
 function encryptText(text) {
+  if (nodeBackend) return { keyRef: saveKeyring(text) }
   try {
     if (safeStorage.isEncryptionAvailable()) {
       return { enc: safeStorage.encryptString(String(text)).toString('base64'), plain: '' }
@@ -224,9 +265,11 @@ function encryptText(text) {
 }
 
 /** 通用文本解密；与 encryptText 配对 */
-function decryptText(secret) {
+function decryptText(secret, options = {}) {
   if (!secret) return ''
+  if (secret.keyRef) return readKeyring(secret.keyRef)
   if (secret.enc) {
+    if (nodeBackend && !options.allowUnavailable) throw new Error('旧版 Electron 加密凭据需在设置中重新输入')
     try {
       if (safeStorage.isEncryptionAvailable()) {
         return safeStorage.decryptString(Buffer.from(secret.enc, 'base64'))

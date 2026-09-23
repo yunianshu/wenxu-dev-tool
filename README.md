@@ -1,6 +1,6 @@
 # Personnel PLM
 
-跨平台**Personnel PLM**工作台（Windows / macOS / Linux），基于 Electron + Vue 3。
+跨平台 **Personnel PLM** 工作台（Windows / macOS / Linux），桌面壳采用 Tauri 2 + Vue 3，业务后台使用随包 Node 24。旧 Electron 构建链暂作迁移回归基线。
 
 在本应用中，**项目是一等领域对象**：只填写项目名称即可创建，不要求必须是 Git 仓库，也不要求配置部署。Git 活动、AI 助手和部署都是项目的**可选能力**——Git 只是报告的数据来源之一，而不是产品的中心。
 
@@ -44,13 +44,13 @@
 - 在「设置 → AI 服务」配置接口地址 / API Key / 模型（支持 OpenAI、DeepSeek、Kimi、通义千问、Ollama 等兼容接口）
 - 支持流式输出、停止、复制、保存为 Markdown 文件
 - 对话、草稿与生成状态按项目保留；切换项目或页面后，流式回复仍写入发起请求的会话，停止与清空只影响该会话。
-- API Key 明文仅存主进程（safeStorage 加密落盘），渲染层仅显示脱敏片段；项目备注、提交文本等外部上下文均按不可信数据处理并受字符预算限制
+- API Key 明文仅供后台使用；Tauri 版存入系统凭据库，渲染层仅显示脱敏片段。原 Electron `safeStorage` 密文不会被静默删除，首次使用 Tauri 版时需在设置页重新输入密钥或密码；项目备注、提交文本等外部上下文均按不可信数据处理并受字符预算限制
 
 ## DeepSeek Harness（内置 dsh web）
 
 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh` CLI）作为应用内置能力：**打开软件自动开启本地服务，关闭软件自动关闭服务**，无需手动敲命令，**目标机器无需安装 dsh 或 Node**。
 
-- **运行时内置**：安装包内自带固定版本 `@deepseek-ai/dsh` 依赖树，以单个归档 `resources/harness-runtime.tar.gz` 分发，**首次启动解包到用户数据目录 `<userData>/runtime`**（约 30 秒，之后按版本标记复用），由 **Electron 自带的 Node** 执行（`ELECTRON_RUN_AS_NODE=1` + `--expose-internals`；Electron 40+ 内置 Node 24，具备 dsh 需要的 `node:sqlite` 与 `import.meta.main`），目标机器无需安装 dsh 或 Node；首次启动在用户主目录自动生成 `~/.dsh`，离线可用
+- **运行时内置**：安装包内自带固定版本 `@deepseek-ai/dsh` 依赖树，以单个归档 `harness-runtime.tar.gz` 分发，**首次启动解包到用户数据目录 `<userData>/runtime`**，之后按版本标记复用；由随包 Node 24 执行，目标机器无需安装 dsh 或 Node；首次启动在用户主目录自动生成 `~/.dsh`，离线可用
   - 为什么打成一个归档：依赖树约 2.6 万个文件（217MB），原样放进安装包时 NSIS 要逐文件解压再整树复制，Windows 实测安装需约 16 分钟（用户会以为卡死）；单文件分发后安装约 1 分钟。解包优先用系统 `tar`（约 26 秒），缺失时回退内置 JS 解包器（`electron/harness-runtime.js`）
 - **默认配置内置**：首次启动把内置 provider（汉印 `hprt`、智谱 `zai-coding-cn`）与默认模型补进 `~/.dsh/settings.yaml`，目标机器无需手工添加；**不含任何密钥**——只写 `apiKeyEnv` 凭据名，使用者在 Harness「设置 → 模型」填入自己的 key 即可用。只补缺失项，同名 provider 与已有默认模型保持用户原值、注释保留；注入一次后写标记不再改动，settings.yaml 语法错误时原样跳过（`electron/harness-defaults.js`）
 - **自动启停**：应用启动时自动拉起 `dsh web`（监听 `127.0.0.1`，默认端口 3080，被占用时自动改用系统分配的空闲端口）；退出应用时连同子进程树一起结束，不留残留服务；异常退出遗留的进程会在下次启动时清理
@@ -58,7 +58,7 @@
 - **鉴权闭环**：`dsh web` 就绪后输出的一次性 token 由主进程捕获，内嵌页首次导航用它换取 HttpOnly + SameSite=Strict 登录 cookie 后落到干净根地址——token 不写日志、不落盘
 - **状态可见**：页面顶部显示运行状态，底部信息条显示运行时来源（内置 / 本机）、服务地址、PID 与启动时刻；支持「刷新 / 重启服务 / 停止服务」，服务异常退出时展示诊断输出与重试入口
 - **服务设置**：端口与「是否随应用自动启动」可配置
-- **实现要点**：主进程 `electron/harness-service.js` 负责解析运行时、拉起与整树关闭；渲染层通过 `<webview>`（独立 guest，不受父页 CSP / X-Frame-Options 限制）承载 GUI
+- **实现要点**：Node 后台复用 `electron/harness-service.js` 解析运行时、拉起与整树关闭；Tauri 版用原生子 Webview 承载 GUI，旧 Electron 版继续使用 `<webview>`
 
 运行时解析优先级：已解包的内置运行时 → 本机全局安装的 `dsh` → PATH。开发/调试可用 `DSH_RUNTIME_DIR` 指定运行时目录，或用 `DSH_CLI` 指定可执行文件。
 
@@ -78,8 +78,8 @@
 - **默认安全**：新建窗格只 `cd` 到项目目录并打开交互式 shell，不自动执行任何命令；窗格内命令以当前用户权限直接运行，不经过 Harness 沙箱与审批
 - **入口**：侧栏「终端工作台」；项目页「项目能力 → 终端工作台」可切到工作台并聚焦该项目窗格（原「外部 PowerShell」窗口入口保留）
 - **退出即结束**：应用退出时先整树结束 shell 子进程再释放 pty，不留残留进程；会话异常退出（退出码）在窗格上给出状态与「重新打开」入口
-- **实现要点**：主进程 `electron/pty-service.js` 管会话表与输出环形缓冲，`electron/terminal-layout.js` 管布局落盘；`node-pty` 是原生模块，通过 `build.asarUnpack` 放在 asar 外，用的是它自带的 N-API 预编译产物（Electron 自带 Node 24 直接加载，无需 node-gyp）
-- **打包注意**：`build.npmRebuild` 必须为 `false`——`node-pty` 的 N-API 产物同时兼容 Node 与 Electron，而 electron-builder 默认会调 `@electron/rebuild` 重新编译它，这会在没有 Python/VS 构建链的机器上直接让打包失败（本机实测报 `Could not find any Python installation to use`）。升级 `node-pty` 后请确认 `node_modules/node-pty/prebuilds/<平台>-<架构>/` 里有对应产物
+- **实现要点**：Node 后台复用 `electron/pty-service.js` 管会话表与输出环形缓冲，`electron/terminal-layout.js` 管布局落盘；`node-pty` 使用随包 Node 24 加载 N-API 预编译产物，无需在目标机器安装构建链
+- **旧 Electron 包打包注意**：`build.npmRebuild` 必须为 `false`，避免 electron-builder 在没有 Python/VS 构建链的机器上重编 `node-pty`。Tauri 包使用随包 Node 24，构建时由 `scripts/prepare-tauri-runtime.cjs` 校验原生模块。
 
 ## 活动报告
 
@@ -192,7 +192,7 @@
 
 ## 技术栈
 
-Electron 43 · Vue 3 · Element Plus · ECharts · Vite 6 · electron-builder 26 · ssh2 · archiver
+Tauri 2 · Node 24 · Vue 3 · Element Plus · ECharts · Vite 6 · ssh2 · archiver（旧版 Electron 43 / electron-builder 26 构建链保留作回归基线）
 
 ## 开发
 
@@ -207,13 +207,14 @@ Electron 43 · Vue 3 · Element Plus · ECharts · Vite 6 · electron-builder 26
 
 ```bash
 npm install
-npm run dev        # 开发模式（Vite 热更新 + Electron）
+npm run dev           # Tauri + Vite 热更新；需 Rust 工具链
+npm run dev:electron  # 旧 Electron 开发模式（迁移回归基线）
 ```
 
 ## 使用（本地运行）
 
 ```bash
-npm start          # 构建渲染层并启动
+npm start  # Tauri 开发运行
 ```
 
 ## 测试
@@ -264,12 +265,14 @@ node scripts/sidebar-collapse-e2e.cjs           # 侧栏展开/收缩：收起�
 
 ```bash
 npm run build:renderer  # 仅构建渲染层到 dist/
-npm run build:win       # Windows（NSIS 安装包 + 便携版）
-npm run build:mac       # macOS（dmg）
-npm run build:linux     # Linux（AppImage + deb）
+npm run build           # Tauri 当前平台安装包（含 Node 后台和 Harness）
+npm run build:win       # Windows NSIS 安装包
+npm run build:mac       # macOS dmg
+npm run build:linux     # Linux AppImage + deb
 ```
 
-产物输出至 `release/` 目录（每个版本约 758MB：安装包 + 便携版 + win-unpacked）。
+Tauri 产物输出至 `src-tauri/target/release/bundle/`。旧 Electron 构建命令为 `build:electron` / `build:electron:win` / `build:electron:mac` / `build:electron:linux`，产物仍输出至 `release/`。
+Windows 安装器会检查 WebView2；目标机器没有运行时时，安装过程需联网下载安装。应用自身的 Node 与 Harness 均已包含在安装包中。
 本地更新通道（`npm run install:local` / `update:local`）安装成功后会**自动清理
 `release/` 下的旧版本目录**，只保留当前版本，避免逐版本累积占满磁盘。需要单独清理时：
 

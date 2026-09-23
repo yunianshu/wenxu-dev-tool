@@ -9,6 +9,11 @@
     <div class="settings-nav">
       <el-segmented v-model="activeSection" :options="SETTING_SECTIONS" class="settings-sections" />
     </div>
+    <el-alert
+      v-if="state.config.ai?.keyNeedsReentry || state.config.zentao?.pwdNeedsReentry || state.config.hanprint?.pwdNeedsReentry"
+      title="迁移到新桌面架构后，原 Electron 加密的凭据需要重新输入。旧密文仍保留在本机，填写新值并保存后会写入系统凭据库。"
+      type="warning" :closable="false" show-icon
+    />
 
     <!-- Git 活动源：作为工作台入口的直接落点，优先于扫描配置展示 -->
     <el-card v-show="activeSection === 'git'" shadow="never" class="card settings-repo-card">
@@ -500,9 +505,9 @@ const canFetchModels = computed(() => !!(state.config.ai.baseUrl && (state.confi
 /** 保存全部配置；AI 密钥：输入了新 Key 则替换，留空则主进程保留既有；禅道密码同规则 */
 async function saveConfig() {
   const secrets = [
-    { section: 'ai', field: 'apiKey', input: apiKeyInput, configured: 'keyConfigured', masked: 'keyMasked' },
-    { section: 'zentao', field: 'password', input: ztPwdInput, configured: 'pwdConfigured', masked: 'pwdMasked' },
-    { section: 'hanprint', field: 'password', input: hpPwdInput, configured: 'pwdConfigured', masked: 'pwdMasked' },
+    { section: 'ai', field: 'apiKey', input: apiKeyInput, configured: 'keyConfigured', masked: 'keyMasked', reentry: 'keyNeedsReentry' },
+    { section: 'zentao', field: 'password', input: ztPwdInput, configured: 'pwdConfigured', masked: 'pwdMasked', reentry: 'pwdNeedsReentry' },
+    { section: 'hanprint', field: 'password', input: hpPwdInput, configured: 'pwdConfigured', masked: 'pwdMasked', reentry: 'pwdNeedsReentry' },
   ]
   // 明文只放入本次 IPC 载荷，不能留在共享配置中被其他保存/清除操作重发。
   for (const item of secrets) {
@@ -521,6 +526,7 @@ async function saveConfig() {
       if (!item.value) continue
       state.config[item.section][item.configured] = true
       state.config[item.section][item.masked] = maskKey(item.value)
+      state.config[item.section][item.reentry] = false
       // 保存期间新输入的内容保留；失败时同样保留输入，便于重试。
       if (item.input.value === item.value) item.input.value = ''
     }

@@ -28,7 +28,7 @@
       <div class="harness-stage">
         <!-- 运行中：内嵌 dsh web 界面 -->
         <webview
-          v-if="running"
+          v-if="running && !isTauri"
           ref="webviewRef"
           class="harness-frame"
           :src="webviewUrl"
@@ -38,6 +38,7 @@
           @did-navigate="onNavigated"
           @did-navigate-in-page="onNavigated"
         />
+        <div v-if="running && isTauri" ref="tauriHostRef" class="harness-frame" />
 
         <!-- 加载失败浮层：运行中 snapshot.error 不占位展示（占位层只在非 running 渲染），
              不加浮层用户只能看到空白页面，无从得知失败原因与重试入口 -->
@@ -134,7 +135,10 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { getCurrentWindow } from '@tauri-apps/api/window'
+import { Webview } from '@tauri-apps/api/webview'
+import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Close, FullScreen } from '@element-plus/icons-vue'
 import { state } from '../store'
@@ -146,6 +150,11 @@ const snapshot = ref({
 })
 const busy = ref(false)
 const webviewRef = ref(null)
+const tauriHostRef = ref(null)
+const isTauri = !!window.__TAURI_INTERNALS__
+let tauriWebview = null
+let resizeObserver = null
+let webviewGeneration = 0
 const settingsVisible = ref(false)
 const portInput = ref(3080)
 const autoStartInput = ref(true)
@@ -268,9 +277,68 @@ async function stop() {
 }
 
 function reload() {
+  if (isTauri) {
+    void replaceTauriWebview()
+    return
+  }
   const view = webviewRef.value
   if (view && typeof view.reload === 'function') view.reload()
 }
+
+/** Tauri 的子 Webview 是原生视图；位置必须跟随 Vue 容器。 */
+async function positionTauriWebview() {
+  if (!tauriWebview || !tauriHostRef.value) return
+  const rect = tauriHostRef.value.getBoundingClientRect()
+  const top = immersive.value ? 48 : 0
+  await tauriWebview.setPosition(new LogicalPosition(Math.round(rect.left), Math.round(rect.top + top)))
+  await tauriWebview.setSize(new LogicalSize(Math.max(1, Math.round(rect.width)), Math.max(1, Math.round(rect.height - top))))
+}
+
+async function closeTauriWebview() {
+  webviewGeneration += 1
+  const old = tauriWebview
+  tauriWebview = null
+  if (old) await old.close().catch(() => {})
+}
+
+async function replaceTauriWebview() {
+  const generation = ++webviewGeneration
+  const old = tauriWebview
+  tauriWebview = null
+  if (old) await old.close().catch(() => {})
+  if (!running.value || !tauriHostRef.value || generation !== webviewGeneration) return
+  const rect = tauriHostRef.value.getBoundingClientRect()
+  const top = immersive.value ? 48 : 0
+  const view = new Webview(getCurrentWindow(), 'harness', {
+    url: webviewUrl.value,
+    x: Math.round(rect.left), y: Math.round(rect.top + top),
+    width: Math.max(1, Math.round(rect.width)),
+    height: Math.max(1, Math.round(rect.height - top)),
+  })
+  view.once('tauri://created', () => {
+    if (generation === webviewGeneration) {
+      tauriWebview = view
+      onNavigated()
+      void positionTauriWebview()
+    } else void view.close().catch(() => {})
+  })
+  view.once('tauri://error', (error) => {
+    if (generation !== webviewGeneration) return
+    loadFailed.value = true
+    loadFailText.value = `内嵌页面创建失败：${error?.payload || '未知错误'}`
+  })
+}
+
+watch([running, webviewUrl], async () => {
+  if (!isTauri) return
+  await nextTick()
+  if (running.value) {
+    if (tauriHostRef.value) resizeObserver?.observe(tauriHostRef.value)
+    await replaceTauriWebview()
+  }
+  else await closeTauriWebview()
+})
+watch(immersive, () => { if (isTauri) void nextTick(positionTauriWebview) })
 
 /** 全屏偏好写回配置：下次进入 Harness 视图自动铺满。用监听而非按钮回调，
  *  保证「guest 内按 Esc」「窗口全屏被外部改变」等路径同样记录用户意图 */
@@ -373,6 +441,11 @@ async function promptUpdate() {
 }
 
 onMounted(async () => {
+  if (isTauri) {
+    resizeObserver = new ResizeObserver(() => { void positionTauriWebview() })
+    resizeObserver.observe(document.documentElement)
+    window.addEventListener('resize', positionTauriWebview)
+  }
   unsubscribe = window.gitReport.onHarnessStatus(apply)
   await refresh()
   // 更新态以主进程为准（App.vue 的订阅早于本视图，但设置面板要显示最新版本号）
@@ -389,6 +462,9 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  window.removeEventListener('resize', positionTauriWebview)
+  if (isTauri) void closeTauriWebview()
   if (unsubscribe) unsubscribe()
   window.removeEventListener('keydown', onKeydown)
   // 离开视图必须恢复应用外壳，否则侧栏/顶栏被隐藏后用户无法导航

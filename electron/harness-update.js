@@ -440,13 +440,13 @@ async function withRetry(action, label) {
   throw new Error(`${label}失败：${(last && last.message) || String(last)}`)
 }
 
-/** 目录交换：runtime → rt-old，rt-new → runtime；任一步失败都把旧目录换回来 */
+/** 目录交换：旧目录保留到新服务确认就绪，才能删除备份。 */
 async function swapRuntimes() {
   setInstall({ status: 'swapping' })
   const target = runtimeDir()
   const staging = stagingDir()
   const backup = backupDir()
-  try { fs.rmSync(backup, { recursive: true, force: true }) } catch { /* 删不掉就在下面重试 */ }
+  if (fs.existsSync(backup)) throw new Error(`发现尚未清理的旧运行时备份：${backup}；请先检查恢复状态`)
   const hadTarget = fs.existsSync(target)
   if (hadTarget) await withRetry(() => fs.renameSync(target, backup), '备份现有运行时')
   try {
@@ -457,7 +457,25 @@ async function swapRuntimes() {
     }
     throw err
   }
-  try { fs.rmSync(backup, { recursive: true, force: true }) } catch { /* 下次安装前会再清 */ }
+  return hadTarget
+}
+
+/** 新服务启动失败时，把旧运行时放回原位。新目录移至暂存区后由失败清理处理。 */
+async function rollbackRuntime() {
+  const target = runtimeDir()
+  const staging = stagingDir()
+  const backup = backupDir()
+  if (!fs.existsSync(backup)) return
+  if (fs.existsSync(staging)) throw new Error(`暂存目录仍存在，无法安全回滚：${staging}`)
+  if (fs.existsSync(target)) await withRetry(() => fs.renameSync(target, staging), '暂存失败的新运行时')
+  try {
+    await withRetry(() => fs.renameSync(backup, target), '恢复旧运行时')
+  } catch (error) {
+    if (fs.existsSync(staging) && !fs.existsSync(target)) {
+      try { await withRetry(() => fs.renameSync(staging, target), '恢复新运行时') } catch { /* 保留现场 */ }
+    }
+    throw error
+  }
 }
 
 /** 写入热更新标记：harness-runtime 据此在启动时复用这棵树而不是被随包归档覆盖 */
@@ -512,6 +530,9 @@ async function install(opts = {}) {
   emit()
   log(`开始热更新：${PACKAGE}@${version}（源 ${registry}）`)
   let stopBeforeSwap = false
+  let swapped = false
+  let hadPreviousRuntime = false
+  let wasActive = false
   try {
     const { cli } = await ensureUpdater()
     const proxy = await proxyEnvFor(registry)
@@ -523,27 +544,42 @@ async function install(opts = {}) {
     // starting 态同样要停（其进程正跑在旧目录上），且安装完需要重启拉到新目录
     setInstall({ status: 'swapping' })
     const harnessService = require('./harness-service')
-    const wasActive = ['running', 'starting'].includes(harnessService.status().status)
+    wasActive = ['running', 'starting'].includes(harnessService.status().status)
     harnessService.stop()
     stopBeforeSwap = true
-    await swapRuntimes()
+    hadPreviousRuntime = await swapRuntimes()
+    swapped = true
     writeHotMarker(version, registry)
-    fs.rmSync(stagingDir(), { recursive: true, force: true })
 
-    if (wasActive) await restartService()
+    if (wasActive) {
+      const snapshot = await restartService()
+      if (snapshot.status !== 'running') throw new Error(`新版本服务未能启动：${snapshot.error || snapshot.status}`)
+    }
+    if (hadPreviousRuntime) fs.rmSync(backupDir(), { recursive: true, force: true })
+    fs.rmSync(stagingDir(), { recursive: true, force: true })
     writeState({ latestVersion: version, lastError: '', lastInstalledAt: Date.now() })
     // 统计的是 <runtime>/dsh 下的 node_modules（与安装 prefix 同级），不是 runtime 根
     setInstall({ status: 'done', packages: countPackages(path.join(runtimeDir(), 'dsh')), finishedAt: Date.now() })
     log(`热更新完成：dsh ${version}`)
     return { ok: true, version, ...status() }
   } catch (err) {
-    const message = (err && err.message) || String(err)
+    let message = (err && err.message) || String(err)
     log('热更新失败：', message)
-    try { fs.rmSync(stagingDir(), { recursive: true, force: true }) } catch { /* noop */ }
+    if (swapped && hadPreviousRuntime) {
+      try {
+        require('./harness-service').stop()
+        await rollbackRuntime()
+      } catch (rollbackError) {
+        message += `；旧运行时回滚失败：${rollbackError.message}（保留备份 ${backupDir()}）`
+      }
+    }
+    if (!fs.existsSync(backupDir())) {
+      try { fs.rmSync(stagingDir(), { recursive: true, force: true }) } catch { /* noop */ }
+    }
     writeState({ lastError: `更新失败：${message}` })
     setInstall({ status: 'error', error: message, finishedAt: Date.now() })
     // 启动阶段失败：服务已停，尽力恢复原运行时并把服务拉起来
-    if (stopBeforeSwap) {
+    if (stopBeforeSwap && wasActive) {
       try {
         const harnessService = require('./harness-service')
         await harnessService.start({ retryOnFail: true })

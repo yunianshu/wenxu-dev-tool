@@ -1,11 +1,12 @@
 /**
- * 从选定的完整方形源图生成 PNG 与多尺寸 ICO。
- * 保留背景和完整构图，只做尺寸转换，不去底、不裁切、不补边。
+ * 从完整方形源图生成透明圆角 PNG 与多尺寸 ICO。
+ * 保留内部构图和颜色，仅对背景最外侧四角生成抗锯齿透明蒙版。
  * 用法：npm run gen:icons
  */
 const { app, nativeImage } = require('electron')
 const fs = require('fs')
 const path = require('path')
+const { roundCorners } = require('./icon-rounding.cjs')
 const ROOT = path.join(__dirname, '..')
 const SRC = path.join(ROOT, 'build', 'icon-source.png')
 const ICO_SIZES = [256, 128, 64, 48, 32, 24, 16]
@@ -36,10 +37,10 @@ app.whenReady().then(() => {
   const source = nativeImage.createFromPath(SRC)
   const { width, height } = source.getSize()
   if (!width || width !== height) throw new Error('图标源图必须是可解码的正方形')
-  const resize = (size) => source.resize({ width: size, height: size, quality: 'best' }).toPNG()
+  const resize = (size) => roundCorners(nativeImage, source.resize({ width: size, height: size, quality: 'best' })).toPNG()
   fs.writeFileSync(path.join(ROOT, 'build', 'icon.png'), resize(1024))
   fs.writeFileSync(path.join(ROOT, 'build', 'icon.ico'), buildIco(ICO_SIZES.map((size) => ({ size, png: resize(size) }))))
-  console.log(`已保留完整 ${width}×${height} 源图，生成 1024×1024 PNG 及 ${ICO_SIZES.join('/')} ICO`)
+  console.log(`已为 ${width}×${height} 源图添加透明圆角，生成 1024×1024 PNG 及 ${ICO_SIZES.join('/')} ICO`)
   app.exit(0)
 }).catch((err) => {
   console.error(err)

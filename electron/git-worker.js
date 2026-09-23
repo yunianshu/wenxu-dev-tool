@@ -19,7 +19,10 @@
  */
 const gitService = require('./git-service')
 
-const port = process.parentPort
+const port = process.parentPort || {
+  postMessage: (message) => process.send?.(message),
+  on: (event, listener) => process.on(event, listener),
+}
 
 function post(message) {
   try { port.postMessage(message) } catch { /* 主进程已退出 */ }

@@ -1,11 +1,12 @@
 /**
- * 校验完整方形图标：尺寸、像素内容与源图的一致性，以及 ICO 的目录与各档位。
+ * 校验透明圆角图标：尺寸、像素内容与源图圆角处理的一致性，以及 ICO 的目录与各档位。
  * 用法：npm run verify:icons
  */
 const { app, nativeImage } = require('electron')
 const fs = require('fs')
 const path = require('path')
 const assert = require('node:assert/strict')
+const { roundCorners } = require('./icon-rounding.cjs')
 const ROOT = path.join(__dirname, '..')
 const SIZES = [256, 128, 64, 48, 32, 24, 16]
 
@@ -18,14 +19,23 @@ app.whenReady().then(() => {
 
   function checkImage(image, size, label) {
     assert.deepEqual(image.getSize(), { width: size, height: size }, label + ' 尺寸错误')
-    const expected = source.resize({ width: size, height: size, quality: 'best' })
+    const expected = roundCorners(nativeImage, source.resize({ width: size, height: size, quality: 'best' }))
     const pixels = image.toBitmap()
-    assert(pixels.equals(expected.toBitmap()), label + ' 与完整源图缩放结果不一致')
-    for (let i = 3; i < pixels.length; i += 4) {
-      assert.equal(pixels[i], 255, label + ' 不应出现透明或缺失像素')
+    const expectedPixels = expected.toBitmap()
+    for (let i = 0; i < pixels.length; i += 4) {
+      assert.equal(pixels[i + 3], expectedPixels[i + 3], label + ' 圆角透明度不一致')
+      if (pixels[i + 3] === 255) {
+        for (let channel = 0; channel < 3; channel++) {
+          assert.equal(pixels[i + channel], expectedPixels[i + channel], label + ' 内部图案像素不一致')
+        }
+      }
     }
+    for (const corner of [3, (size - 1) * 4 + 3, ((size - 1) * size) * 4 + 3, (size * size - 1) * 4 + 3]) {
+      assert(pixels[corner] < 64, label + ' 四角应透明或仅有少量抗锯齿像素')
+    }
+    assert.equal(pixels[((Math.floor(size / 2) * size) * 4) + 3], 255, label + ' 边缘中段应保留背景')
     fs.writeFileSync(path.join(previewDir, `icon-${size}.png`), image.toPNG())
-    console.log(`通过：${label}，${size}×${size}，完整构图与不透明背景`)
+    console.log(`通过：${label}，${size}×${size}，完整构图与透明圆角`)
   }
 
   checkImage(nativeImage.createFromPath(path.join(ROOT, 'build', 'icon.png')), 1024, '主图标')

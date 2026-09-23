@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "targets": ["nsis"],
+    "windows": { "webviewInstallMode": { "type": "downloadBootstrapper" } },
+    "resources": {
+      "../build/tauri-runtime/node.exe": "node.exe"
+    }
+  }
+}

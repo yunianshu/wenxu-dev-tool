@@ -1,12 +1,4 @@
-# 三平台打包工作流（发布到 GitHub Releases）
-# 触发方式：
-#   - 推送 tag（如 v1.0.2）：自动构建并发布正式 Release（dmg/exe/AppImage 可安装文件）
-#   - GitHub 页面手动触发（Actions → Build Desktop App → Run workflow）
-#
-# 说明：
-#   - macOS 的 dmg 只能在 macOS 环境构建，本工作流用 macos-latest runner
-#   - 用 GITHUB_TOKEN 发布到 Release（需 permissions.contents: write）
-
+# 三平台 Tauri 安装包。手动触发只上传 Actions 产物；版本 tag 触发正式 Release。
 name: Build Desktop App
 
 on:
@@ -19,63 +11,59 @@ permissions:
   contents: write
 
 jobs:
-  mac:
-    name: 构建 macOS (dmg)
-    runs-on: macos-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+            command: npm run build:win
+          - os: macos-latest
+            name: mac
+            command: npm run build:mac
+          - os: ubuntu-22.04
+            name: linux
+            command: npm run build:linux
+    name: 构建 ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: 安装 Linux 编译依赖
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils build-essential python3 libfuse2
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
       - run: npm ci
-      - run: npm run build:renderer
-      - run: npx electron-builder --mac --publish=always
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - run: ${{ matrix.command }}
       - uses: actions/upload-artifact@v4
         with:
-          name: dev-project-manager-mac
-          path: release/*/*.dmg
+          name: personnel-plm-${{ matrix.name }}
+          path: |
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/deb/*.deb
           if-no-files-found: error
 
-  windows:
-    name: 构建 Windows (exe)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - run: npm ci
-      - run: npm run build:renderer
-      - run: npx electron-builder --win --publish=always
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dev-project-manager-windows
-          path: release/*/*.exe
-          if-no-files-found: error
-
-  linux:
-    name: 构建 Linux (AppImage)
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/download-artifact@v4
         with:
-          node-version: 20
-          cache: npm
-      - run: npm ci
-      - run: npm run build:renderer
-      - run: npx electron-builder --linux --publish=always
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/upload-artifact@v4
+          pattern: personnel-plm-*
+          path: release-files
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
         with:
-          name: dev-project-manager-linux
-          path: release/*/*.AppImage
-          if-no-files-found: error
+          files: release-files/*

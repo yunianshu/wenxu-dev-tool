@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "targets": ["dmg"],
+    "macOS": { "signingIdentity": "-" },
+    "resources": {
+      "../build/tauri-runtime/node": "node"
+    }
+  }
+}

@@ -227,6 +227,24 @@ function startRegistry(latest, state) {
   check('U8e 中止后运行时未被破坏', rt.currentRuntimeVersion() === LATEST)
   delete process.env.STUB_NPM_MODE
 
+  // 新树通过静态校验、但重启服务失败时，应把旧树放回去并恢复旧服务。
+  const harnessService = require('../electron/harness-service')
+  const originals = {
+    status: harnessService.status, stop: harnessService.stop,
+    restart: harnessService.restart, start: harnessService.start,
+  }
+  let oldServiceRestarted = false
+  harnessService.status = () => ({ status: 'running' })
+  harnessService.stop = () => ({ status: 'stopped' })
+  harnessService.restart = async () => ({ status: 'error', error: '合成启动失败' })
+  harnessService.start = async () => { oldServiceRestarted = true; return { status: 'running' } }
+  const restartFail = await update.install({ version: '0.1.7-stub', registry })
+  Object.assign(harnessService, originals)
+  check('U8f 新服务启动失败时回滚旧运行时', restartFail.ok === false
+    && /合成启动失败/.test(restartFail.error) && rt.installedVersion(cacheDir) === LATEST)
+  check('U8g 回滚后旧服务重新启动且备份已归位', oldServiceRestarted
+    && !fs.existsSync(path.join(root, 'rt-old')) && !fs.existsSync(path.join(root, 'rt-new')))
+
   // ── U9 非随包形态拒绝热更新 ──
   const overrideDir = path.join(root, 'override')
   fs.mkdirSync(path.join(overrideDir, 'dsh'), { recursive: true })
@@ -264,7 +282,11 @@ function startRegistry(latest, state) {
     /未找到 dsh-win32-process/.test(missingMsg), missingMsg)
 
   server.close()
-  try { fs.rmSync(root, { recursive: true, force: true }) } catch { /* noop */ }
+  const resolvedRoot = fs.realpathSync(root)
+  if (path.dirname(resolvedRoot) !== fs.realpathSync(os.tmpdir()) || !path.basename(resolvedRoot).startsWith('pm-harness-update-')) {
+    throw new Error('拒绝清理非本测试目录')
+  }
+  try { fs.rmSync(resolvedRoot, { recursive: true, force: true }) } catch { /* noop */ }
   console.log(failed ? `\n结果：${failed} 项失败` : '\n结果：全部通过')
   process.exit(failed ? 1 : 0)
 })().catch((err) => {

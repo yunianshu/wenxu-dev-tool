@@ -7,8 +7,16 @@ import App from './App.vue'
 import './styles.css'
 
 const app = createApp(App)
-app.use(ElementPlus, { locale: zhCn })
-for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
-  app.component(key, component)
-}
-app.mount('#app')
+const bridgeReady = window.__TAURI_INTERNALS__
+  ? import('./tauri-bridge.generated.js')
+  : Promise.resolve()
+
+bridgeReady.then(() => {
+  app.use(ElementPlus, { locale: zhCn })
+  for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
+    app.component(key, component)
+  }
+  app.mount('#app')
+}).catch((error) => {
+  console.error('桌面后台连接失败', error)
+})
