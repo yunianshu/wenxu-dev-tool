@@ -1,6 +1,6 @@
 [package]
 name = "personnel-plm"
-version = "1.4.96"
+version = "1.4.97"
 description = "Personnel PLM desktop workbench"
 authors = ["yunainshu"]
 license = "MIT"
