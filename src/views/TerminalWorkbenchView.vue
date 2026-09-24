@@ -6,7 +6,6 @@
     <Teleport v-if="topbarReady" to="#app-topbar-slot">
       <div class="topbar-page terminal-topbar-page">
         <div class="terminal-topbar-identity">
-          <span class="terminal-topbar-mark" aria-hidden="true">›_</span>
           <h1 class="topbar-page-title">终端工作台</h1>
           <span class="terminal-pane-total">{{ panes.length }} 个窗格</span>
         </div>
@@ -536,12 +535,12 @@ function focusProject(projectId) {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 10px;
-  background: #12161d;
+  padding: var(--tool-page-gap);
+  background: var(--brand-bg);
 }
 
-.terminal-topbar-page { gap: 18px; }
-.terminal-topbar-identity { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.terminal-topbar-page { gap: 16px; justify-content: space-between; }
+.terminal-topbar-identity { display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
 .terminal-topbar-mark {
   display: inline-flex;
   align-items: center;
@@ -555,16 +554,16 @@ function focusProject(projectId) {
   letter-spacing: -.12em;
   padding-right: 3px;
 }
-.terminal-topbar-identity .topbar-page-title { color: #f2f5f7; font-size: 14px; }
-.terminal-pane-total { color: #83909e; font-size: 12px; white-space: nowrap; }
+.terminal-topbar-identity .topbar-page-title { color: var(--brand-text); font-size: 22px; }
+.terminal-pane-total { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .terminal-toolbar {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   flex-wrap: nowrap;
 }
-.terminal-toolbar-divider { width: 1px; height: 18px; margin: 0 5px; background: #3b4652; }
-.terminal-toolbar-label { color: #83909e; font-size: 12px; white-space: nowrap; }
+.terminal-toolbar-divider { width: 1px; height: 16px; margin: 0 4px; background: var(--line); }
+.terminal-toolbar-label { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .terminal-toolbar :deep(.el-button) { min-height: 32px; height: 32px; margin-left: 0; border-radius: 6px; }
 .terminal-toolbar :deep(.terminal-add-button) {
   --el-button-bg-color: #167c70;
@@ -578,7 +577,7 @@ function focusProject(projectId) {
   font-weight: 600;
 }
 .terminal-toolbar :deep(.el-radio-group) {
-  border: 1px solid #39434e;
+  border: 1px solid var(--line-strong);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -591,28 +590,28 @@ function focusProject(projectId) {
   outline: none;
   border: 0;
   border-radius: 0;
-  background: #202731;
-  color: #9ba8b6;
+  background: var(--surface);
+  color: var(--text-muted);
 }
 .terminal-toolbar :deep(.el-radio-button + .el-radio-button .el-radio-button__inner) {
-  box-shadow: inset 1px 0 0 #39434e;
+  box-shadow: inset 1px 0 0 var(--line);
 }
 .terminal-toolbar :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  background: #294c49;
-  color: #9be5d3;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
   box-shadow: none;
 }
 .terminal-toolbar :deep(.el-radio-button__inner:hover) {
-  color: #fff;
-  background: #303b46;
+  color: var(--brand-text);
+  background: var(--surface-subtle);
 }
 .terminal-toolbar :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner:hover) {
-  color: #b4f2e3;
-  background: #315b55;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
 }
 /* outline 移除后保留键盘焦点指示 */
 .terminal-toolbar :deep(.el-radio-button__original-radio:focus-visible + .el-radio-button__inner) {
-  outline: 2px solid #64cbb4;
+  outline: 2px solid var(--accent-strong);
   outline-offset: -2px;
 }
 /* 图标用实心块直接画格子：描边线条在这个尺寸下会被亚像素冲淡（横线尤其明显），
@@ -631,8 +630,8 @@ function focusProject(projectId) {
 .terminal-hint,
 .terminal-empty {
   margin: 8px 0 0;
-  color: #a8b3c0;
-  font-size: 14px;
+  color: var(--text-muted);
+  font-size: 13px;
   line-height: 1.8;
 }
 
@@ -642,7 +641,7 @@ function focusProject(projectId) {
 }
 
 .terminal-empty-sub {
-  color: #778492;
+  color: var(--text-muted);
   font-size: 13px;
 }
 

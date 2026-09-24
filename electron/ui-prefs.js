@@ -6,7 +6,7 @@
  * 侧栏收起这类随时切换的界面状态混在里面，会被「保存设置」的旧快照覆盖
  * （与 terminal-layout.js 同一个理由）。
  *
- * 存什么：纯外观状态（侧栏是否收起、终端字号与字体）。不含任何业务数据与凭据。
+ * 存什么：纯外观状态（主题、侧栏是否收起、终端字号与字体）。不含任何业务数据与凭据。
  *
  * 注意：save() 是以整份偏好为单位写入的（normalize 会补齐缺失键），
  * 因此调用方改一个字段时必须把**当前完整的偏好**一起传回，
@@ -36,6 +36,7 @@ function normalizeFontFamily(value) {
 function normalize(raw) {
   const size = Number(raw?.terminalFontSize)
   return {
+    theme: raw?.theme === 'dark' ? 'dark' : 'light',
     sidebarCollapsed: raw?.sidebarCollapsed === true,
     terminalFontSize: Number.isFinite(size)
       ? Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, Math.round(size)))

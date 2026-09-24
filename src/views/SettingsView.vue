@@ -4,10 +4,13 @@
     <Teleport v-if="topbarReady" to="#app-topbar-slot">
       <div class="topbar-page">
         <h1 class="topbar-page-title">设置</h1>
+        <span class="topbar-context">{{ SETTING_SECTIONS.find(section => section.value === activeSection)?.label }}</span>
       </div>
     </Teleport>
     <div class="settings-nav">
-      <el-segmented v-model="activeSection" :options="SETTING_SECTIONS" class="settings-sections" />
+      <div class="settings-sections" role="tablist" aria-label="设置分区">
+        <button v-for="section in SETTING_SECTIONS" :key="section.value" type="button" role="tab" :aria-selected="activeSection === section.value" :class="{ active: activeSection === section.value }" @click="activeSection = section.value">{{ section.label }}</button>
+      </div>
     </div>
     <el-alert
       v-if="state.config.ai?.keyNeedsReentry || state.config.zentao?.pwdNeedsReentry || state.config.hanprint?.pwdNeedsReentry"
@@ -339,6 +342,17 @@
     <section v-show="activeSection === 'ui'" class="workspace-panel settings-ui">
       <div class="settings-item">
         <div class="settings-item-head">
+          <strong>外观主题</strong>
+          <span>立即应用到全部工作区，并自动保存。</span>
+        </div>
+        <el-radio-group :model-value="state.ui.theme" class="theme-options" aria-label="外观主题" @update:model-value="changeTheme">
+          <el-radio-button value="light"><el-icon><Sunny /></el-icon>浅色</el-radio-button>
+          <el-radio-button value="dark"><el-icon><Moon /></el-icon>黑色</el-radio-button>
+        </el-radio-group>
+        <p v-if="themeSaveError" class="theme-save-error" role="alert">{{ themeSaveError }} <el-button link type="primary" @click="changeTheme(state.ui.theme)">重试保存</el-button></p>
+      </div>
+      <div class="settings-item">
+        <div class="settings-item-head">
           <strong>终端字体</strong>
           <span>统一设置终端工作台的字体与字号，改完立即生效</span>
         </div>
@@ -350,11 +364,9 @@
           <strong>窗口关闭行为</strong>
           <span>点击窗口右上角关闭按钮（×）时：</span>
         </div>
-        <el-segmented
-          :model-value="closeAction"
-          :options="CLOSE_ACTION_OPTIONS"
-          @update:model-value="saveCloseAction"
-        />
+        <el-radio-group :model-value="closeAction" class="close-action-options" @update:model-value="saveCloseAction">
+          <el-radio v-for="option in CLOSE_ACTION_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</el-radio>
+        </el-radio-group>
       </div>
     </section>
 
@@ -380,9 +392,21 @@ import { useProjects } from '../composables/useProjects'
 import { toPlain } from '../utils/ipc'
 import { shortPath, pathKey } from '../utils/path'
 import TerminalFontSettings from '../components/TerminalFontSettings.vue'
+import { applyTheme } from '../utils/ui-prefs'
 defineEmits(['show-changelog'])
 
 const topbarReady = useTopbarReady()
+const themeSaveError = ref('')
+let themeSaveRequest = 0
+
+async function changeTheme(value) {
+  const request = ++themeSaveRequest
+  themeSaveError.value = ''
+  try { await applyTheme(value) }
+  catch (error) {
+    if (request === themeSaveRequest) themeSaveError.value = `主题已应用，但保存失败：${error.message || error}`
+  }
+}
 
 const props = defineProps({
   initialSection: {

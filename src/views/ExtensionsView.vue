@@ -1,198 +1,55 @@
 <template>
-  <div class="settings-page extensions-page">
-    <!-- 页头上提到应用顶栏（与项目无关的全局管理页） -->
+  <div class="extensions-page">
     <Teleport v-if="topbarReady" to="#app-topbar-slot">
       <div class="topbar-page">
         <h1 class="topbar-page-title">扩展管理</h1>
+        <div class="page-actions"><el-button :loading="loading" @click="loadExtensions"><el-icon><Refresh /></el-icon>刷新</el-button></div>
       </div>
     </Teleport>
-
-    <!-- 一级：扩展项卡片，按 技能 / 插件 分区 -->
-    <template v-if="!selected">
-      <div class="ext-section">
-        <div class="ext-section-head">
-          <div class="ext-section-title">
-            <el-icon><MagicStick /></el-icon>
-            <span>技能 Skills</span>
-            <span class="ext-section-sub">四平台共 {{ skillSummary.total }} 项 · 启用 {{ skillSummary.enabled }}</span>
-          </div>
-        </div>
-        <div class="ext-grid">
-          <div v-for="c in skillCards" :key="c.key" class="ext-card" @click="openCard(c)">
-            <div class="ext-card-top">
-              <el-tag size="small" :type="c.installed ? 'success' : 'info'" effect="plain">{{ c.platformName }}</el-tag>
-              <el-icon class="ext-card-icon"><component :is="c.icon" /></el-icon>
-            </div>
-            <template v-if="c.installed">
-              <div class="ext-card-count">启用 {{ c.enabled }} / {{ c.total }}</div>
-              <el-progress
-                :percentage="c.total ? Math.round((c.enabled / c.total) * 100) : 0"
-                :stroke-width="4"
-                :show-text="false"
-                class="ext-card-progress"
-              />
-            </template>
-            <div class="ext-card-note" :class="{ 'ext-card-note-warn': !c.installed }">{{ c.note }}</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="ext-section">
-        <div class="ext-section-head">
-          <div class="ext-section-title">
-            <el-icon><Box /></el-icon>
-            <span>插件 Plugins</span>
-            <span class="ext-section-sub">四平台共 {{ pluginSummary.total }} 项 · 启用 {{ pluginSummary.enabled }}</span>
-          </div>
-        </div>
-        <div class="ext-grid">
-          <div v-for="c in pluginCards" :key="c.key" class="ext-card" @click="openCard(c)">
-            <div class="ext-card-top">
-              <el-tag size="small" :type="c.installed ? 'success' : 'info'" effect="plain">{{ c.platformName }}</el-tag>
-              <el-icon class="ext-card-icon"><component :is="c.icon" /></el-icon>
-            </div>
-            <template v-if="c.supported && c.installed">
-              <div class="ext-card-count">启用 {{ c.enabled }} / {{ c.total }}</div>
-              <el-progress
-                :percentage="c.total ? Math.round((c.enabled / c.total) * 100) : 0"
-                :stroke-width="4"
-                :show-text="false"
-                class="ext-card-progress"
-              />
-            </template>
-            <div class="ext-card-note" :class="{ 'ext-card-note-warn': !c.installed || !c.supported }">{{ c.note }}</div>
-          </div>
-        </div>
-      </div>
-    </template>
-
-    <!-- 二级：子项卡片 -->
-    <template v-else>
-      <div class="extensions-toolbar">
-        <div class="ext-detail-head">
-          <el-button class="ext-back" @click="backToOverview">
-            <el-icon style="margin-right: 4px"><Back /></el-icon>返回
-          </el-button>
-          <div>
-            <div class="ext-detail-title">{{ currentPlatform?.name }} · {{ typeTitle }}</div>
-            <div class="ext-detail-sub">
-              共 {{ rows.length }} 项<template v-if="currentPlatform?.installed"> · 启用 {{ enabledCount }}</template>
-              <template v-else> · 未检测到平台目录</template>
-            </div>
-          </div>
-        </div>
-        <div class="header-actions">
-          <el-button plain @click="openPlatformDir">
-            <el-icon style="margin-right: 4px"><FolderOpened /></el-icon>打开目录
-          </el-button>
-          <el-button type="primary" plain :loading="loading" @click="loadExtensions">
-            <el-icon style="margin-right: 4px"><Refresh /></el-icon>刷新
-          </el-button>
-        </div>
-      </div>
-
-      <el-alert
-        v-if="currentPlatform && !currentPlatform.installed"
-        type="warning"
-        :closable="false"
-        show-icon
-        class="card"
-      >
-        未检测到 {{ currentPlatform.name }} 的配置目录（{{ currentPlatform.dir }}），可能尚未安装该平台。
-      </el-alert>
-      <el-alert
-        v-if="currentPlatform && currentPlatform.error"
-        type="error"
-        :closable="false"
-        show-icon
-        class="card"
-      >
-        读取 {{ currentPlatform.name }} 扩展失败：{{ currentPlatform.error }}
-      </el-alert>
-      <el-alert
-        v-else-if="selected.type === 'plugins' && currentPlatform && !currentPlatform.pluginsSupported"
-        type="info"
-        :closable="false"
-        show-icon
-        class="card"
-      >
-        {{ currentPlatform.pluginNote }}
-      </el-alert>
-
-      <!-- 技能子项卡片 -->
-      <div v-if="selected.type === 'skills'" class="ext-grid ext-items">
-        <div v-for="row in rows" :key="row.name" class="ext-item">
-          <div class="ext-item-head">
-            <div class="ext-item-name">
-              <span class="skill-name" :title="row.name">{{ row.name }}</span>
-              <el-tooltip v-if="row.linkTarget" :content="`链接目标：${row.linkTarget}`" placement="top">
-                <el-tag size="small" effect="plain">链接</el-tag>
-              </el-tooltip>
-              <el-tag v-if="row.linkBroken" type="danger" size="small" effect="plain">链接失效</el-tag>
-              <el-tag v-if="!row.hasSkillMd && !row.linkBroken" type="danger" size="small" effect="plain">缺 SKILL.md</el-tag>
-            </div>
-            <el-switch
-              :model-value="row.enabled"
-              :loading="row.busy"
-              :disabled="!row.hasSkillMd && !row.linkBroken"
-              @change="toggleSkill(row, $event)"
-            />
-          </div>
-          <div class="ext-item-desc" :title="row.description">{{ row.description || '（无描述）' }}</div>
-          <div class="ext-item-foot">
-            <el-button text size="small" type="primary" :disabled="!row.hasSkillMd" @click="showSkillDoc(row)">查看</el-button>
-            <el-button text size="small" @click="openPath(row.dir)">打开目录</el-button>
-          </div>
-        </div>
-        <div v-if="!rows.length" class="ext-empty">
-          <el-icon><MagicStick /></el-icon>
-          <p>未发现任何技能目录</p>
-        </div>
-      </div>
-
-      <!-- 插件子项卡片 -->
-      <div v-else class="ext-grid ext-items">
-        <div v-for="row in rows" :key="row.id" class="ext-item">
-          <div class="ext-item-head">
-            <div class="ext-item-name">
-              <span class="skill-name" :title="row.name">{{ row.name }}</span>
-              <el-tag v-if="row.marketplace" size="small" effect="plain" type="info">{{ row.marketplace }}</el-tag>
-            </div>
-            <el-switch :model-value="row.enabled" :loading="row.busy" @change="togglePlugin(row, $event)" />
-          </div>
-          <div class="ext-item-desc">
-            <span v-if="row.version" class="ext-item-meta">v{{ row.version }}</span>
-            <span v-if="row.installedAt" class="ext-item-meta">安装于 {{ formatTime(row.installedAt) }}</span>
-            <span v-if="!row.version && !row.installedAt" class="ext-item-meta">（无版本信息）</span>
-          </div>
-          <div class="ext-item-foot">
-            <el-button text size="small" :disabled="!row.installPath" @click="openPath(row.installPath)">打开目录</el-button>
-          </div>
-        </div>
-        <div v-if="!rows.length" class="ext-empty">
-          <el-icon><Box /></el-icon>
-          <p>未发现已安装的插件</p>
-        </div>
-      </div>
-    </template>
-
-    <!-- SKILL.md 预览 -->
-    <el-drawer v-model="docVisible" :title="docTitle" size="46%">
-      <pre class="skill-doc">{{ docContent }}</pre>
-    </el-drawer>
+    <div class="ext-platforms" role="tablist" aria-label="扩展平台">
+      <button v-for="platform in platforms" :key="platform.id" type="button" role="tab" :aria-selected="selected?.platformId === platform.id" :class="{ active: selected?.platformId === platform.id }" @click="selectPlatform(platform.id)">{{ platform.name }}</button>
+    </div>
+    <div class="ext-type-tabs" role="tablist" aria-label="扩展类型">
+      <button v-for="type in [{ id: 'skills', label: '技能' }, { id: 'plugins', label: '插件' }]" :key="type.id" type="button" role="tab" :aria-selected="selected?.type === type.id" :class="{ active: selected?.type === type.id }" @click="selectType(type.id)">{{ type.label }}<span>{{ currentPlatform?.[type.id]?.length || 0 }}</span></button>
+    </div>
+    <div class="extensions-toolbar">
+      <el-input v-model="search" clearable :placeholder="selected?.type === 'plugins' ? '搜索插件' : '搜索技能'" aria-label="搜索扩展" class="ext-search"><template #prefix><el-icon><Search /></el-icon></template></el-input>
+      <el-select v-model="statusFilter" aria-label="扩展状态" class="ext-status-filter"><el-option label="全部状态" value="all" /><el-option label="已启用" value="enabled" /><el-option label="已停用" value="disabled" /><el-option label="异常" value="error" /></el-select>
+      <el-button text :disabled="!currentPlatform?.dir" @click="openPlatformDir"><el-icon><FolderOpened /></el-icon>打开目录</el-button>
+    </div>
+    <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" show-icon />
+    <el-alert v-else-if="currentPlatform?.error" :title="currentPlatform.error" type="error" :closable="false" show-icon />
+    <el-alert v-else-if="currentPlatform && !currentPlatform.installed" :title="'未检测到 ' + currentPlatform.name + ' 的配置目录：' + currentPlatform.dir" type="warning" :closable="false" show-icon />
+    <el-alert v-else-if="selected?.type === 'plugins' && currentPlatform && !currentPlatform.pluginsSupported" :title="currentPlatform.pluginNote || '该平台暂不支持插件'" type="info" :closable="false" show-icon />
+    <div class="ext-table-wrap" v-loading="loading">
+      <el-table ref="tableRef" :data="pagedRows" height="100%" highlight-current-row :row-key="row => row.id || row.name" @current-change="currentRow = $event" @row-dblclick="inspectRow" @row-contextmenu="openContext" @sort-change="changeSort">
+        <template #empty><div class="ext-empty"><el-icon><Grid /></el-icon><strong>{{ search || statusFilter !== 'all' ? '没有匹配的扩展' : '暂无' + (selected?.type === 'plugins' ? '插件' : '技能') }}</strong><span>{{ search || statusFilter !== 'all' ? '调整搜索关键词或筛选条件' : '在对应平台安装后，点击刷新重新读取' }}</span></div></template>
+        <el-table-column :label="selected?.type === 'plugins' ? '插件名称' : '技能名称'" prop="name" sortable="custom" min-width="200" show-overflow-tooltip />
+        <el-table-column label="用途" min-width="320" show-overflow-tooltip><template #default="{row}">{{ row.description || (row.version ? '版本 ' + row.version : '—') }}</template></el-table-column>
+        <el-table-column label="来源" width="140" show-overflow-tooltip><template #default="{row}">{{ row.marketplace || (row.linkTarget ? '符号链接' : '本地' + (selected?.type === 'plugins' ? '插件' : '技能')) }}</template></el-table-column>
+        <el-table-column label="状态" width="120"><template #default="{row}"><span :class="{ 'ext-row-error': row.linkBroken || (selected?.type === 'skills' && !row.hasSkillMd) }">{{ rowStatus(row) }}</span></template></el-table-column>
+        <el-table-column label="操作" width="112" fixed="right"><template #default="{row}"><el-dropdown trigger="click" @command="command => runCommand(command, row)"><el-button text size="small" :aria-label="'操作 ' + row.name"><el-icon><MoreFilled /></el-icon></el-button><template #dropdown><el-dropdown-menu><el-dropdown-item v-if="selected?.type === 'skills'" command="inspect" :disabled="!row.hasSkillMd">查看 SKILL.md</el-dropdown-item><el-dropdown-item command="open">打开目录</el-dropdown-item><el-dropdown-item command="toggle" :disabled="row.busy || !canToggle(row)">{{ row.enabled ? '停用' : '启用' }}</el-dropdown-item></el-dropdown-menu></template></el-dropdown></template></el-table-column>
+      </el-table>
+    </div>
+    <div v-if="currentRow" class="ext-selection-bar">
+      <strong>{{ currentRow.name }}</strong><span v-if="currentRow.linkTarget" :title="currentRow.linkTarget">链接到 {{ currentRow.linkTarget }}</span>
+      <div class="ext-selection-actions"><el-button v-if="selected?.type === 'skills'" :disabled="!currentRow.hasSkillMd" @click="showSkillDoc(currentRow)"><el-icon><Document /></el-icon>查看 SKILL.md</el-button><el-button :loading="currentRow.busy" :disabled="!canToggle(currentRow)" @click="runCommand('toggle', currentRow)">{{ currentRow.enabled ? '停用' : '启用' }}</el-button></div>
+    </div>
+    <div class="ext-footer"><span>共 {{ filteredRows.length }} 项 · 已启用 {{ enabledCount }} 项</span><el-pagination v-model:current-page="page" :page-size="pageSize" :total="filteredRows.length" layout="prev, pager, next" :hide-on-single-page="true" small /></div>
+    <Teleport to="body"><div v-if="contextMenu" class="ext-context-menu" role="menu" :style="{left: contextMenu.x + 'px', top: contextMenu.y + 'px'}" @click.stop><button v-if="selected?.type === 'skills'" role="menuitem" :disabled="!contextMenu.row.hasSkillMd" @click="contextCommand('inspect')">查看 SKILL.md</button><button role="menuitem" @click="contextCommand('open')">打开目录</button><button role="menuitem" :disabled="contextMenu.row.busy || !canToggle(contextMenu.row)" @click="contextCommand('toggle')">{{ contextMenu.row.enabled ? '停用' : '启用' }}</button></div></Teleport>
+    <el-drawer v-model="docVisible" :title="docTitle" size="560px"><pre class="skill-doc">{{ docContent }}</pre></el-drawer>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { state } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
 
 const loading = ref(false)
 const platforms = ref([])
 const topbarReady = useTopbarReady()
-const selected = ref(null) // null=一级总览；{ platformId, type: 'skills'|'plugins' }
+const selected = ref(null) // { platformId, type: 'skills'|'plugins' }
 const docVisible = ref(false)
 const docTitle = ref('')
 const docContent = ref('')
@@ -203,58 +60,55 @@ const rows = computed(() => {
   return selected.value.type === 'skills' ? currentPlatform.value.skills : currentPlatform.value.plugins
 })
 const enabledCount = computed(() => rows.value.filter((r) => r.enabled).length)
-const typeTitle = computed(() => (selected.value?.type === 'skills' ? '技能 Skills' : '插件 Plugins'))
-
-/** 一级卡片：按类型分区，每个区块内为各平台的卡片 */
-function makeCard(p, type) {
-  const isSkill = type === 'skills'
-  return {
-    key: `${p.id}:${type}`,
-    platformId: p.id,
-    type,
-    platformName: p.name,
-    icon: isSkill ? 'MagicStick' : 'Box',
-    installed: p.installed,
-    supported: isSkill || p.pluginsSupported,
-    enabled: (isSkill ? p.skills : p.plugins).filter((x) => x.enabled).length,
-    total: (isSkill ? p.skills : p.plugins).length,
-    note: isSkill
-      ? (p.installed ? '目录迁移启停 · 链接技能级联源平台' : '未检测到平台目录')
-      : (!p.pluginsSupported ? '该平台暂无插件体系' : !p.installed ? '未检测到平台目录' : '开关写入平台自身配置'),
-  }
+const search = ref('')
+const statusFilter = ref('all')
+const sortOrder = ref('ascending')
+const page = ref(1)
+const pageSize = 25
+const currentRow = ref(null)
+const tableRef = ref(null)
+const loadError = ref('')
+const contextMenu = ref(null)
+const filteredRows = computed(() => {
+  const query = search.value.trim().toLocaleLowerCase()
+  return rows.value.filter(row => {
+    const matchesQuery = !query || [row.name, row.description, row.marketplace].some(value => String(value || '').toLocaleLowerCase().includes(query))
+    const invalid = !!row.linkBroken || (selected.value?.type === 'skills' && !row.hasSkillMd)
+    return matchesQuery && (statusFilter.value === 'all' || (statusFilter.value === 'error' ? invalid : statusFilter.value === 'enabled' ? row.enabled : !row.enabled))
+  }).sort((a,b) => sortOrder.value ? String(a.name).localeCompare(String(b.name), 'zh-CN') * (sortOrder.value === 'descending' ? -1 : 1) : 0)
+})
+const pagedRows = computed(() => filteredRows.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+watch([search, statusFilter, () => selected.value?.platformId, () => selected.value?.type], () => { page.value = 1; currentRow.value = null; contextMenu.value = null })
+watch(filteredRows, value => { page.value = Math.min(page.value, Math.max(1, Math.ceil(value.length / pageSize))); currentRow.value = value.find(row => (row.id || row.name) === (currentRow.value?.id || currentRow.value?.name)) || null })
+function selectPlatform(id) { selected.value = { platformId: id, type: selected.value?.type || 'skills' } }
+function selectType(type) { if (selected.value) selected.value = { ...selected.value, type } }
+function changeSort({order}) { sortOrder.value = order; page.value = 1 }
+function rowStatus(row) { return row.linkBroken ? '链接失效' : selected.value?.type === 'skills' && !row.hasSkillMd ? '缺少 SKILL.md' : row.enabled ? '已启用' : '已停用' }
+function canToggle(row) { return selected.value?.type === 'plugins' || row.hasSkillMd || row.linkBroken }
+function inspectRow(row) { if (selected.value?.type === 'skills' && row.hasSkillMd) showSkillDoc(row) }
+function runCommand(command, row) {
+  if (command === 'inspect') inspectRow(row)
+  if (command === 'open') openPath(row.dir || row.installPath)
+  if (command === 'toggle' && canToggle(row)) selected.value?.type === 'skills' ? toggleSkill(row, !row.enabled) : togglePlugin(row, !row.enabled)
 }
-
-const skillCards = computed(() => platforms.value.map((p) => makeCard(p, 'skills')))
-const pluginCards = computed(() => platforms.value.map((p) => makeCard(p, 'plugins')))
-const skillSummary = computed(() => ({
-  total: skillCards.value.reduce((n, c) => n + c.total, 0),
-  enabled: skillCards.value.reduce((n, c) => n + c.enabled, 0),
-}))
-const pluginSummary = computed(() => ({
-  total: pluginCards.value.reduce((n, c) => n + c.total, 0),
-  enabled: pluginCards.value.reduce((n, c) => n + c.enabled, 0),
-}))
-
-function openCard(card) {
-  selected.value = { platformId: card.platformId, type: card.type }
-}
-
-function backToOverview() {
-  selected.value = null
-}
+function openContext(row, column, event) { event.preventDefault(); tableRef.value?.setCurrentRow(row); contextMenu.value = { row, x: Math.min(event.clientX, window.innerWidth - 180), y: Math.min(event.clientY, window.innerHeight - 120) } }
+function contextCommand(command) { const row = contextMenu.value?.row; contextMenu.value = null; if (row) runCommand(command, row) }
+function closeContext(event) { if (event.type !== 'keydown' || event.key === 'Escape') contextMenu.value = null }
 
 async function loadExtensions() {
   loading.value = true
+  loadError.value = ''
   try {
     const result = await window.gitReport.extensionsList()
     // 整表替换并补齐本地交互字段；selected 仅存 id，刷新后自动对回同一详情页
     platforms.value = (result?.platforms || []).map((p) => ({
       ...p,
-      skills: p.skills.map((s) => ({ ...s, busy: false })),
-      plugins: p.plugins.map((x) => ({ ...x, busy: false })),
+      skills: (p.skills || []).map((s) => ({ ...s, busy: false })),
+      plugins: (p.plugins || []).map((x) => ({ ...x, busy: false })),
     }))
+    if (!platforms.value.some(platform => platform.id === selected.value?.platformId)) selected.value = platforms.value.length ? { platformId: platforms.value[0].id, type: 'skills' } : null
   } catch (error) {
-    ElMessage.error(error?.message || '读取扩展列表失败')
+    loadError.value = error?.message || '读取扩展列表失败'
   } finally {
     loading.value = false
   }
@@ -320,168 +174,38 @@ function formatTime(value) {
   return Number.isNaN(d.getTime()) ? value : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-onMounted(loadExtensions)
+onMounted(() => { loadExtensions(); window.addEventListener('click', closeContext); window.addEventListener('keydown', closeContext) })
+onBeforeUnmount(() => { window.removeEventListener('click', closeContext); window.removeEventListener('keydown', closeContext) })
 </script>
 
 <style scoped>
-/* 一级/二级共用卡片网格：卡片行左右 32px 内边距，与分区带同一节奏 */
-.ext-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 14px;
-  padding: 16px 32px 20px;
-}
-.ext-items { grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); }
-
-/* 一级分区：分区带（顶部细线 + 标题行，底部收尾线） */
-.ext-section { border-top: 1px solid var(--line); }
-.ext-section:last-child { border-bottom: 1px solid var(--line); }
-.ext-section-head {
-  padding: 14px 32px;
-  border-bottom: 1px solid var(--line);
-}
-.ext-section-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--brand-text);
-}
-.ext-section-title .el-icon { font-size: 17px; color: var(--brand-text-sub); }
-.ext-section-sub {
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--brand-text-sub);
-  margin-left: 4px;
-}
-
-/* 一级扩展项卡片 */
-.ext-card {
-  background: #ffffff;
-  border: 1px solid var(--brand-card-border);
-  border-radius: 10px;
-  padding: 16px 18px;
-  cursor: pointer;
-  box-shadow: 0 1px 2px rgba(20, 30, 50, .04);
-  transition: box-shadow .18s ease, transform .18s ease;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.ext-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 16px rgba(20, 30, 50, .10);
-}
-.ext-card-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.ext-card-icon { font-size: 20px; color: var(--brand-text-sub); }
-/* 卡片主数据：原先 13px 灰字，是卡片里最不显眼的一行，而它才是用户真正要读的数字 */
-.ext-card-count { font-size: 15px; font-weight: 600; color: var(--brand-text); font-variant-numeric: tabular-nums; }
-.ext-card-progress { width: 100%; }
-.ext-card-note {
-  font-size: 12px;
-  color: var(--brand-text-sub);
-  margin-top: auto;
-  padding-top: 10px;
-}
-.ext-card-note-warn { color: #b8860b; }
-
-/* 二级详情头 */
-.extensions-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-shrink: 0;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 16px 32px 14px;
-}
-.ext-detail-head { display: flex; align-items: center; gap: 12px; }
-.ext-detail-title { font-size: 16px; font-weight: 600; color: var(--brand-text); }
-.ext-detail-sub { font-size: 12px; color: var(--brand-text-sub); margin-top: 2px; }
-/* 二级提示条：作为分区带，左右留白与卡片行一致 */
-.extensions-page .el-alert.card { padding: 12px 32px; }
-
-/* 二级子项卡片 */
-.ext-item {
-  background: #ffffff;
-  border: 1px solid var(--brand-card-border);
-  border-radius: 10px;
-  padding: 14px 16px;
-  box-shadow: 0 1px 2px rgba(20, 30, 50, .04);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.ext-item-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-.ext-item-name {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-.skill-name {
-  font-weight: 500;
-  color: var(--brand-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 220px;
-}
-.ext-item-desc {
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--brand-text-sub);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  min-height: 38px;
-}
-.ext-item-meta { margin-right: 12px; }
-.ext-item-foot {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  border-top: 1px solid #f2f4f7;
-  padding-top: 6px;
-}
-.ext-item-foot .el-button + .el-button { margin-left: 0; }
-
-/* 空状态 */
-.ext-empty {
-  grid-column: 1 / -1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  color: var(--brand-text-sub);
-  padding: 48px 0;
-}
-.ext-empty .el-icon { font-size: 34px; }
-.ext-empty p { margin: 0; font-size: 13px; }
-
-/* SKILL.md 预览 */
-.skill-doc {
-  margin: 0;
-  padding: 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 13px;
-  line-height: 1.7;
-  font-family: inherit;
-  background: #f7f8fa;
-  border-radius: 8px;
-  min-height: 100%;
-}
+.extensions-page { height: 100%; min-height: 0; display: flex; flex-direction: column; padding: 0 var(--page-gutter); }
+.ext-platforms { display: flex; gap: 12px; min-height: 64px; align-items: center; }
+.ext-platforms button { height: 32px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink-soft); padding: 0 12px; cursor: pointer; font-size: 12px; }
+.ext-platforms button:hover { background: var(--surface-subtle); }
+.ext-platforms button.active { background: var(--accent-soft); border-color: var(--accent-soft); color: var(--accent-strong); }
+.ext-type-tabs { display: flex; gap: 24px; height: 44px; flex-shrink: 0; border-bottom: 1px solid var(--line); }
+.ext-type-tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; padding: 0; color: var(--text-muted); font-size: 13px; cursor: pointer; }
+.ext-type-tabs button.active { color: var(--accent-strong); border-bottom-color: var(--accent-strong); }
+.ext-type-tabs span { margin-left: 8px; font-size: 11px; color: var(--text-muted); }
+.extensions-toolbar { display: flex; align-items: center; gap: 8px; min-height: 56px; }
+.ext-search { width: 280px; }
+.ext-status-filter { width: 140px; }
+.extensions-toolbar > .el-button { margin-left: auto; }
+.ext-table-wrap { min-height: 200px; flex: 1; }
+.ext-row-error { color: var(--danger); }
+.ext-selection-bar { min-height: 56px; display: flex; align-items: center; gap: 16px; border-top: 1px solid var(--line); font-size: 13px; }
+.ext-selection-bar > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; color: var(--text-muted); font-size: 12px; }
+.ext-selection-actions { margin-left: auto; display: flex; gap: 8px; flex-shrink: 0; }
+.ext-selection-actions .el-button + .el-button { margin: 0; }
+.ext-footer { min-height: 40px; display: flex; justify-content: space-between; align-items: center; color: var(--text-muted); font-size: 11px; }
+.ext-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 64px 16px; line-height: 1.5; }
+.ext-empty .el-icon { font-size: 24px; }
+.ext-empty strong { font-size: 14px; font-weight: 500; }
+.ext-empty span { font-size: 12px; }
+.skill-doc { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.8 var(--el-font-family); color: var(--ink-soft); }
+.ext-context-menu { position: fixed; z-index: 3000; padding: 4px; width: 172px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; box-shadow: var(--shadow-float); }
+.ext-context-menu button { display: block; width: 100%; height: 32px; padding: 0 12px; text-align: left; background: transparent; border: 0; border-radius: 4px; color: var(--ink-soft); font-size: 13px; cursor: pointer; }
+.ext-context-menu button:hover:not(:disabled) { background: var(--surface-subtle); }
+.ext-context-menu button:disabled { color: var(--text-disabled); cursor: default; }
 </style>

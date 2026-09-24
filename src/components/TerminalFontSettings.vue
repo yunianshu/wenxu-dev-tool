@@ -74,13 +74,13 @@ function changeFamily(value) {
 </script>
 
 <style scoped>
-.terminal-font-settings { max-width: 600px; }
+.terminal-font-settings { max-width: 760px; }
 .terminal-font-label { display: block; margin-bottom: 8px; color: var(--brand-text); font-size: 14px; font-weight: 500; }
 .terminal-font-family { width: 100%; }
 .terminal-font-hint { margin: 8px 0 16px; color: var(--text-muted); font-size: 13px; line-height: 1.6; }
 .terminal-font-size-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .terminal-font-size-row .terminal-font-label { margin: 0; }
-.terminal-font-preview { margin: 16px 0 0; padding: 14px 16px; overflow-x: auto; border-radius: 8px; background: #12161d; color: #d7dde8; line-height: 1.6; }
+.terminal-font-preview { margin: 16px 0 0; padding: 20px; overflow-x: auto; border-radius: 6px; background: #12161d; color: #d7dde8; line-height: 1.8; }
 .terminal-font-preview-ok { color: #7dd3a0; }
 .terminal-font-error { color: var(--el-color-danger); font-size: 13px; line-height: 1.6; }
 </style>

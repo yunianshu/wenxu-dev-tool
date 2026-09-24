@@ -509,20 +509,20 @@ async function apply() {
 .ops {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   position: sticky;
   top: 0;
   z-index: 1;
-  padding: 6px 0;
-  background: var(--el-bg-color-overlay, #fff);
+  padding: 8px 0;
+  background: var(--surface);
 }
 .ops .spacer { flex: 1; }
 .warn-text { color: var(--el-color-warning); font-size: 12px; }
 .ai-warn { font-size: 12px; color: var(--el-color-warning); }
 .sec { border: 1px solid var(--el-border-color-lighter); }
-.block-title { margin: 10px 0 6px; font-size: 12px; font-weight: 600; color: var(--brand-text-sub, #6b7280); }
-.tag { margin: 0 6px 4px 0; }
-.dim { color: var(--brand-text-sub, #909399); font-size: 12px; }
+.block-title { margin: 12px 0 8px; font-size: 12px; font-weight: 600; color: var(--brand-text-sub); }
+.tag { margin: 0 8px 4px 0; }
+.dim { color: var(--brand-text-sub); font-size: 12px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 .mt8 { margin-top: 8px; }
 .mb8 { margin-bottom: 8px; }

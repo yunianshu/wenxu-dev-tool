@@ -1,65 +1,72 @@
 <template>
   <div class="page dashboard-page">
-    <!-- 页头上提到应用顶栏；标题固定为「工作台」（原先选中项目后标题会被项目名顶替），
-         项目名放在标题旁的下拉里，既显示当前在看哪个项目，也保留了切换入口 -->
     <!-- 工作台是整个应用的总览，不针对某个项目：这里不再放项目切换器与项目入口，
          要看单个项目去「项目」页 -->
     <Teleport v-if="topbarReady" to="#app-topbar-slot">
       <div class="topbar-page">
         <h1 class="topbar-page-title">工作台</h1>
+        <span class="dashboard-date">{{ dateLabel }}</span>
+        <el-button class="dashboard-refresh" text :loading="refreshing" @click="refreshDashboard()"><el-icon><Refresh /></el-icon>刷新</el-button>
       </div>
     </Teleport>
 
     <template v-if="state.projects.items.length">
+      <div v-if="loadError" class="dashboard-load-error" role="status"><el-icon><Warning /></el-icon>{{ loadError }}<el-button text :loading="refreshing" @click="refreshDashboard()">重试</el-button></div>
       <!-- 今日状态带：回答「今天该做什么、做了没」。
            原先这里放的是项目总数/已关联目录这类配置状态，配置完就不再变化，
            天天看没有信息量；今日报告与今日工时才是每天真正要盯的两件事 -->
-      <section class="metric-strip" aria-label="今日状态">
-        <button class="metric-item metric-item-action" type="button" aria-label="查看今日提交" @click="$emit('navigate', 'report')">
+      <section class="dashboard-metrics" aria-label="今日状态">
+        <button class="dashboard-metric" type="button" aria-label="查看今日提交" @click="$emit('navigate', 'report')">
           <span>今日提交</span>
-          <strong>{{ commitsLoading ? '—' : todayCommits.length }}</strong>
+          <strong>{{ commitsLoading || commitsError ? '—' : todayCommits.length }}</strong>
           <small v-if="state.scan.collecting && state.scan.collectDone < state.scan.collectTotal">正在加载今日活动 {{ state.scan.collectDone }}/{{ state.scan.collectTotal }}</small>
           <small v-else-if="commitsLoading">加载中…</small>
+          <small v-else-if="commitsError">活动读取失败，可重试刷新</small>
           <small v-else-if="!state.discoveredRepos.length">尚未扫描到仓库</small>
           <small v-else>{{ todayRepoCount }} 个仓库有活动</small>
         </button>
-        <button class="metric-item metric-item-action" type="button" aria-label="查看活动报告" @click="$emit('navigate', 'report')">
+        <button class="dashboard-metric" type="button" aria-label="查看活动报告" @click="$emit('navigate', 'report')">
           <span>今日报告</span>
           <strong>{{ todayReports.length ? '已生成' : '未生成' }}</strong>
-          <small>{{ todayReports.length ? `今天 ${todayReports.length} 份` : '点击去生成' }}</small>
+          <small>{{ todayReports.length ? `今天 ${todayReports.length} 份` : '生成今日活动报告' }}</small>
         </button>
-        <button class="metric-item metric-item-action" type="button" aria-label="去填报工时" @click="$emit('navigate', 'fillreport')">
+        <button class="dashboard-metric" type="button" aria-label="去填报工时" @click="$emit('navigate', 'fillreport')">
           <span>今日工时</span>
           <strong>{{ todayFills.length ? '已填报' : '未填报' }}</strong>
-          <small>{{ todayFills.length ? `${todayFills.length} 条记录` : fillReady ? '点击去填报' : '禅道未配置' }}</small>
+          <small>{{ todayFills.length ? `${todayFills.length} 条记录` : fillReady ? '生成后预览并提交' : '禅道未配置' }}</small>
         </button>
-        <button class="metric-item metric-item-action" type="button" aria-label="查看部署" @click="$emit('navigate', 'deploy')">
+        <button class="dashboard-metric" type="button" aria-label="查看部署" @click="$emit('navigate', 'deploy')">
           <span>最近部署</span>
           <strong>{{ lastDeploy ? (lastDeploy.version || '—') : '—' }}</strong>
-          <small>{{ lastDeployHint }}</small>
+          <small>{{ lastDeploy ? `${lastDeploy.projectName || '项目'} · ${lastDeployHint}` : lastDeployHint }}</small>
         </button>
       </section>
 
       <!-- 待处理：只列真的需要动作的事，没有就不占位置 -->
-      <section v-if="todos.length" class="workspace-panel todo-panel">
-        <div class="section-heading"><div><h2>需要处理</h2></div></div>
-        <div class="todo-list">
-          <button v-for="todo in todos" :key="todo.key" class="todo-row" type="button" @click="$emit('navigate', todo.view)">
-            <span class="todo-tag" :class="`is-${todo.level}`">{{ todo.tag }}</span>
-            <span class="todo-text">{{ todo.text }}</span>
-            <el-icon><ArrowRight /></el-icon>
+      <section v-if="todos.length" class="dashboard-section">
+        <div class="dashboard-section-heading"><h2>需要处理</h2></div>
+        <div class="dashboard-todos">
+          <button v-for="todo in todos" :key="todo.key" class="dashboard-todo" :class="{ 'is-alert': todo.level === 'alert' }" type="button" @click="$emit('navigate', todo.view)">
+            <el-icon><Warning v-if="todo.level === 'alert'" /><Document v-else-if="todo.key === 'report'" /><Timer v-else /></el-icon>
+            <span class="dashboard-todo-copy"><strong>{{ todo.text }}</strong><small>{{ todo.description }}</small></span>
+            <span class="dashboard-todo-action"><el-icon><ArrowRight /></el-icon>{{ todo.action }}</span>
           </button>
         </div>
       </section>
 
-      <section class="workspace-panel recent-panel">
-        <div class="section-heading"><div><h2>最近记录</h2></div></div>
-        <div v-if="recentItems.length" class="recent-list">
-          <div v-for="item in recentItems" :key="item.key" class="recent-row">
-            <span class="recent-type">{{ item.type }}</span><strong>{{ item.title }}</strong><span>{{ formatRecordTime(item.time) }}</span>
-          </div>
-        </div>
-        <p v-else class="quiet-empty">暂无记录</p>
+      <section class="dashboard-section">
+        <div class="dashboard-section-heading"><h2>最近记录</h2><span>报告与部署</span></div>
+        <table v-if="recentItems.length" class="dashboard-history">
+          <thead><tr><th scope="col" class="history-type">类型</th><th scope="col">记录</th><th scope="col" class="history-status">状态</th><th scope="col" class="history-time">时间</th><th class="history-action"><span class="visually-hidden">操作</span></th></tr></thead>
+          <tbody><tr v-for="item in recentItems" :key="item.key">
+            <td>{{ item.type }}</td>
+            <td><button class="history-title" type="button" :title="item.title" @click="openRecord(item)">{{ item.title }}</button></td>
+            <td><span :class="{ 'history-error': item.status === 'failed' }">{{ recordStatus(item) }}</span></td>
+            <td :title="String(item.time)">{{ formatRecordTime(item.time) }}</td>
+            <td><el-button text :aria-label="`查看${item.title}`" @click="openRecord(item)"><el-icon><ArrowRight /></el-icon></el-button></td>
+          </tr></tbody>
+        </table>
+        <div v-else class="dashboard-history-empty">{{ refreshing ? '正在加载最近记录…' : '暂无记录，生成报告或发布项目后将在这里显示。' }}</div>
       </section>
     </template>
 
@@ -77,17 +84,23 @@ import EmptyState from '../components/EmptyState.vue'
 import { state } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
 import { todayStr, addDays } from '../utils/date'
+import { useProjects } from '../composables/useProjects'
 
-defineEmits(['navigate', 'create-project'])
+const emit = defineEmits(['navigate', 'create-project'])
+const { selectProject } = useProjects()
 /** 顶栏是否在位（沉浸全屏时整个顶栏被卸载，此时不投递页头） */
 const topbarReady = useTopbarReady()
 
 const TODAY = todayStr()
+const dateLabel = new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })
 const reports = ref([])
 const deployments = ref([])
 const fillLogs = ref([])
 const todayCommits = ref([])
 const commitsLoading = ref(true)
+const commitsError = ref(false)
+const refreshing = ref(false)
+const loadError = ref('')
 /** 禅道配好才谈得上「去填报」，否则指过去也只是看一个未配置的提示 */
 const fillReady = computed(() => !!(state.config.zentao?.baseUrl && state.config.zentao?.account))
 
@@ -108,10 +121,10 @@ const lastDeployHint = computed(() => {
 const todos = computed(() => {
   const list = []
   if (!todayReports.value.length) {
-    list.push({ key: 'report', level: 'todo', tag: '报告', text: '今天还没有生成活动报告', view: 'report' })
+    list.push({ key: 'report', level: 'todo', text: '生成今日活动报告', description: '汇总全部项目的 Git 活动', action: '去生成', view: 'report' })
   }
   if (fillReady.value && !todayFills.value.length) {
-    list.push({ key: 'fill', level: 'todo', tag: '工时', text: '今天的工时还没有填报', view: 'fillreport' })
+    list.push({ key: 'fill', level: 'todo', text: '填报今日工时', description: '生成明细、确认任务绑定后提交', action: '去填报', view: 'fillreport' })
   }
   const failed = fillLogs.value.filter((row) => row.error)
   if (failed.length) {
@@ -120,6 +133,8 @@ const todos = computed(() => {
       level: 'alert',
       tag: '异常',
       text: `有 ${failed.length} 条填报未确认（最近 ${failed[0].date}），需核对平台记录`,
+      description: '核对外部平台后，可从提交记录重新提交',
+      action: '去核对',
       view: 'fillreport',
     })
   }
@@ -133,19 +148,33 @@ function toTime(value) {
   return Number.isNaN(t) ? 0 : t
 }
 const recentItems = computed(() => [
-  ...reports.value.map((item) => ({ key: `r-${item.id}`, type: '报告', title: item.title, time: item.createdAt || '' })),
+  ...reports.value.map((item) => ({ key: `r-${item.id}`, type: '报告', title: item.title, time: item.createdAt || '', view: 'report', status: 'generated' })),
   ...deployments.value.map((item) => ({
     key: `d-${item.id}`,
     type: { deploy: '部署', rollback: '回滚', 'db-restore': '数据恢复' }[item.type] || '部署',
     title: `${item.projectName || '项目'} ${item.version || ''}`,
     time: item.startedAt || '',
+    view: 'deploy',
+    projectId: item.projectId,
+    status: item.status,
   })),
-].sort((a, b) => toTime(b.time) - toTime(a.time)).slice(0, 5))
+].sort((a, b) => toTime(b.time) - toTime(a.time)).slice(0, 6))
+
+function recordStatus(item) {
+  return { generated: '已生成', success: '成功', failed: '失败', rolled_back: '已回滚', canceled: '已取消', running: '进行中' }[item.status] || '—'
+}
+
+function openRecord(item) {
+  if (item.projectId && state.projects.items.some(project => project.id === item.projectId)) selectProject(item.projectId)
+  emit('navigate', item.view)
+}
 
 function formatRecordTime(value) {
   if (!value) return '—'
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false })
+  if (Number.isNaN(date.getTime())) return String(value)
+  const time = date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+  return date.toDateString() === new Date().toDateString() ? `今天 ${time}` : `${date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })} ${time}`
 }
 
 /**
@@ -153,6 +182,8 @@ function formatRecordTime(value) {
  * 命中启动预热的缓存，不会重新跑一遍 git log。
  */
 async function loadTodayCommits() {
+  commitsLoading.value = true
+  commitsError.value = false
   const repos = state.discoveredRepos.map((row) => row.path).filter(Boolean)
   if (!repos.length) { commitsLoading.value = false; return }
   try {
@@ -163,7 +194,7 @@ async function loadTodayCommits() {
       includeMerges: false,
     })
     todayCommits.value = Array.isArray(rows) ? rows : []
-  } catch { /* 取不到就只显示「—」，不影响其余区块 */ } finally {
+  } catch { commitsError.value = true } finally {
     commitsLoading.value = false
   }
 }
@@ -182,49 +213,64 @@ watch(reposAuthoritative, (ready) => {
   else commitsLoading.value = false
 }, { immediate: true })
 
-onMounted(async () => {
-  const [reportRows, deployRows, fillRows] = await Promise.all([
-    window.gitReport.listHistory().catch(() => []),
-    window.gitReport.deployHistoryList().catch(() => []),
-    window.gitReport.fillLog(30).catch(() => null),
-  ])
-  reports.value = Array.isArray(reportRows) ? reportRows : []
-  deployments.value = Array.isArray(deployRows) ? deployRows : []
-  fillLogs.value = fillRows && fillRows.ok ? (fillRows.entries || []) : []
-})
+async function refreshDashboard(includeCommits = true) {
+  if (refreshing.value) return
+  refreshing.value = true
+  loadError.value = ''
+  try {
+    const [reportResult, deployResult, fillResult] = await Promise.allSettled([
+      window.gitReport.listHistory(), window.gitReport.deployHistoryList(), window.gitReport.fillLog(30),
+    ])
+    if (reportResult.status === 'fulfilled') reports.value = Array.isArray(reportResult.value) ? reportResult.value : []
+    if (deployResult.status === 'fulfilled') deployments.value = Array.isArray(deployResult.value) ? deployResult.value : []
+    if (fillResult.status === 'fulfilled' && fillResult.value?.ok) fillLogs.value = fillResult.value.entries || []
+    if ([reportResult, deployResult, fillResult].some(result => result.status === 'rejected') || (fillResult.status === 'fulfilled' && !fillResult.value?.ok)) loadError.value = '部分记录读取失败，已保留上次数据。'
+    if (includeCommits && reposAuthoritative.value) await loadTodayCommits()
+  } finally { refreshing.value = false }
+}
+
+onMounted(() => refreshDashboard(false))
 </script>
 
 <style scoped>
-/* 待处理：只在真有需要动作的事时才出现 */
-.todo-panel { margin-bottom: 16px; }
-.todo-list { padding: 0 32px 4px; }
-.todo-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  min-height: 40px;
-  padding: 10px 0;
-  border: 0;
-  border-bottom: 1px solid var(--line-soft);
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.todo-row:last-child { border-bottom: 0; }
-.todo-row:hover .todo-text { color: var(--brand-accent); }
-.todo-row .el-icon { margin-left: auto; color: var(--brand-text-sub); flex-shrink: 0; }
-.todo-tag {
-  flex-shrink: 0;
-  min-width: 40px;
-  padding: 2px 8px;
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-  text-align: center;
-}
-.todo-tag.is-todo { background: var(--accent-soft); color: var(--accent-strong); }
-.todo-tag.is-alert { background: #fdecea; color: #b3261e; }
-.todo-text { min-width: 0; font-size: 13.5px; color: var(--brand-text); }
+.dashboard-page { padding: 0 24px 24px; color: var(--brand-text); background: var(--surface); }
+.dashboard-date { color: var(--text-muted); font-size: 12px; }
+.dashboard-refresh { margin-left: auto; }
+.dashboard-load-error { display: flex; align-items: center; gap: 8px; min-height: 40px; color: var(--danger); font-size: 13px; border-bottom: 1px solid var(--line); }
+.dashboard-load-error .el-button { margin-left: auto; }
+.dashboard-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
+.dashboard-metric { min-width: 0; min-height: 128px; padding: 24px 16px 16px 0; display: flex; align-items: flex-start; flex-direction: column; gap: 12px; border: 0; background: transparent; color: var(--brand-text); font: inherit; text-align: left; cursor: pointer; }
+.dashboard-metric > span { font-size: 12px; color: var(--text-muted); }
+.dashboard-metric strong { font-size: 22px; font-weight: 600; line-height: 28px; font-variant-numeric: tabular-nums; }
+.dashboard-metric small { max-width: 100%; color: var(--text-muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dashboard-metric:hover { background: var(--surface-subtle); }
+.dashboard-metric:focus-visible, .dashboard-todo:focus-visible, .history-title:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: -2px; border-radius: 4px; }
+.dashboard-section { margin-top: 24px; }
+.dashboard-section-heading { display: flex; justify-content: space-between; align-items: center; min-height: 32px; margin-bottom: 12px; }
+.dashboard-section-heading h2 { margin: 0; color: var(--brand-text); font-size: 14px; font-weight: 600; }
+.dashboard-section-heading > span { color: var(--text-muted); font-size: 12px; }
+.dashboard-todo { display: flex; align-items: center; gap: 16px; width: 100%; min-height: 68px; padding: 12px 8px 12px 0; border: 0; border-bottom: 1px solid var(--line); color: var(--brand-text); background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.dashboard-todo > .el-icon { flex-shrink: 0; color: var(--text-muted); font-size: 16px; }
+.dashboard-todo-copy { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 4px; }
+.dashboard-todo-copy strong { font-size: 13px; font-weight: 500; line-height: 20px; }
+.dashboard-todo-copy small { font-size: 12px; color: var(--text-muted); line-height: 16px; }
+.dashboard-todo-action { display: flex; align-items: center; gap: 8px; flex-shrink: 0; font-size: 12px; }
+.dashboard-todo-action .el-icon { color: var(--text-muted); }
+.dashboard-todo:hover { background: var(--surface-subtle); }
+.dashboard-todo.is-alert > .el-icon, .dashboard-todo.is-alert strong { color: var(--danger); }
+.dashboard-history { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; }
+.dashboard-history th { height: 36px; padding: 0 16px; color: var(--text-muted); background: var(--brand-bg); font-size: 11px; font-weight: 400; text-align: left; border-block: 1px solid var(--line); }
+.dashboard-history td { height: 40px; padding: 0 16px; border-bottom: 1px solid var(--line-soft); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.dashboard-history tr:hover td { background: var(--surface-subtle); }
+.dashboard-history td:first-child { color: var(--brand-text); }
+.history-type { width: 92px; }
+.history-status { width: 112px; }
+.history-time { width: 164px; }
+.history-action { width: 56px; }
+.history-title { display: block; width: 100%; padding: 0; border: 0; overflow: hidden; background: transparent; color: var(--text-muted); font: inherit; text-align: left; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
+.history-title:hover { color: var(--accent-strong); }
+.history-error { color: var(--danger); }
+.dashboard-history-empty { min-height: 120px; display: grid; place-items: center; color: var(--text-muted); font-size: 13px; border-block: 1px solid var(--line); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+@media (max-width: 1280px) { .dashboard-page { padding-inline: 16px; } .dashboard-section { margin-top: 16px; } .dashboard-metric { min-height: 112px; padding-top: 20px; } }
 </style>

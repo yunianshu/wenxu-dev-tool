@@ -1,30 +1,38 @@
 <template>
-  <el-card shadow="never" class="card deploy-card-history">
-    <template #header>
-      <div class="card-header">
-        <span>发布历史</span>
-        <el-button text size="small" type="danger" :disabled="!history.length" @click="clearHistory">清空</el-button>
+  <section class="deploy-card-history">
+      <div class="history-heading">
+        <h2>发布历史</h2>
+        <div class="history-controls">
+          <el-select v-model="statusFilter" :empty-values="[null, undefined]" aria-label="按发布状态筛选" class="history-filter">
+            <el-option value="" label="全部状态" />
+            <el-option v-for="item in ['success', 'failed', 'rolled_back', 'canceled', 'running']" :key="item" :value="item" :label="statusText(item)" />
+          </el-select>
+          <el-dropdown trigger="click" @command="clearHistory">
+            <el-button text aria-label="发布历史更多操作"><el-icon><MoreFilled /></el-icon></el-button>
+            <template #dropdown><el-dropdown-menu><el-dropdown-item command="clear" :disabled="!history.length"><span class="history-danger">清空发布历史</span></el-dropdown-item></el-dropdown-menu></template>
+          </el-dropdown>
+        </div>
       </div>
-    </template>
-    <el-table :data="history" size="small" max-height="320" empty-text="暂无发布记录">
-      <el-table-column prop="version" label="版本" width="100">
+    <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" class="history-error"><el-button text @click="loadHistory">重试</el-button></el-alert>
+    <el-table :data="pagedHistory" v-loading="loading" size="small" max-height="320" :empty-text="statusFilter ? '没有符合此状态的发布记录' : '暂无发布记录'" row-key="id" highlight-current-row :default-sort="{ prop: 'startedAt', order: 'descending' }" @row-dblclick="viewLog" @sort-change="onSort">
+      <el-table-column prop="version" label="版本" min-width="100">
         <template #default="{ row }">
           <span class="mono">{{ row.version || '—' }}</span>
           <el-tag v-if="row.version && (row.releaseId || row.version) === state.deploy.currentVersion" size="small" type="success" effect="plain" class="cur-tag">运行中</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="目标" width="90">
+      <el-table-column label="环境" min-width="100">
         <template #default="{ row }">
           <span>{{ row.targetName || '默认' }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="耗时" width="80">
+      <el-table-column label="耗时" prop="durationMs" sortable="custom" width="96">
         <template #default="{ row }">{{ fmtDur(row.durationMs) }}</template>
       </el-table-column>
-      <el-table-column label="时间" width="150">
+      <el-table-column label="时间" prop="startedAt" sortable="custom" min-width="156">
         <template #default="{ row }">{{ fmtTime(row.startedAt) }}</template>
       </el-table-column>
-      <el-table-column label="类型" width="70">
+      <el-table-column label="类型" width="88">
         <template #default="{ row }">
           <el-tag size="small" :type="{ rollback: 'warning', 'db-restore': 'danger' }[row.type] || 'primary'" effect="plain">
             {{ { deploy: '发布', rollback: '回滚', 'db-restore': '数据恢复' }[row.type] || row.type }}
@@ -36,26 +44,32 @@
           <el-tag size="small" :type="statusType(row.status)">{{ statusText(row.status) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="更新内容" width="110">
+      <el-table-column label="变更" width="88">
         <template #default="{ row }">
           <el-button v-if="hasChanges(row)" text size="small" type="primary" @click="openChanges(row)">
-            查看<span v-if="changeCount(row)" class="change-count">（{{ changeCount(row) }}）</span>
+            <span v-if="changeCount(row)">{{ changeCount(row) }} 条</span><span v-else>查看</span>
           </el-button>
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column prop="message" label="说明" show-overflow-tooltip />
-      <el-table-column label="操作" width="130" fixed="right">
+      <el-table-column prop="message" label="说明" min-width="96" show-overflow-tooltip />
+      <el-table-column label="操作" width="64" fixed="right">
         <template #default="{ row }">
-          <el-button text size="small" type="primary" @click="viewLog(row)">日志</el-button>
-          <el-button
-            v-if="row.projectId === projectId && row.type === 'deploy' && row.status === 'success' && (row.releaseId || row.version) !== state.deploy.currentVersion"
-            text size="small" type="warning" @click="rollbackRecord(row)"
-          >回滚</el-button>
+          <el-dropdown trigger="click" @command="command => onRowCommand(command, row)">
+            <el-button text size="small" :aria-label="`版本 ${row.version || '未知'} 的操作`"><el-icon><MoreFilled /></el-icon></el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="log">查看日志</el-dropdown-item>
+                <el-dropdown-item command="changes" :disabled="!hasChanges(row)">查看更新内容</el-dropdown-item>
+                <el-dropdown-item v-if="row.projectId === projectId && row.type === 'deploy' && row.status === 'success' && (row.releaseId || row.version) !== state.deploy.currentVersion" command="rollback" divided :disabled="state.deploy.running">回滚到此版本</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </template>
       </el-table-column>
     </el-table>
-  </el-card>
+    <div class="history-footer"><span>{{ history.length }} 条发布记录<template v-if="statusFilter"> · 筛选后 {{ filteredHistory.length }} 条</template></span><el-pagination v-model:current-page="page" :page-size="pageSize" :total="filteredHistory.length" layout="prev, pager, next" small hide-on-single-page /></div>
+  </section>
 
   <!-- 历史日志查看 -->
   <el-dialog v-model="logDialog" title="部署日志" width="860px" top="6vh">
@@ -116,6 +130,28 @@ const props = defineProps({
 const emit = defineEmits(['rollback'])
 
 const history = ref([])
+const loading = ref(false)
+const loadError = ref('')
+const statusFilter = ref('')
+const sort = ref({ prop: 'startedAt', order: 'descending' })
+const page = ref(1)
+const pageSize = 6
+const filteredHistory = computed(() => {
+  const rows = history.value.filter((row) => !statusFilter.value || row.status === statusFilter.value)
+  const { prop, order } = sort.value
+  if (!prop || !order) return rows
+  const value = (row) => prop === 'startedAt' ? (Number(row[prop]) || Date.parse(row[prop]) || 0) : (Number(row[prop]) || 0)
+  return rows.sort((a, b) => (value(a) - value(b)) * (order === 'ascending' ? 1 : -1))
+})
+const pagedHistory = computed(() => filteredHistory.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+watch(statusFilter, () => { page.value = 1 })
+watch(() => filteredHistory.value.length, (count) => { page.value = Math.max(1, Math.min(page.value, Math.ceil(count / pageSize))) })
+function onSort({ prop, order }) { sort.value = { prop, order }; page.value = 1 }
+function onRowCommand(command, row) {
+  if (command === 'log') viewLog(row)
+  else if (command === 'changes') openChanges(row)
+  else if (command === 'rollback') rollbackRecord(row)
+}
 const logDialog = ref(false)
 const dialogLog = ref('')
 const changeDialog = ref(false)
@@ -153,11 +189,18 @@ function openChanges(row) {
 async function loadHistory() {
   const pid = props.projectId || undefined
   const request = ++historyRequest
+  loading.value = true
+  loadError.value = ''
   try {
     const rows = await window.gitReport.deployHistoryList(pid) || []
-    if (request === historyRequest && (props.projectId || undefined) === pid) history.value = rows
+    if (request === historyRequest && (props.projectId || undefined) === pid) history.value = Array.isArray(rows) ? rows : []
   } catch {
-    if (request === historyRequest && (props.projectId || undefined) === pid) history.value = []
+    if (request === historyRequest && (props.projectId || undefined) === pid) {
+      history.value = []
+      loadError.value = '发布历史读取失败，请重试'
+    }
+  } finally {
+    if (request === historyRequest && (props.projectId || undefined) === pid) loading.value = false
   }
 }
 
@@ -171,6 +214,8 @@ function rollbackRecord(row) {
 // 因此数据加载统一由本 watch 驱动（immediate 覆盖首载，此时 projectId 可能为空=查全部）
 watch(() => props.projectId, () => {
   history.value = []
+  statusFilter.value = ''
+  page.value = 1
   changeRecordId.value = ''
   changeDialog.value = false
   logDialog.value = false
@@ -253,46 +298,59 @@ defineExpose({ reload: loadHistory })
 </script>
 
 <style scoped>
-.cur-tag { margin-left: 6px; }
+.deploy-card-history { min-width: 0; }
+.history-heading { min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.history-heading h2 { margin: 0; font-size: 14px; color: var(--brand-text); font-weight: 600; }
+.history-controls { display: flex; align-items: center; gap: 8px; }
+.history-filter { width: 120px; }
+.history-danger { color: var(--danger); }
+.history-error { margin-bottom: 12px; }
+.history-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; color: var(--text-muted); font-size: 12px; }
+.deploy-card-history :deep(.el-table__row) { height: 40px; cursor: default; }
+.deploy-card-history :deep(.el-table__cell) { padding: 4px 0; }
+.deploy-card-history :deep(.el-table th.el-table__cell) { height: 36px; background: var(--brand-bg); color: var(--text-muted); font-size: 12px; font-weight: 400; }
+.deploy-card-history :deep(.el-table .cell) { font-size: 12px; }
+.deploy-card-history :deep(.el-table .el-tag) { border: 0; background: transparent; }
+.cur-tag { margin-left: 8px; }
 .muted { color: var(--el-text-color-placeholder); }
 .change-count { margin-left: 2px; }
 .dialog-log {
   background: #14181f;
   color: #b8c0ca;
   border-radius: 8px;
-  padding: 14px;
+  padding: 16px;
   max-height: 62vh;
   overflow: auto;
   font-family: var(--brand-mono);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
   margin: 0;
 }
-.change-body { display: flex; flex-direction: column; gap: 10px; }
+.change-body { display: flex; flex-direction: column; gap: 12px; }
 .change-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .change-version { font-weight: 600; }
-.change-time { color: var(--el-text-color-secondary); font-size: 12.5px; }
-.change-scope { color: var(--el-text-color-secondary); font-size: 12.5px; }
+.change-time { color: var(--el-text-color-secondary); font-size: 12px; }
+.change-scope { color: var(--el-text-color-secondary); font-size: 12px; }
 .change-summary {
   margin: 0;
-  padding: 12px 14px;
+  padding: 12px 16px;
   background: var(--el-fill-color-light);
   border-radius: 8px;
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.8;
-  font-size: 13.5px;
+  font-size: 13px;
   max-height: 34vh;
   overflow: auto;
 }
 .change-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .tag-input { width: 150px; }
 .change-meta { color: var(--el-text-color-secondary); font-size: 12px; }
-.commit-row { display: flex; gap: 8px; padding: 3px 0; font-size: 12.5px; align-items: baseline; }
+.commit-row { display: flex; gap: 8px; padding: 4px 0; font-size: 12px; align-items: baseline; }
 .commit-hash { color: var(--el-text-color-secondary); flex: none; }
 .commit-date { color: var(--el-text-color-secondary); flex: none; }
 .commit-subject { flex: 1; word-break: break-word; }
-.change-empty { color: var(--el-text-color-secondary); font-size: 12.5px; }
+.change-empty { color: var(--el-text-color-secondary); font-size: 12px; }
 </style>

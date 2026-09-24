@@ -1,5 +1,17 @@
 # Personnel PLM · 界面设计稿（Pencil）
 
+## 当前版本：桌面 UI v2
+
+- 可编辑设计：[personnel-plm-desktop-v2.pen](./personnel-plm-desktop-v2.pen)，浅色与黑色各 24 张画板。
+- 功能审计与规范：[desktop-v2-handoff.md](./desktop-v2-handoff.md)。
+- Pencil 原生导出：[预览索引](./desktop-v2-preview/INDEX.md)。
+- 已实现十个业务页面；主题入口为「设置 → 界面 → 外观主题」。全局语义色和桌面窗口规范位于 `src/desktop-v2.css`，页面布局位于各 Vue 组件。
+- 运行 `node scripts/desktop-ui-e2e.cjs` 可生成实际页面截图与验证记录至 `output/desktop-v2-review/`。该脚本需要本机 Playwright CLI 的 `playwright-core` 和 Edge，使用隔离 IPC 数据，不连接业务平台。
+
+以下为旧版设计归档，当前实现以 v2 为准。
+
+## 旧版设计
+
 - 设计文件：`project-tool-ui.pen`（Pencil 桌面版画布，4 个顶层画板）
 - 预览图（2 倍）：`.pencil-preview/<画板名>/*.png`
 - 生成方式：Claude/ZCode 通过 Pencil MCP（`execute`）逐块构建，非手绘

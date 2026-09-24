@@ -1,348 +1,156 @@
 <template>
   <div class="fill-page">
-    <!-- 页头上提到应用顶栏（按所选项目集合填报，与「当前项目」无关） -->
     <Teleport v-if="topbarReady" to="#app-topbar-slot">
       <div class="topbar-page">
         <h1 class="topbar-page-title">一键填报</h1>
+        <span class="page-scope">{{ fillDate }}</span>
+        <el-button :type="plan ? 'default' : 'primary'" class="page-primary" :loading="state.fillReport.running" :disabled="!canGenerate" @click="generate">
+          <el-icon><component :is="plan ? 'Refresh' : 'MagicStick'" /></el-icon><span>{{ plan ? '重新生成' : '生成报告' }}</span>
+        </el-button>
       </div>
     </Teleport>
 
-    <!-- 顶部工具条：选日期 → 选项目 → 生成报告 -->
-    <el-card shadow="never" class="card">
-      <div class="fill-toolbar">
-        <!-- 日期与上下班时间是一组时间条件，与后面的项目选择在间距上分开 -->
+    <div class="fill-scroll">
+      <section class="fill-toolbar">
         <div class="fill-group">
-          <el-date-picker
-            v-model="fillDate"
-            type="date"
-            value-format="YYYY-MM-DD"
-            :clearable="false"
-            :disabled="state.fillReport.submitting"
-            :disabled-date="(d) => d.getTime() > Date.now()"
-            :shortcuts="dateShortcuts"
-            style="width: 150px"
-          />
-          <el-time-select
-            v-model="startTime"
-            start="06:00" end="21:00" step="00:15"
-            :clearable="false"
-            :disabled="state.fillReport.submitting"
-            placeholder="上班时间"
-            style="width: 108px"
-          />
-          <el-time-select
-            v-model="endTime"
-            start="00:00" end="23:45" step="00:15"
-            clearable
-            :disabled="state.fillReport.submitting"
-            class="end-time-select"
-            :placeholder="endPlaceholder"
-            style="width: 138px"
-          />
-          <span class="fill-range-tip">{{ rangePreview }}</span>
+          <el-date-picker v-model="fillDate" type="date" value-format="YYYY-MM-DD" :clearable="false" :disabled="state.fillReport.submitting" :disabled-date="(d) => d.getTime() > Date.now()" :shortcuts="dateShortcuts" aria-label="填报日期" class="fill-date" />
+          <el-time-select v-model="startTime" start="06:00" end="21:00" step="00:15" :clearable="false" :disabled="state.fillReport.submitting" placeholder="上班时间" aria-label="上班时间" class="fill-start" />
+          <span class="time-separator">至</span>
+          <el-time-select v-model="endTime" start="00:00" end="23:45" step="00:15" clearable :disabled="state.fillReport.submitting" class="fill-end" :placeholder="endPlaceholder" aria-label="下班时间，留空使用当前时间" />
         </div>
-        <el-select
-          v-model="selectedProjectIds"
-          :disabled="state.fillReport.submitting"
-          multiple
-          filterable
-          collapse-tags
-          collapse-tags-tooltip
-          :max-collapse-tags="3"
-          placeholder="选择要填报的项目"
-          class="project-select"
-        >
-          <el-option
-            v-for="p in fillableProjects"
-            :key="p.id"
-            :value="p.id"
-            :label="p.name"
-            :disabled="p.repoCount === 0"
-          >
-            <div class="project-option">
-              <span class="project-option-name">{{ p.name }}</span>
-              <span class="project-option-right">
-                <el-tag v-if="bindings[p.id]" size="small" type="success" class="project-option-tag">
-                  已绑定 #{{ bindings[p.id].taskId }}
-                </el-tag>
-                <el-tag v-else-if="p.repoCount === 0" size="small" type="info" class="project-option-tag">无仓库</el-tag>
-                <el-tag v-else size="small" type="warning" class="project-option-tag">未绑定</el-tag>
-                <el-button
-                  v-if="bindings[p.id]"
-                  link
-                  type="danger"
-                  size="small"
-                  class="project-option-unbind"
-                  @click.stop="unbindProject(p.id)"
-                >解绑</el-button>
-              </span>
+        <span class="fill-range-tip">午休 {{ state.config.zentao?.lunchStart || '12:00' }}–{{ state.config.zentao?.lunchEnd || '13:00' }} · {{ rangePreview }}</span>
+      </section>
+
+      <div class="fill-notices">
+        <el-alert v-if="!zentaoConfigured" type="warning" :closable="false" show-icon title="禅道未配置：绑定项目与提交工时需要禅道地址与账号。">
+          <el-button text @click="emit('navigate', 'fill-settings')">去设置</el-button>
+        </el-alert>
+        <el-alert v-else-if="plan?.ztError" type="error" :closable="false" show-icon :title="`禅道任务获取失败：${plan.ztError}`" />
+        <el-alert v-if="!hanprintConfigured" type="info" :closable="false" title="汉印平台未配置，本次只填报禅道工时。" />
+        <el-alert v-else-if="plan?.hpError" type="error" :closable="false" :title="`汉印任务获取失败：${plan.hpError}`" />
+        <el-alert v-if="identitiesMissing" type="info" :closable="false" title="尚未配置本人身份，请到「设置 → 个人身份」添加 Git 账号。" />
+        <el-alert v-if="plan && plan.date !== fillDate" type="info" :closable="false" show-icon :title="`当前明细仍为 ${plan.date} 的计划，请重新生成 ${fillDate} 的报告。`" />
+        <el-alert v-if="plan && unmatchedCount" type="warning" :closable="false" show-icon class="binding-warning">
+          <template #title><span>{{ unmatchedCount }} 个已选项目未绑定禅道任务，绑定后即可提交。</span></template>
+          <el-button text :disabled="!zentaoConfigured || state.fillReport.running || state.fillReport.submitting" @click="locateUnbound">定位未绑定<el-icon><ArrowRight /></el-icon></el-button>
+        </el-alert>
+      </div>
+
+      <div v-if="state.fillReport.running" class="fill-phase" role="status"><el-icon class="is-loading"><Loading /></el-icon><span>正在获取提交并计算工时…</span></div>
+      <div v-if="!plan && !state.fillReport.running" class="fill-empty">
+        <el-icon><Document /></el-icon>
+        <h2>生成当天的提交明细</h2>
+        <p>{{ !canGenerate && !fillableProjects.some((p) => p.repoCount > 0) ? '请先在项目中关联 Git 活动源，再生成填报报告。' : '汇总完成后选择项目、确认工时与任务绑定。' }}</p>
+      </div>
+
+      <div v-if="plan" class="fill-workspace">
+        <section class="fill-detail">
+          <div class="section-head">
+            <h2>提交明细 <span class="plan-date">{{ plan.date }}</span></h2>
+            <div class="detail-selection">
+              <span>已选 {{ plan.planned.length }}/{{ dayProjects.length }} 个项目 · {{ plan.commitCount }} 条提交</span>
+              <el-popover placement="bottom-end" :width="360" trigger="click">
+                <template #reference><el-button text aria-label="调整填报项目"><el-icon><Filter /></el-icon></el-button></template>
+                <div class="project-picker-title">选择填报项目</div>
+                <el-select v-model="selectedProjectIds" :disabled="state.fillReport.submitting || state.fillReport.running" multiple filterable collapse-tags collapse-tags-tooltip :max-collapse-tags="2" placeholder="选择要填报的项目" class="project-select">
+                  <el-option v-for="p in fillableProjects" :key="p.id" :value="p.id" :label="p.name" :disabled="p.repoCount === 0">
+                    <div class="project-option"><span class="project-option-name">{{ p.name }}</span><span class="project-option-meta">{{ bindings[p.id] ? `已绑定 #${bindings[p.id].taskId}` : p.repoCount === 0 ? '无仓库' : '未绑定' }}</span></div>
+                  </el-option>
+                </el-select>
+                <p class="bind-hint">勾选变化会重新计算工时与汉印占比。</p>
+              </el-popover>
             </div>
-          </el-option>
-        </el-select>
-        <el-button
-          type="primary"
-          size="large"
-          :loading="state.fillReport.running"
-          :disabled="!canGenerate"
-          @click="generate"
-        >
-          <el-icon style="margin-right: 4px"><MagicStick /></el-icon>生成报告
-        </el-button>
+          </div>
+          <div v-if="dayProjects.length" class="plan-list">
+            <div v-for="p in dayProjects" :key="p.projectId" class="prow" :class="{ unbound: !p.taskId, 'prow-off': !p.selected, 'is-expanded': expandedProjects.has(p.projectId) }">
+              <div class="pline">
+                <el-checkbox class="pcheck" :model-value="p.selected" :aria-label="`填报 ${p.projectName}`" :disabled="state.fillReport.running || state.fillReport.submitting" @change="(v) => toggleProject(p.projectId, v)" />
+                <button class="project-detail-toggle" :aria-expanded="expandedProjects.has(p.projectId)" @click="toggleProjectDetail(p.projectId)">
+                  <span class="pname">{{ p.projectName }}</span><span class="pproj">{{ p.commitCount }} 条提交</span>
+                </button>
+                <span class="phours">{{ p.selected ? `${Number(p.hours || 0).toFixed(2)}h` : '未选' }}</span>
+                <el-button class="bind-button" :disabled="!zentaoConfigured || state.fillReport.running || state.fillReport.submitting" :title="p.taskId ? `${p.taskName || '已绑定任务'}，点击管理绑定` : '为该项目绑定禅道任务'" @click="openBind(p.projectId)"><el-icon><Link /></el-icon><span>{{ p.taskId ? `禅道 #${p.taskId}` : '绑定禅道任务' }}</span></el-button>
+              </div>
+              <div v-if="expandedProjects.has(p.projectId)" class="project-work"><div class="project-work-title">{{ p.projectName }} · {{ p.commitCount }} 条提交</div><pre class="pwork">{{ p.work }}</pre></div>
+            </div>
+          </div>
+          <div v-else class="collect-hint">{{ plan.identitiesMissing ? '请先配置本人身份' : `${plan.date} 没有你的提交记录，可改选日期后重新生成。` }}</div>
+          <p v-if="skippedProjects.length" class="selection-hint">{{ skippedProjects.length }} 个项目未选，不计入本次工时与汉印占比。</p>
+          <p v-if="dayProjects.length && !plan.planned.length" class="submit-hint">勾选项目后计算工时并生成提交汇总。</p>
+        </section>
+
+        <aside class="fill-summary">
+          <h2>提交汇总</h2>
+          <div class="summary-total"><span>选中项目工时</span><strong>{{ totalHours }} <small>h</small></strong></div>
+          <el-tag v-if="plan.submittedAt" type="success" size="small" class="submitted-tag">已于 {{ plan.submittedAt }} 提交</el-tag>
+          <section class="summary-section">
+            <h3>禅道任务</h3>
+            <div v-for="t in plan.tasks" :key="t.taskId" class="sumline">
+              <div class="sum-name">#{{ t.taskId }} {{ t.taskName || '任务已不在「我的任务」列表' }}</div>
+              <div class="sum-meta"><span>{{ t.consumed }}h</span><span v-if="t.taskLeft !== null">剩余 {{ t.taskLeft }}h → {{ t.left }}h</span></div>
+              <span v-if="t.existingToday?.count" class="update-hint">当日已有 {{ t.existingToday.count }} 条（{{ t.existingToday.consumed }}h），将更新</span>
+            </div>
+            <p v-if="!plan.tasks.length" class="summary-empty">{{ plan.planned.length ? '绑定项目后显示任务汇总' : '尚未选择填报项目' }}</p>
+            <p v-if="unmatchedCount" class="submit-hint">{{ unmatchedCount }} 个项目待绑定</p>
+          </section>
+          <section class="summary-section">
+            <h3>汉印工时填报</h3>
+            <template v-if="plan.hpItems?.length">
+              <div v-for="(item, i) in plan.hpItems" :key="i" class="hpline"><span>{{ item.ProjectName }}</span><span class="sum-meta">{{ item.TaskName }} · {{ item.Percent }}%<span v-if="isHpExisting(item)" class="update-hint"> · 已填，将更新</span></span></div>
+              <p class="summary-empty">{{ plan.hpItems.length }} 条 · 占比合计 {{ hpPercentTotal }}%<template v-if="hpExistingCount"> · {{ hpExistingCount }} 条将更新</template></p>
+            </template>
+            <p v-else class="summary-empty">{{ hanprintConfigured ? '暂无可写入的占比条目' : '未配置，本次只提交禅道' }}</p>
+            <p v-if="hanprintConfigured && plan.tasks.length && plan.hpUnmatched?.length" class="submit-hint">未匹配汉印任务，仅写入禅道：#{{ plan.hpUnmatched.join('、#') }}</p>
+            <p v-if="plan.hpZeroSkipped" class="summary-empty">{{ plan.hpZeroSkipped }} 个任务占比为 0%，不写入汉印。</p>
+          </section>
+        </aside>
       </div>
 
-      <el-alert
-        v-if="!zentaoConfigured"
-        type="warning"
-        :closable="false"
-        class="warn"
-        title="禅道未配置：绑定项目与提交工时需要禅道地址与账号。"
-      >
-        <el-button size="small" type="primary" plain @click="emit('navigate', 'fill-settings')">去设置</el-button>
-      </el-alert>
-      <el-alert
-        v-else-if="!hanprintConfigured"
-        type="info"
-        :closable="false"
-        class="warn"
-        title="汉印平台未配置：将只填报禅道工时（可到「设置 → 一键填报」配置汉印账号）。"
-      />
-      <el-alert
-        v-else-if="plan && plan.ztError"
-        type="error"
-        :closable="false"
-        class="warn"
-        :title="`禅道任务获取失败：${plan.ztError}`"
-      />
-      <el-alert
-        v-else-if="hanprintConfigured && plan && plan.hpError"
-        type="error"
-        :closable="false"
-        class="warn"
-        :title="`汉印任务获取失败：${plan.hpError}`"
-      />
-      <el-alert
-        v-if="identitiesMissing"
-        type="info"
-        :closable="false"
-        class="warn"
-        title="尚未配置本人身份，无法过滤你的提交；请到「设置 → 个人身份」添加。"
-      />
-      <div v-if="selectedProjectIds.some((id) => !bindings[id])" class="bind-tip">
-        已勾选的项目中还有未绑定禅道任务的：可在明细中绑定（绑定一次长期生效），未绑定不会写入工时。
-      </div>
-    </el-card>
-
-    <!-- 生成中 -->
-    <div v-if="state.fillReport.running" class="fill-phase">
-      <el-icon class="is-loading"><Loading /></el-icon>
-      <span>正在获取提交并计算工时…</span>
+      <section class="fill-history">
+        <div class="section-head"><h2>提交记录</h2><span class="history-meta">最近 {{ submitLogs.length }} 条记录</span></div>
+        <el-alert v-if="logsError" type="error" :closable="false" :title="logsError"><el-button text @click="loadLogs">重试</el-button></el-alert>
+        <el-table v-loading="logsLoading" :data="submitLogs" class="fill-log-table" row-key="at" max-height="280">
+          <el-table-column label="提交时间" min-width="180"><template #default="{ row }">{{ (row.at || '').slice(0, 19) }}</template></el-table-column>
+          <el-table-column label="禅道" width="120"><template #default="{ row }">{{ row.tasks?.length || 0 }}/{{ row.ztTotal || 0 }}</template></el-table-column>
+          <el-table-column label="汉印" width="120"><template #default="{ row }">{{ row.hp?.error ? '失败' : row.hp?.sent ? `${row.hp.sent} 条` : '—' }}</template></el-table-column>
+          <el-table-column label="状态" width="120"><template #default="{ row }"><span class="log-status" :class="{ 'is-error': row.failed }">{{ logStatus(row).text }}</span></template></el-table-column>
+          <el-table-column label="备注" min-width="120" show-overflow-tooltip><template #default="{ row }">{{ row.error || row.hp?.error || '—' }}</template></el-table-column>
+          <el-table-column label="操作" width="64" align="center"><template #default="{ row }">
+            <el-dropdown trigger="click" :disabled="state.fillReport.submitting || state.fillReport.running || !!resubmitting || !!deleting" @command="(command) => command === 'retry' ? doResubmit(row) : doDeleteLog(row)">
+              <el-button text aria-label="提交记录操作" :loading="resubmitting === row.at || deleting === row.at"><el-icon><MoreFilled /></el-icon></el-button>
+              <template #dropdown><el-dropdown-menu><el-dropdown-item v-if="row.resubmittable" command="retry">重新提交</el-dropdown-item><el-dropdown-item command="delete" :divided="row.resubmittable">删除本地记录</el-dropdown-item></el-dropdown-menu></template>
+            </el-dropdown>
+          </template></el-table-column>
+          <template #empty><div class="history-empty">暂无提交记录，完成填报后会保存在这里。</div></template>
+        </el-table>
+      </section>
     </div>
 
-    <template v-if="plan">
-      <!-- 提交明细（工时计划）：列出当天所有有提交的项目，勾选决定哪些计入填报 -->
-      <el-card shadow="never" class="card">
-        <template #header>
-          <div class="card-header">
-            <span>提交明细 · {{ plan.date }}（{{ plan.rangeStart }}–{{ plan.crossDay ? '次日 ' : '' }}{{ plan.rangeEnd }}，午休 {{ plan.workConfig.lunchStart }}–{{ plan.workConfig.lunchEnd }}）</span>
-            <span class="header-meta">已选 {{ plan.planned.length }}/{{ dayProjects.length }} 个项目 · {{ plan.commitCount }} 条提交 · 合计 {{ totalHours }}h</span>
-          </div>
-        </template>
-        <div v-if="dayProjects.length" class="plan-list">
-          <div
-            v-for="p in dayProjects"
-            :key="p.projectId"
-            class="prow"
-            :class="{ unbound: !p.taskId, 'prow-off': !p.selected }"
-          >
-            <div class="pline">
-              <el-checkbox
-                class="pcheck"
-                :model-value="p.selected"
-                :disabled="state.fillReport.running || state.fillReport.submitting"
-                @change="(v) => toggleProject(p.projectId, v)"
-              />
-              <span class="phours">{{ p.selected ? `${p.hours}h` : '未选' }}</span>
-              <span class="pmsg">
-                <pre class="pwork">{{ p.work }}</pre>
-                <span class="pproj">{{ p.projectName }} · {{ p.commitCount }} 条提交</span>
-              </span>
-            </div>
-            <div class="pmatch">
-              <template v-if="p.taskId">
-                <el-tag size="small" type="success">禅道 #{{ p.taskId }} {{ p.taskName || '已绑定任务' }}</el-tag>
-                <el-button size="small" plain @click="openBind(p.projectId)">更换</el-button>
-                <el-button size="small" plain type="danger" @click="unbindProject(p.projectId)">解绑</el-button>
-              </template>
-              <template v-else>
-                <el-tag size="small" type="danger">未绑定</el-tag>
-                <el-button size="small" type="primary" plain :disabled="!zentaoConfigured" @click="openBind(p.projectId)">绑定禅道任务</el-button>
-              </template>
-            </div>
-          </div>
-        </div>
-        <div v-else class="collect-hint">
-          {{ plan.identitiesMissing ? '请先配置本人身份' : `${plan.date} 没有你的提交记录（可改选日期）` }}
-        </div>
-        <div v-if="skippedProjects.length" class="submit-hint">
-          另有 {{ skippedProjects.length }} 个当天有提交的项目未勾选，不计入填报（勾选后工时与汉印占比会重新计算）。
-        </div>
-        <div v-if="dayProjects.length && !plan.planned.length" class="submit-hint">
-          尚未勾选任何项目：勾选后才会计算工时并按占比写入汉印。
-        </div>
-      </el-card>
+    <footer v-if="plan" class="fill-actions">
+      <span class="action-hint" :class="{ 'is-warning': unmatchedCount }"><el-icon><Warning v-if="unmatchedCount" /><InfoFilled v-else /></el-icon>{{ unmatchedCount ? `还有 ${unmatchedCount} 个项目待绑定，绑定后可提交` : plan.submittedAt ? `已于 ${plan.submittedAt} 提交` : '预览仅检查提交内容，不会写入平台' }}</span>
+      <el-button :disabled="!plan.planned.length || state.fillReport.running" @click="copyReport"><el-icon><CopyDocument /></el-icon><span>复制报告</span></el-button>
+      <el-button :disabled="!canSubmit" @click="submitFill(true)"><el-icon><View /></el-icon><span>预览提交</span></el-button>
+      <el-button type="primary" :disabled="!canSubmit || !!plan.submittedAt" :loading="state.fillReport.submitting" @click="submitFill(false)"><el-icon><Position /></el-icon><span>{{ plan.submittedAt ? '已提交' : '一键提交' }}</span></el-button>
+    </footer>
 
-      <!-- 按任务汇总 + 提交操作 -->
-      <el-card v-if="plan.planned.length" shadow="never" class="card">
-        <template #header>
-          <div class="card-header">
-            <span>按禅道任务汇总</span>
-            <el-tag v-if="plan.submittedAt" type="success" size="small">已于 {{ plan.submittedAt }} 提交</el-tag>
-          </div>
-        </template>
-        <div v-if="plan.tasks.length" class="sum-list">
-          <div v-for="t in plan.tasks" :key="t.taskId" class="sumline">
-            <span class="sum-name">
-              #{{ t.taskId }} {{ t.taskName || '（任务已不在「我的任务」列表）' }}
-              <el-tag v-if="t.existingToday && t.existingToday.count" size="small" type="warning" class="exist-tag">
-                当日已有 {{ t.existingToday.count }} 条（{{ t.existingToday.consumed }}h）· 将更新
-              </el-tag>
-            </span>
-            <span class="sum-right">
-              <template v-if="t.taskLeft !== null">剩余 {{ t.taskLeft }}h → {{ t.left }}h · </template>{{ t.consumed }}h
-            </span>
-          </div>
-          <div class="sumline sum-total">
-            <span>合计</span>
-            <span>{{ totalHours }}h</span>
-          </div>
-        </div>
-        <div v-else class="collect-hint">暂无可填报的任务：请先为有提交的项目绑定禅道任务</div>
-        <!-- 汉印条目预览（按工时占比，合计 100%） -->
-        <div v-if="plan.hpItems && plan.hpItems.length" class="hp-block">
-          <div class="hp-title">
-            汉印工时填报（{{ plan.hpItems.length }} 条 · 占比合计 {{ hpPercentTotal }}%<template v-if="hpExistingCount">，其中 {{ hpExistingCount }} 条当日已有将更新</template>）
-          </div>
-          <div v-for="(item, i) in plan.hpItems" :key="i" class="hpline">
-            <span class="sum-name">
-              {{ item.ProjectName }} · {{ item.TaskName }}
-              <el-tag v-if="isHpExisting(item)" size="small" type="warning" class="exist-tag">已填 · 将更新</el-tag>
-            </span>
-            <span class="sum-right">{{ item.Percent }}%</span>
-          </div>
-        </div>
-        <div v-else-if="hanprintConfigured && plan.tasks.length && plan.hpUnmatched && plan.hpUnmatched.length" class="submit-hint">
-          汉印未匹配到这些禅道任务对应的报工任务，相关工时将只写入禅道：#{{ plan.hpUnmatched.join('、#') }}
-        </div>
-        <div v-if="plan.hpZeroSkipped" class="submit-hint">
-          有 {{ plan.hpZeroSkipped }} 个任务工时不足（占比 0%），不写入汉印。
-        </div>
-        <div class="fill-actions">
-          <el-button :disabled="!plan.planned.length" @click="copyReport">
-            <el-icon style="margin-right: 4px"><CopyDocument /></el-icon>复制报告
-          </el-button>
-          <el-button :disabled="!canSubmit" @click="submitFill(true)">
-            <el-icon style="margin-right: 4px"><View /></el-icon>预览提交
-          </el-button>
-          <el-button
-            type="success"
-            size="large"
-            :disabled="!canSubmit || !!plan.submittedAt"
-            :loading="state.fillReport.submitting"
-            @click="submitFill(false)"
-          >
-            <el-icon style="margin-right: 4px"><Position /></el-icon>{{ plan.submittedAt ? '已提交' : '一键提交' }}
-          </el-button>
-        </div>
-        <div v-if="unmatchedCount" class="submit-hint">有 {{ unmatchedCount }} 条提交所属项目未绑定禅道任务，绑定后才能提交。</div>
-      </el-card>
-    </template>
-
-    <!-- 提交记录（fill-log 留痕）：失败记录可按存档载荷重新提交（已有记录按 ID 更新覆盖），记录可删除（只清本机留痕） -->
-    <el-card v-if="submitLogs.length" shadow="never" class="card">
-      <template #header>
-        <div class="card-header">
-          <span>提交记录</span>
-        </div>
-      </template>
-      <div v-for="log in submitLogs" :key="log.at" class="logline">
-        <span class="log-time">{{ (log.at || '').slice(0, 19) }}</span>
-        <el-tag :type="logStatus(log).type" size="small">{{ logStatus(log).text }}</el-tag>
-        <span class="log-sum">{{ logSummary(log) }}</span>
-        <span class="log-err" :title="log.error">{{ log.error }}</span>
-        <el-button
-          v-if="log.resubmittable"
-          size="small"
-          type="primary"
-          plain
-          :loading="resubmitting === log.at"
-          :disabled="state.fillReport.submitting || state.fillReport.running || !!resubmitting || !!deleting"
-          @click="doResubmit(log)"
-        >重新提交</el-button>
-        <el-button
-          size="small"
-          type="danger"
-          plain
-          :loading="deleting === log.at"
-          :disabled="!!resubmitting || !!deleting"
-          @click="doDeleteLog(log)"
-        >删除</el-button>
+    <el-drawer v-model="bindDialog.visible" :title="bindDialog.boundTaskId ? '管理任务绑定' : '绑定禅道任务'" size="480px" class="fill-bind-drawer">
+      <div class="bind-project-name">{{ bindDialog.projectName }}</div>
+      <p class="bind-hint">绑定后在后续填报中自动沿用，可随时更换。</p>
+      <el-input v-model="bindSearch" clearable placeholder="搜索任务名称或编号" aria-label="搜索禅道任务"><template #prefix><el-icon><Search /></el-icon></template></el-input>
+      <el-select v-model="bindStatus" class="bind-status" aria-label="任务状态"><el-option label="全部任务" value="all" /><el-option label="进行中" value="doing" /><el-option label="已完成（近一个月）" value="finished" /></el-select>
+      <div v-loading="bindDialog.loading" ref="bindTaskList" class="bind-tasks" role="radiogroup" aria-label="禅道任务" @keydown="moveBindTaskFocus">
+        <button v-for="t in filteredBindTasks" :key="t.id" type="button" class="bind-task" :class="{ 'is-selected': bindDialog.taskId === t.id }" role="radio" :aria-checked="bindDialog.taskId === t.id" @click="bindDialog.taskId = t.id">
+          <span class="task-radio" /><span class="task-description"><strong>#{{ t.id }} {{ t.name }}</strong><span>{{ taskMeta(t) }}</span></span>
+        </button>
+        <p v-if="!bindDialog.loading && !filteredBindTasks.length" class="collect-hint">{{ bindSearch ? '没有匹配的任务' : '暂无可绑定任务，请检查禅道任务与账号配置。' }}</p>
       </div>
-    </el-card>
-
-    <!-- 空状态引导（未生成时） -->
-    <div v-if="!plan && !state.fillReport.running" class="fill-hint">
-      <el-alert type="info" :closable="false" show-icon title="选好日期与上下班时间后点「生成报告」：自动汇总当天所有项目的提交，再勾选要填报的项目（工时与汉印占比按勾选结果计算）" />
-    </div>
-
-    <!-- 绑定禅道任务弹窗 -->
-    <el-dialog
-      v-model="bindDialog.visible"
-      :title="`${bindDialog.boundTaskId ? '管理绑定' : '绑定禅道任务'} · ${bindDialog.projectName}`"
-      width="600"
-    >
-      <el-select
-        v-model="bindDialog.taskId"
-        filterable
-        :loading="bindDialog.loading"
-        placeholder="搜索选择禅道任务"
-        style="width: 100%"
-      >
-        <el-option-group v-if="doingTasks.length" label="进行中">
-          <el-option v-for="t in doingTasks" :key="t.id" :value="t.id" :label="`#${t.id} ${t.name}`">
-            <div class="task-option">
-              <span class="task-option-name">#{{ t.id }} {{ t.name }}</span>
-              <span class="task-option-meta">{{ taskMeta(t) }}</span>
-            </div>
-          </el-option>
-        </el-option-group>
-        <el-option-group v-if="finishedTasks.length" label="已完成（近一个月）">
-          <el-option v-for="t in finishedTasks" :key="t.id" :value="t.id" :label="`#${t.id} ${t.name}`">
-            <div class="task-option">
-              <span class="task-option-name">#{{ t.id }} {{ t.name }}</span>
-              <span class="task-option-meta">{{ taskMeta(t) }}</span>
-            </div>
-          </el-option>
-        </el-option-group>
-      </el-select>
-      <div class="bind-hint">
-        {{ bindDialog.boundTaskId
-          ? '可改选其他任务后保存绑定，或点「解除绑定」取消关联（取消后该项目提交需重新绑定才能填报）。'
-          : '绑定一次后长期生效，之后填报该项目会自动关联此任务。' }}
-      </div>
-      <template #footer>
-        <el-button v-if="bindDialog.boundTaskId" type="danger" plain @click="doUnbind">解除绑定</el-button>
-        <el-button @click="bindDialog.visible = false">取消</el-button>
-        <el-button type="primary" :disabled="!bindDialog.taskId" @click="doBind">保存绑定</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 提交预览弹窗 -->
-    <el-dialog v-model="previewDialog.visible" title="提交预览（未写入禅道）" width="720" top="6vh">
-      <pre class="preview-content">{{ previewDialog.content }}</pre>
-    </el-dialog>
+      <p v-if="bindDialog.taskId" class="bind-selection">已选择 #{{ bindDialog.taskId }} {{ selectedBindTask?.name || '' }}</p>
+      <p v-if="bindDialog.boundTaskId" class="bind-hint">解除绑定后，该项目需重新绑定才能填报。</p>
+      <template #footer><el-button v-if="bindDialog.boundTaskId" text type="danger" @click="doUnbind">解除绑定</el-button><el-button @click="bindDialog.visible = false">取消</el-button><el-button type="primary" :disabled="!bindDialog.taskId" @click="doBind"><el-icon><Link /></el-icon><span>确认绑定</span></el-button></template>
+    </el-drawer>
+    <el-dialog v-model="previewDialog.visible" title="提交预览 · 尚未写入平台" width="720" top="6vh"><pre class="preview-content">{{ previewDialog.content }}</pre></el-dialog>
   </div>
 </template>
-
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -364,17 +172,36 @@ const selectedProjectIds = computed({
 })
 const bindings = ref({})
 const bindDialog = ref({ visible: false, projectId: '', projectName: '', taskId: null, boundTaskId: null, options: [], loading: false })
+const bindSearch = ref('')
+const bindStatus = ref('all')
+const bindTaskList = ref(null)
+const selectedBindTask = computed(() => bindDialog.value.options.find((task) => task.id === bindDialog.value.taskId))
+const filteredBindTasks = computed(() => {
+  const search = bindSearch.value.trim().toLocaleLowerCase()
+  return (bindDialog.value.options || []).filter((task) =>
+    (!search || `${task.id} ${task.name}`.toLocaleLowerCase().includes(search)) &&
+    (bindStatus.value === 'all' || (bindStatus.value === 'finished' ? task.finished : !task.finished)),
+  )
+})
+function moveBindTaskFocus(event) {
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) || !filteredBindTasks.value.length) return
+  event.preventDefault()
+  const tasks = filteredBindTasks.value
+  const index = tasks.findIndex((task) => task.id === bindDialog.value.taskId)
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? tasks.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + tasks.length) % tasks.length
+  bindDialog.value.taskId = tasks[next].id
+  bindTaskList.value?.querySelectorAll('button')[next]?.focus()
+}
 const previewDialog = ref({ visible: false, content: '' })
 /** 提交记录（fill-log 留痕）与按记录重新提交 / 删除记录 */
 const submitLogs = ref([])
+const logsLoading = ref(false)
+const logsError = ref('')
 const resubmitting = ref('')
 const deleting = ref('')
 /** 生成/重算进行中收到的重算请求：结束后补跑一次 */
 let pendingRecompute = false
 
-/** 绑定弹窗分组：进行中在前、已完成在后（主进程已按此顺序返回，这里只做分组） */
-const doingTasks = computed(() => (bindDialog.value.options || []).filter((t) => !t.finished))
-const finishedTasks = computed(() => (bindDialog.value.options || []).filter((t) => t.finished))
 const ZT_STATUS_TEXT = { wait: '未开始', doing: '进行中', done: '已完成', pause: '已暂停', cancel: '已取消', closed: '已关闭' }
 function statusText(s) { return ZT_STATUS_TEXT[s] || s || '-' }
 /** 选项右侧说明：进行中给剩余工时，已完成给完成时间（禅道没记时间时只留状态） */
@@ -479,6 +306,22 @@ const dayProjects = computed(() => {
   return Array.isArray(p.dayProjects) ? p.dayProjects : p.planned
 })
 const skippedProjects = computed(() => dayProjects.value.filter((p) => !p.selected))
+const expandedProjects = ref(new Set())
+watch(() => dayProjects.value.map((p) => p.projectId).join(','), () => {
+  const ids = new Set(dayProjects.value.map((p) => p.projectId))
+  const next = new Set([...expandedProjects.value].filter((id) => ids.has(id)))
+  if (!next.size && dayProjects.value.length) next.add(dayProjects.value[0].projectId)
+  expandedProjects.value = next
+}, { immediate: true })
+function toggleProjectDetail(projectId) {
+  const next = new Set(expandedProjects.value)
+  next.has(projectId) ? next.delete(projectId) : next.add(projectId)
+  expandedProjects.value = next
+}
+function locateUnbound() {
+  const project = dayProjects.value.find((p) => p.selected && !p.taskId)
+  if (project) openBind(project.projectId)
+}
 const totalHours = computed(() =>
   plan.value ? (Math.round(plan.value.planned.reduce((s, p) => s + p.hours, 0) * 100) / 100).toFixed(2) : '0.00',
 )
@@ -534,22 +377,18 @@ onMounted(async () => {
 
 /** 提交记录面板：时间 + 状态 + 分项计数 + 错误原文；失败记录可按存档载荷重放，记录可删除 */
 async function loadLogs() {
+  logsLoading.value = true
+  logsError.value = ''
   try {
     const r = await window.gitReport.fillLog(20)
     if (r.ok) submitLogs.value = r.entries || []
-  } catch { /* 记录面板失败不影响填报 */ }
+    else logsError.value = r.error || '提交记录加载失败，请重试。'
+  } catch { logsError.value = '提交记录加载失败，请重试。' }
+  finally { logsLoading.value = false }
 }
 
 function logStatus(log) {
   return log.failed ? { type: 'danger', text: '失败' } : { type: 'success', text: '成功' }
-}
-
-function logSummary(log) {
-  const parts = []
-  if (log.tasks.length || log.ztTotal) parts.push(`禅道 ${log.tasks.length}/${log.ztTotal}`)
-  if (log.hp && log.hp.error) parts.push('汉印失败')
-  else if (log.hp && log.hp.sent) parts.push(`汉印 ${log.hp.sent} 条`)
-  return parts.join(' · ')
 }
 
 /** 按留痕记录重新提交：重放当时存档的载荷；禅道/汉印已有记录按 ID 复用更新覆盖，不重复写入 */
@@ -719,6 +558,9 @@ async function generate() {
 
 /** 打开绑定弹窗；任务列表优先用计划带回的，缺失时现拉 */
 async function openBind(projectId) {
+  if (state.fillReport.running || state.fillReport.submitting) return
+  bindSearch.value = ''
+  bindStatus.value = 'all'
   const project = state.projects.items.find((p) => p.id === projectId)
   const bound = bindings.value[projectId]
   bindDialog.value = {
@@ -732,15 +574,17 @@ async function openBind(projectId) {
     loading: false,
   }
   if (!bindDialog.value.options.length) {
-    bindDialog.value.loading = true
+    const requestDialog = bindDialog.value
+    requestDialog.loading = true
     try {
       const r = await window.gitReport.fillZtTasks()
-      if (r.ok) bindDialog.value.options = r.tasks
+      if (bindDialog.value !== requestDialog) return
+      if (r.ok) requestDialog.options = r.tasks
       else ElMessage.error(r.error || '禅道任务获取失败')
     } catch (e) {
-      ElMessage.error(`禅道任务获取失败：${e?.message || e}`)
+      if (bindDialog.value === requestDialog) ElMessage.error(`禅道任务获取失败：${e?.message || e}`)
     } finally {
-      bindDialog.value.loading = false
+      requestDialog.loading = false
     }
   }
 }
@@ -887,228 +731,119 @@ async function copyReport() {
 </script>
 
 <style scoped>
-.fill-toolbar {
-  display: flex;
-  /* 组间 16px、组内 8px：原先一律 10px，一排六个控件看不出哪几个是一伙的 */
-  gap: 16px;
-  align-items: center;
-  flex-wrap: wrap;
+.fill-page { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 0 24px; color: var(--brand-text); }
+.fill-page .topbar-page, .topbar-page { display: flex; align-items: center; gap: 16px; width: 100%; }
+.page-scope { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.page-primary { margin-left: auto; }
+.page-primary .el-icon, .fill-actions .el-button .el-icon, .bind-button .el-icon { margin-right: 8px; }
+.fill-scroll { flex: 1; min-height: 0; overflow: auto; scrollbar-gutter: stable; }
+.fill-toolbar { display: flex; align-items: center; gap: 16px; min-height: 64px; flex-wrap: wrap; padding: 12px 0; }
+.fill-group { display: flex; align-items: center; gap: 12px; }
+.fill-group .fill-date { width: 156px; }
+.fill-group .fill-start { width: 112px; }
+.fill-group .fill-end { width: 144px; }
+.time-separator, .fill-range-tip { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.fill-range-tip { margin-left: auto; }
+.fill-notices { display: flex; flex-direction: column; gap: 8px; }
+.fill-notices:empty { display: none; }
+.fill-notices :deep(.el-alert) { min-height: 40px; padding: 8px 12px; }
+.binding-warning :deep(.el-alert__content) { display: flex; align-items: center; justify-content: space-between; flex: 1; gap: 12px; }
+.binding-warning :deep(.el-alert__description) { margin: 0; }
+.binding-warning .el-button { height: 24px; padding: 0; }
+.fill-phase { display: flex; align-items: center; gap: 12px; padding: 24px 0; font-size: 13px; color: var(--text-muted); }
+.fill-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 192px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.fill-empty > .el-icon { color: var(--text-muted); font-size: 24px; margin-bottom: 12px; }
+.fill-empty h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.fill-empty p { margin: 12px 0 0; color: var(--text-muted); font-size: 12px; }
+.fill-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 24px; margin: 20px 0 24px; min-height: 300px; }
+.fill-detail { min-width: 0; }
+.section-head { display: flex; align-items: center; justify-content: space-between; min-height: 32px; gap: 12px; margin-bottom: 8px; }
+.section-head h2, .fill-summary h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.plan-date { color: var(--text-muted); font-size: 11px; font-weight: 400; margin-left: 8px; }
+.detail-selection { display: flex; align-items: center; gap: 4px; min-width: 0; color: var(--text-muted); font-size: 12px; }
+.detail-selection > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail-selection .el-button { padding: 4px; width: 28px; }
+.project-picker-title { font-weight: 600; font-size: 13px; margin-bottom: 12px; color: var(--brand-text); }
+.project-select { width: 100%; }
+.project-option { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.project-option-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-option-meta { color: var(--text-muted); font-size: 11px; }
+.prow { border-bottom: 1px solid var(--line-soft); }
+.pline { display: flex; align-items: center; gap: 12px; min-height: 68px; }
+.prow-off .pname, .prow-off .phours { color: var(--text-muted); }
+.pcheck { margin: 0; flex-shrink: 0; }
+.project-detail-toggle { border: 0; background: none; padding: 8px 0; color: inherit; flex: 1; min-width: 0; text-align: left; cursor: pointer; font: inherit; border-radius: 4px; }
+.project-detail-toggle:hover .pname { color: var(--accent-strong); }
+.project-detail-toggle:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 4px; }
+.pname { display: block; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pproj { display: block; margin-top: 4px; font-size: 11px; color: var(--text-muted); }
+.phours { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bind-button { flex-shrink: 0; min-width: 112px; }
+.project-work { padding: 16px 0 20px 28px; }
+.project-work-title { font-size: 12px; margin-bottom: 8px; font-weight: 500; }
+.pwork { margin: 0; font: inherit; font-size: 12px; line-height: 1.8; color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.selection-hint, .summary-empty, .bind-hint, .history-meta { color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+.selection-hint { margin: 12px 0 0; }
+.fill-summary { border-left: 1px solid var(--line); padding-left: 24px; min-width: 0; }
+.fill-summary > h2 { min-height: 32px; display: flex; align-items: center; }
+.summary-total { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 0 20px; }
+.summary-total > span { font-size: 12px; color: var(--text-muted); }
+.summary-total strong { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.summary-total small { font: inherit; }
+.submitted-tag { margin-bottom: 12px; }
+.summary-section { padding: 16px 0; border-top: 1px solid var(--line); }
+.summary-section h3 { margin: 0 0 12px; font-size: 12px; font-weight: 600; }
+.sumline { margin-bottom: 12px; }
+.sumline:last-child { margin-bottom: 0; }
+.sum-name, .hpline { font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.sum-meta { display: flex; flex-wrap: wrap; gap: 4px 8px; color: var(--text-muted); font-size: 11px; margin-top: 4px; }
+.update-hint { color: var(--el-color-warning); font-size: 11px; line-height: 1.5; }
+.hpline { display: flex; flex-direction: column; margin-bottom: 12px; }
+.summary-empty { margin: 4px 0 0; }
+.submit-hint { margin: 12px 0 0; font-size: 12px; color: var(--el-color-warning); line-height: 1.6; }
+.fill-history { margin: 24px 0 16px; }
+.fill-log-table { font-size: 12px; }
+.fill-log-table :deep(.el-table__cell) { height: 40px; padding: 4px 0; }
+.fill-log-table :deep(.el-table__header .el-table__cell) { height: 36px; }
+.fill-log-table :deep(.cell) { padding: 0 16px; }
+.fill-log-table :deep(.el-table__body .el-button) { padding: 4px 8px; height: 28px; }
+.log-status { color: var(--text-muted); }
+.log-status.is-error { color: var(--danger); }
+.history-empty { padding: 20px 0; color: var(--text-muted); font-size: 12px; }
+.fill-actions { flex-shrink: 0; display: flex; align-items: center; gap: 8px; min-height: 64px; border-top: 1px solid var(--line); background: var(--surface); }
+.fill-actions .el-button + .el-button { margin-left: 0; }
+.action-hint { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; font-size: 12px; color: var(--text-muted); }
+.action-hint.is-warning { color: var(--el-color-warning); }
+.action-hint .el-icon { flex-shrink: 0; }
+.bind-project-name { font-size: 14px; font-weight: 600; color: var(--brand-text); }
+.bind-hint { margin: 12px 0 16px; }
+.bind-selection { margin: 16px 0 0; color: var(--accent-strong); font-size: 12px; }
+.bind-status { width: 100%; margin-top: 12px; }
+.bind-tasks { margin-top: 16px; min-height: 120px; }
+.bind-task { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px; margin-bottom: 4px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--brand-text); text-align: left; cursor: pointer; }
+.bind-task:hover { background: var(--surface-subtle); }
+.bind-task.is-selected { background: var(--accent-soft); }
+.bind-task:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
+.task-radio { width: 14px; height: 14px; border: 1px solid var(--line-strong); border-radius: 50%; flex-shrink: 0; }
+.bind-task.is-selected .task-radio { border-color: var(--accent-strong); background: var(--accent-strong); box-shadow: inset 0 0 0 4px var(--accent-soft); }
+.task-description { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.task-description strong { font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.task-description > span { font-size: 11px; color: var(--text-muted); }
+.collect-hint { padding: 24px 0; color: var(--text-muted); text-align: center; font-size: 12px; line-height: 1.6; }
+.preview-content { margin: 0; padding: 16px; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--brand-mono, monospace); font-size: 12px; line-height: 1.7; color: var(--brand-text); max-height: 62vh; overflow: auto; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 6px; }
+@media (max-width: 1280px) {
+  .fill-page { padding: 0 16px; }
+  .fill-workspace { grid-template-columns: minmax(0, 1fr) 248px; gap: 16px; }
+  .fill-summary { padding-left: 16px; }
+  .fill-toolbar { gap: 8px; }
+  .fill-range-tip { max-width: 320px; white-space: normal; text-align: right; }
+  .fill-group { gap: 8px; }
+  .fill-log-table :deep(.cell) { padding: 0 12px; }
 }
-.fill-group {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-.fill-range-tip {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  white-space: nowrap;
-}
-.project-select { width: 420px; }
-.project-option {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.project-option-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.project-option-tag { flex-shrink: 0; }
-.project-option-right {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-.project-option-unbind { padding: 0; height: auto; }
-.bind-tip {
-  margin-top: 10px;
-  font-size: 12px;
-  color: #909399;
-}
-.warn { margin-top: 12px; }
-.fill-phase {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 22px 4px;
-  color: #6b7280;
-  font-size: 13px;
-}
-.fill-hint { margin-top: 4px; }
-.collect-hint {
-  padding: 22px 0;
-  text-align: center;
-  color: #909399;
-  font-size: 13px;
-}
-.plan-list .prow {
-  border-top: 1px solid var(--brand-card-border, #eef0f4);
-  padding: 10px 2px;
-}
-.plan-list .prow:first-child { border-top: none; }
-/* 未勾选的项目：整体淡出，表示不计入本次填报 */
-.plan-list .prow-off { opacity: 0.55; }
-.plan-list .prow-off .pwork { color: var(--el-text-color-secondary); }
-.pcheck { margin-right: 2px; flex-shrink: 0; }
-.pline {
-  display: flex;
-  gap: 12px;
-  align-items: baseline;
-}
-.phours {
-  font-family: var(--brand-mono, monospace);
-  font-size: 13px;
-  font-weight: 700;
-  color: #0e7a6d;
-  width: 52px;
-  flex-shrink: 0;
-}
-.pmsg { flex: 1; min-width: 0; }
-.pwork {
-  margin: 0;
-  font-family: inherit;
-  font-size: 13px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-all;
-  color: #2a303c;
-}
-.pproj {
-  display: block;
-  font-size: 11.5px;
-  color: #9ca1af;
-  margin-top: 4px;
-}
-.pmatch {
-  margin-top: 6px;
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-.prow.unbound .pmatch { padding-left: 64px; }
-.sum-list .sumline {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 2px;
-  font-size: 13px;
-  border-top: 1px dashed var(--brand-card-border, #eef0f4);
-}
-.sum-list .sumline:first-child { border-top: none; }
-.sum-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.sum-right {
-  font-family: var(--brand-mono, monospace);
-  color: #4a5160;
-  flex-shrink: 0;
-}
-.sum-total {
-  border-top: 1px solid var(--brand-card-border, #eef0f4) !important;
-  font-weight: 700;
-}
-.fill-actions {
-  display: flex;
-  gap: 10px;
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--brand-card-border, #eef0f4);
-}
-.hp-block {
-  margin-top: 12px;
-  padding: 10px 12px;
-  background: #fafbfc;
-  border: 1px solid var(--brand-card-border, #eef0f4);
-  border-radius: 8px;
-}
-.hp-title {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: #4a5160;
-  margin-bottom: 6px;
-}
-.exist-tag { margin-left: 6px; }
-.hpline {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 5px 0;
-  font-size: 12.5px;
-}
-.submit-hint {
-  margin-top: 10px;
-  font-size: 12px;
-  color: #d64545;
-}
-.logline {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 2px;
-  font-size: 12.5px;
-  border-top: 1px dashed var(--brand-card-border, #eef0f4);
-}
-.logline:first-of-type { border-top: none; }
-.log-time {
-  font-family: var(--brand-mono, monospace);
-  color: #4a5160;
-  flex-shrink: 0;
-}
-.log-sum {
-  color: #4a5160;
-  flex-shrink: 0;
-}
-.log-err {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #d64545;
-}
-.logline .el-button { flex-shrink: 0; }
-.bind-hint {
-  margin-top: 10px;
-  font-size: 12px;
-  color: #909399;
-}
-.task-option {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-.task-option-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.task-option-meta {
-  font-size: 11.5px;
-  color: #9ca1af;
-  flex-shrink: 0;
-}
-.preview-content {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: var(--brand-mono, monospace);
-  font-size: 12px;
-  line-height: 1.7;
-  color: #3a4150;
-  max-height: 62vh;
-  overflow: auto;
-  background: #fafbfc;
-  border: 1px solid var(--brand-card-border, #eef0f4);
-  border-radius: 8px;
-  padding: 14px;
+@media (max-width: 1080px) {
+  .fill-workspace { grid-template-columns: minmax(0, 1fr); }
+  .fill-summary { border-left: 0; border-top: 1px solid var(--line); padding: 16px 0 0; }
+  .fill-range-tip { margin-left: 0; text-align: left; }
+  .action-hint { font-size: 11px; }
 }
 </style>

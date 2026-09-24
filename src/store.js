@@ -52,6 +52,8 @@ export const state = reactive({
   /** 应用外壳状态：沉浸全屏由主进程窗口全屏驱动（Harness 视图铺满整屏时隐藏侧栏/顶栏） */
   ui: {
     fullscreen: false,
+    /** 界面主题：浅色与黑色，与终端自身的 ANSI 调色板独立。 */
+    theme: 'light',
     /** 侧栏是否收起（收起后只显示图标）。纯外观偏好，由主进程 ui-prefs.json 持久化 */
     sidebarCollapsed: false,
     /** 终端字号（px）。同上，纯外观偏好；不同人看终端的舒适字号差别不小 */

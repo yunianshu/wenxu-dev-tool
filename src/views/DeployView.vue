@@ -8,10 +8,9 @@
           <h1 class="topbar-page-title">部署</h1>
           <TopbarProjectSelect />
         </div>
-        <el-button v-if="currentProject" @click="aiOpen = true"><el-icon><MagicStick /></el-icon>AI 部署助手</el-button>
-        <el-button type="primary" @click="serverManagerOpen = true">服务器管理</el-button>
+        <el-button v-if="currentProject" class="deploy-topbar-actions" @click="aiOpen = true"><el-icon><MagicStick /></el-icon>AI 部署助手</el-button>
+        <el-button @click="serverManagerOpen = true"><el-icon><Coin /></el-icon>服务器管理</el-button>
         <el-button v-if="currentProject" @click="configOpen = true"><el-icon><Setting /></el-icon>部署设置</el-button>
-        <el-button v-if="currentProject" :loading="testing" :disabled="!form.id || dirty" @click="testConnection"><el-icon><Link /></el-icon>测试连接</el-button>
       </div>
     </Teleport>
     <ServerManagerDialog v-model="serverManagerOpen" :servers="servers" :busy="state.deploy.running" @changed="onServersChanged" />
@@ -24,18 +23,18 @@
 
     <template v-else>
     <!-- 当前部署目标与连接状态 -->
-    <el-card shadow="never" class="card bar-card">
+    <section class="deploy-target-bar">
       <div class="bar">
         <span class="bar-label">{{ form.deployMode === 'auto' ? '自动发布' : '部署环境' }}</span>
         <el-select
           v-if="form.deployMode !== 'auto'"
           v-model="activeTargetId"
           placeholder="选择环境"
-          style="width: 220px"
+          class="environment-select"
         >
           <el-option v-for="target in form.targets" :key="target.id" :value="target.id" :label="target.name || '未命名环境'" />
         </el-select>
-        <el-select :model-value="activeTarget?.serverId || ''" placeholder="选择部署服务器" style="width: 260px" :disabled="state.deploy.running || dirty" @change="selectDeploymentServer">
+        <el-select :model-value="activeTarget?.serverId || ''" placeholder="选择部署服务器" class="server-select" :disabled="state.deploy.running || dirty" @change="selectDeploymentServer">
           <el-option v-for="server in servers" :key="server.id" :value="server.id" :label="`${server.name} · ${server.host}`" />
         </el-select>
         <span v-if="form.deployMode === 'auto'" class="target-host mono">{{ activeTarget?.remotePath || '安装目录按项目自动分配' }}</span>
@@ -44,6 +43,7 @@
         <el-tag v-if="dirty" type="warning" effect="plain" size="small">有未保存修改</el-tag>
         <el-tag v-else-if="activeTarget?.server?.host" type="info" effect="plain" size="small">发布时自动检查</el-tag>
         <el-tag v-else type="info" effect="plain" size="small">需要配置</el-tag>
+        <el-button text :loading="testing" :disabled="!form.id || dirty" @click="testConnection"><el-icon><Link /></el-icon>测试连接</el-button>
       </div>
       <el-alert v-if="connResult" :type="connResult.ok ? 'success' : 'error'" :closable="true" class="conn-alert" @close="connResult = null">
         <template #title>
@@ -56,9 +56,9 @@
           <span v-else>连接失败：{{ connResult.error }}</span>
         </template>
       </el-alert>
-    </el-card>
+    </section>
 
-    <el-alert v-if="form.deployMode === 'auto'" title="在服务器管理中维护一次连接，各项目选择复用。安装目录、服务端口和数据按项目隔离，点击发布后自动准备环境并构建上线。" type="info" :closable="false" />
+    <el-alert v-if="form.deployMode === 'auto'" class="auto-deploy-hint" title="自动发布将检查服务器环境并构建上线；安装目录、端口和数据按项目隔离。" type="info" :closable="false" />
 
     <DeployConfigDrawer
       ref="configDrawerRef"
@@ -460,9 +460,24 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.deploy-page { display: flex; flex-direction: column; gap: 0; }
-.bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.bar-label { font-weight: 600; margin-right: 4px; }
+.deploy-page { display: flex; flex-direction: column; gap: 0; min-height: 100%; padding: 0 24px 20px; color: var(--brand-text); background: var(--surface); }
+.deploy-topbar-actions { margin-left: auto; }
+.deploy-target-bar { padding: 16px 0; border-bottom: 1px solid var(--line); }
+.bar { display: flex; align-items: center; gap: 12px; min-height: 32px; flex-wrap: wrap; }
+.bar-label { color: var(--text-muted); font-size: 12px; }
+.environment-select { width: 172px; }
+.server-select { width: 224px; }
+.target-host { flex: 1; min-width: 120px; max-width: none; font-size: 12px; }
 .bar .spacer { flex: 1; }
+.bar .el-tag { flex: none; }
 .conn-alert { margin-top: 12px; }
+.auto-deploy-hint { margin-top: 12px; }
+.deploy-main-column { min-width: 0; display: flex; flex-direction: column; gap: 24px; align-items: stretch; }
+@media (max-width: 1280px) {
+  .deploy-page { padding: 0 16px 16px; }
+  .bar { gap: 8px; }
+  .environment-select { width: 160px; }
+  .server-select { width: 200px; }
+  .bar .spacer { display: none; }
+}
 </style>

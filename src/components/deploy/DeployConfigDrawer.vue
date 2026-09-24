@@ -458,10 +458,10 @@ async function browseLocal() {
 </script>
 
 <style scoped>
-.f-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.f-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 .f-row:last-child { margin-bottom: 0; }
-.f-label { width: 76px; flex-shrink: 0; font-size: 13px; color: #4a5160; text-align: right; }
-.f-mini { font-size: 12.5px; color: var(--brand-text-sub); }
+.f-label { width: 76px; flex-shrink: 0; font-size: 13px; color: var(--brand-text); text-align: right; }
+.f-mini { font-size: 12px; color: var(--brand-text-sub); }
 .check-row { gap: 16px; }
 
 .target-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }

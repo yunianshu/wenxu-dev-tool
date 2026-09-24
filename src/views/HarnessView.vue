@@ -520,15 +520,15 @@ onBeforeUnmount(() => {
   align-items: center;
   height: 28px;
   padding: 0 12px;
-  border-radius: 999px;
+  border-radius: 6px;
   font-size: 12px;
   font-weight: 600;
-  color: #4a5568;
-  background: #eef1f5;
+  color: var(--text-muted);
+  background: var(--surface-subtle);
 }
-.harness-pill.is-running { color: #1f7a55; background: #e4f4ec; }
-.harness-pill.is-starting { color: #9a6b12; background: #fdf3e0; }
-.harness-pill.is-error { color: #b03a3a; background: #fdeaea; }
+.harness-pill.is-running { color: var(--accent-strong); background: var(--accent-soft); }
+.harness-pill.is-starting { color: var(--warning); background: var(--warning-soft); }
+.harness-pill.is-error { color: var(--danger); background: var(--danger-soft); }
 
 .harness-shell {
   position: relative;
@@ -536,9 +536,9 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  border: 1px solid #e6eaf0;
-  border-radius: 12px;
-  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
   overflow: hidden;
 }
 
@@ -568,13 +568,13 @@ onBeforeUnmount(() => {
   padding: 32px;
   text-align: center;
 }
-.harness-placeholder h3 { margin: 0; color: #1b242e; font-size: 17px; }
+.harness-placeholder h3 { margin: 0; color: var(--brand-text); font-size: 17px; }
 .harness-placeholder p { max-width: 560px; margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.7; }
-.harness-placeholder code { padding: 1px 6px; border-radius: 5px; background: #f2f4f7; font-family: var(--brand-mono); font-size: 12px; }
+.harness-placeholder code { padding: 1px 6px; border-radius: 5px; background: var(--surface-subtle); font-family: var(--brand-mono); font-size: 12px; }
 .harness-placeholder-icon { font-size: 30px; color: var(--brand-accent); }
 .harness-placeholder-icon.is-spin { animation: harness-spin 1.1s linear infinite; }
 @keyframes harness-spin { to { transform: rotate(360deg); } }
-.harness-error { color: #b03a3a !important; }
+.harness-error { color: var(--danger) !important; }
 .harness-placeholder-actions { display: flex; gap: 8px; margin-top: 6px; }
 
 .harness-detail {
@@ -584,8 +584,8 @@ onBeforeUnmount(() => {
   padding: 10px 12px;
   overflow: auto;
   border-radius: 8px;
-  background: #f7f8fa;
-  color: #55606e;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
   font-family: var(--brand-mono);
   font-size: 11px;
   line-height: 1.6;
@@ -600,15 +600,15 @@ onBeforeUnmount(() => {
   gap: 10px;
   height: 34px;
   padding: 0 14px;
-  border-top: 1px solid #eef1f5;
-  background: #fafbfc;
-  color: #55606e;
+  border-top: 1px solid var(--surface-subtle);
+  background: var(--surface-subtle);
+  color: var(--text-muted);
   font-size: 12px;
 }
-.harness-dot { width: 7px; height: 7px; border-radius: 50%; background: #49a878; }
-.harness-dot.is-starting { background: #d9a441; }
-.harness-dot.is-error { background: #d1585a; }
-.harness-meta { color: #8a94a2; font-family: var(--brand-mono); }
+.harness-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-strong); }
+.harness-dot.is-starting { background: var(--warning); }
+.harness-dot.is-error { background: var(--danger); }
+.harness-meta { color: var(--text-muted); font-family: var(--brand-mono); }
 
 /* 全屏悬浮条：叠在 webview 之上（DOM 层），半透明以免遮挡 dsh 自己的界面 */
 .harness-loadfail {
@@ -620,14 +620,14 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  background: #fbfcfd;
-  color: #55606e;
+  background: var(--surface);
+  color: var(--text-muted);
   font-size: 13px;
   text-align: center;
   padding: 24px;
 }
 .harness-loadfail p { margin: 0; max-width: 520px; line-height: 1.7; }
-.harness-loadfail-icon { font-size: 28px; color: #d1585a; }
+.harness-loadfail-icon { font-size: 28px; color: var(--danger); }
 .harness-loadfail-actions { display: flex; gap: 8px; margin-top: 4px; }
 
 .harness-immersive-bar {
@@ -639,13 +639,13 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   padding: 5px 6px 5px 12px;
-  border: 1px solid rgba(0, 0, 0, .06);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, .86);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
   box-shadow: 0 6px 18px rgba(16, 24, 40, .12);
   backdrop-filter: blur(6px);
   font-size: 12px;
-  color: #55606e;
+  color: var(--text-muted);
   opacity: .55;
   transition: opacity .18s ease;
 }
@@ -656,5 +656,5 @@ onBeforeUnmount(() => {
 
 /* 运行时版本行：版本号 + 检查更新（有新版本时多一个更新按钮） */
 .harness-version-row { display: flex; align-items: center; gap: 8px; }
-.harness-version { font-family: var(--brand-mono); font-size: 13px; color: #55606e; }
+.harness-version { font-family: var(--brand-mono); font-size: 13px; color: var(--text-muted); }
 </style>

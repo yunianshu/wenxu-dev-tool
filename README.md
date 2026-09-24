@@ -319,6 +319,7 @@ node scripts/prune-releases.cjs            # 执行：保留 package.json 当前
 
 ## 数据存储
 
+- 外观主题（浅色 / 黑色）、侧栏折叠和终端字体保存在 `userData/ui-prefs.json`，可在「设置 → 界面」调整；旧配置默认浅色。
 - 项目数据与配置保存在 `userData/config.json`、`userData/deploy-projects.json`（兼容旧部署项目数据；后者同时存储共享 `servers` 和项目目标的 `serverId` 引用）
 - 一键填报的项目-禅道任务绑定保存在 `userData/fill-bindings.json`
 - 内置 Harness 服务的进程记录保存在 `userData/harness.json`（用于清理异常退出遗留的服务进程）
@@ -328,6 +329,7 @@ node scripts/prune-releases.cjs            # 执行：保留 package.json 当前
 
 ## 说明
 
+- 当前界面以 [桌面 UI v2](design/README.md) 为准：统一窗口外壳、紧凑表格与双主题。`node scripts/desktop-ui-e2e.cjs` 可隔离验证真实页面渲染并导出四种窗口尺寸的关键截图。
 - Git 活动采集只需本机安装 git，无需联网；未安装 git 或项目不是 Git 仓库不影响项目、AI 助手等其他能力的使用。
 - 首次使用报告能力时若检测不到全局 git 身份，请在「设置 → 个人身份」确认本人姓名/邮箱，或在系统中配置 `git config --global user.name/email`。
 - 部署能力需可访问目标服务器（SSH 22 或自定义端口）；数据卷请挂载到 `shared/` 或绝对路径，避免放入版本目录随发布被清理。

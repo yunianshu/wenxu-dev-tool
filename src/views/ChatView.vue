@@ -3,43 +3,48 @@
     <!-- 页头上提到应用顶栏 -->
     <Teleport v-if="topbarReady" to="#app-topbar-slot">
       <div class="topbar-page">
-        <h1 class="topbar-page-title">AI 助手</h1>
+        <div class="topbar-title-group">
+          <h1 class="topbar-page-title">AI 助手</h1>
+          <TopbarProjectSelect />
+        </div>
         <el-button v-if="!configured" @click="$emit('navigate', 'settings')">配置 AI 服务</el-button>
-        <el-button v-else :loading="collecting" :disabled="!currentProject || !matchedRepos.length" @click="refreshActivity">
+        <el-button class="chat-topbar-actions" text :loading="collecting" :disabled="!currentProject || !matchedRepos.length" @click="refreshActivity">
           <el-icon><Refresh /></el-icon>刷新 Git 活动
         </el-button>
+        <el-button text :disabled="!currentChat?.messages.length" @click="chatPanel?.clearChat()"><el-icon><Delete /></el-icon>清空对话</el-button>
       </div>
     </Teleport>
 
     <div v-if="currentProject" class="ai-workspace">
+      <ChatPanel ref="chatPanel" :project-id="currentProject.id" :project-name="currentProject.name" :context-text="contextText" :context-label="contextLabel" :quick-prompts="quickPrompts" />
+
       <aside class="context-rail">
+        <div class="context-inspector-title"><h2>项目上下文</h2><el-icon><Document /></el-icon></div>
         <div class="context-project">
-          
-          <h2>{{ currentProject.name }}</h2>
+          <h3>{{ currentProject.name }}</h3>
           <p>{{ currentProject.description || '未填写项目说明' }}</p>
         </div>
 
-        <div class="context-section-head"><span>本次上下文</span><small>按需选择</small></div>
+        <div class="context-section-head"><span>附带上下文</span><el-switch v-model="currentChat.attachContext" size="small" :disabled="!contextText" aria-label="附带项目上下文" /></div>
         <label class="context-source">
-          <el-checkbox v-model="sources.project" />
+          <el-checkbox v-model="sources.project" aria-label="附带项目资料" />
           <span><strong>项目资料</strong><small>{{ currentProject.notes ? '包含说明、标签和备注' : '包含说明和基础信息' }}</small></span>
         </label>
         <label class="context-source">
-          <el-checkbox v-model="sources.git" />
-          <span><strong>Git 活动</strong><small>{{ projectCommits.length }} 条活动 · {{ matchedRepos.length }} 个仓库</small></span>
+          <el-checkbox v-model="sources.git" aria-label="附带 Git 活动" />
+          <span><strong>Git 活动</strong><small>{{ projectCommits.length }} 条活动 · {{ matchedRepos.length }} 个仓库</small><small v-if="sources.git" class="context-range">{{ gitRangeLabel }}</small></span>
         </label>
         <label class="context-source">
-          <el-checkbox v-model="sources.reports" />
+          <el-checkbox v-model="sources.reports" aria-label="附带报告记录" />
           <span><strong>报告记录</strong><small>{{ projectReports.length }} 条历史记录</small></span>
         </label>
         <label class="context-source">
-          <el-checkbox v-model="sources.deploy" />
+          <el-checkbox v-model="sources.deploy" aria-label="附带部署状态" />
           <span><strong>部署状态</strong><small>{{ deployLabel }}</small></span>
         </label>
 
       </aside>
 
-      <ChatPanel :project-id="currentProject.id" :context-text="contextText" :context-label="contextLabel" :quick-prompts="quickPrompts" />
     </div>
 
     <EmptyState
@@ -55,9 +60,11 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import EmptyState from '../components/EmptyState.vue'
 import ChatPanel from '../components/ChatPanel.vue'
+import TopbarProjectSelect from '../components/TopbarProjectSelect.vue'
 import { state } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
 import { useProjects } from '../composables/useProjects'
+import { useProjectChat } from '../composables/useProjectChat'
 import { buildProjectContext } from '../utils/ai-context'
 import { commitsForProject, deploymentConfigured, reposForProject } from '../utils/project-context'
 import { collectReportData } from '../utils/report-data'
@@ -68,6 +75,9 @@ const { currentProject } = useProjects()
 /** 顶栏是否在位（沉浸全屏时整个顶栏被卸载，此时不投递页头） */
 const topbarReady = useTopbarReady()
 const sources = reactive({ project: true, git: false, reports: false, deploy: false })
+const chatPanel = ref(null)
+const conversations = useProjectChat()
+const currentChat = computed(() => currentProject.value ? conversations.session(currentProject.value.id) : null)
 const reports = ref([])
 const deployments = ref([])
 const collecting = computed(() => ['scanning', 'collecting'].includes(state.report.phase))
@@ -130,3 +140,26 @@ async function refreshActivity() {
 watch(() => currentProject.value?.id, loadHistory)
 onMounted(loadHistory)
 </script>
+
+<style scoped>
+.ai-page { display: flex; flex: 1; flex-direction: column; min-height: 0; height: 100%; padding: 0; }
+.chat-topbar-actions { margin-left: auto; }
+.ai-workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 272px; overflow: hidden; background: var(--surface); border: 0; border-radius: 0; }
+.context-rail { padding: 24px 20px; background: var(--brand-bg); border: 0; border-left: 1px solid var(--line); overflow-y: auto; }
+.context-inspector-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 20px; color: var(--text-muted); }
+.context-inspector-title h2 { margin: 0; font-size: 14px; font-weight: 600; color: var(--brand-text); }
+.context-project { padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.context-project h3 { margin: 0; color: var(--brand-text); font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.context-project p { margin: 12px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.context-section-head { margin: 16px 0 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--brand-text); font-size: 12px; font-weight: 400; }
+.context-source { min-height: 72px; padding: 16px 0; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.context-source:hover { background: var(--surface-subtle); }
+.context-source > span { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.context-source strong { color: var(--brand-text); font-size: 13px; font-weight: 500; }
+.context-source small { color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+.context-source :deep(.el-checkbox) { margin: 0; height: 20px; }
+.context-range { font-variant-numeric: tabular-nums; }
+@media (max-width: 1280px) {
+  .context-rail { padding: 20px 16px; }
+}
+</style>

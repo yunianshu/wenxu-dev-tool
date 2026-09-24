@@ -1,0 +1,347 @@
+{
+  "screens": 48,
+  "failures": [],
+  "checks": [
+    {
+      "id": "gZoVh",
+      "width": 1440,
+      "height": 900,
+      "colors": 36,
+      "passed": true
+    },
+    {
+      "id": "hVtYz",
+      "width": 1440,
+      "height": 900,
+      "colors": 24,
+      "passed": true
+    },
+    {
+      "id": "XYZi0",
+      "width": 1440,
+      "height": 900,
+      "colors": 32,
+      "passed": true
+    },
+    {
+      "id": "mx46k",
+      "width": 1440,
+      "height": 900,
+      "colors": 28,
+      "passed": true
+    },
+    {
+      "id": "f12Iy",
+      "width": 1440,
+      "height": 900,
+      "colors": 29,
+      "passed": true
+    },
+    {
+      "id": "odWC1",
+      "width": 1440,
+      "height": 900,
+      "colors": 25,
+      "passed": true
+    },
+    {
+      "id": "V4SHAR",
+      "width": 1440,
+      "height": 900,
+      "colors": 34,
+      "passed": true
+    },
+    {
+      "id": "ysOU5",
+      "width": 1440,
+      "height": 900,
+      "colors": 35,
+      "passed": true
+    },
+    {
+      "id": "lIkmC",
+      "width": 1440,
+      "height": 900,
+      "colors": 21,
+      "passed": true
+    },
+    {
+      "id": "f9I4pD",
+      "width": 1440,
+      "height": 900,
+      "colors": 27,
+      "passed": true
+    },
+    {
+      "id": "YELiA",
+      "width": 1440,
+      "height": 900,
+      "colors": 18,
+      "passed": true
+    },
+    {
+      "id": "I83p6",
+      "width": 1440,
+      "height": 900,
+      "colors": 21,
+      "passed": true
+    },
+    {
+      "id": "uhK3K",
+      "width": 1440,
+      "height": 900,
+      "colors": 25,
+      "passed": true
+    },
+    {
+      "id": "t3CoaN",
+      "width": 1440,
+      "height": 900,
+      "colors": 22,
+      "passed": true
+    },
+    {
+      "id": "Y0QnkV",
+      "width": 1440,
+      "height": 900,
+      "colors": 30,
+      "passed": true
+    },
+    {
+      "id": "LJIKj",
+      "width": 1280,
+      "height": 720,
+      "colors": 35,
+      "passed": true
+    },
+    {
+      "id": "Z7HW3n",
+      "width": 1920,
+      "height": 1080,
+      "colors": 33,
+      "passed": true
+    },
+    {
+      "id": "hCU6h",
+      "width": 2560,
+      "height": 1440,
+      "colors": 23,
+      "passed": true
+    },
+    {
+      "id": "zNnTn",
+      "width": 1440,
+      "height": 900,
+      "colors": 22,
+      "passed": true
+    },
+    {
+      "id": "zfW7y",
+      "width": 1440,
+      "height": 1120,
+      "colors": 42,
+      "passed": true
+    },
+    {
+      "id": "juY8X",
+      "width": 1440,
+      "height": 900,
+      "colors": 46,
+      "passed": true
+    },
+    {
+      "id": "yVzVL",
+      "width": 1440,
+      "height": 900,
+      "colors": 37,
+      "passed": true
+    },
+    {
+      "id": "AY7yd",
+      "width": 1440,
+      "height": 900,
+      "colors": 36,
+      "passed": true
+    },
+    {
+      "id": "UGuKG",
+      "width": 1440,
+      "height": 900,
+      "colors": 16,
+      "passed": true
+    },
+    {
+      "id": "esxZ6",
+      "width": 1440,
+      "height": 900,
+      "colors": 37,
+      "passed": true
+    },
+    {
+      "id": "dnt65",
+      "width": 1440,
+      "height": 900,
+      "colors": 20,
+      "passed": true
+    },
+    {
+      "id": "VBisD",
+      "width": 1440,
+      "height": 900,
+      "colors": 30,
+      "passed": true
+    },
+    {
+      "id": "hmC0t",
+      "width": 1440,
+      "height": 900,
+      "colors": 30,
+      "passed": true
+    },
+    {
+      "id": "dXAdC",
+      "width": 1440,
+      "height": 900,
+      "colors": 29,
+      "passed": true
+    },
+    {
+      "id": "xDyfa",
+      "width": 1440,
+      "height": 900,
+      "colors": 25,
+      "passed": true
+    },
+    {
+      "id": "s4Sizc",
+      "width": 1440,
+      "height": 900,
+      "colors": 33,
+      "passed": true
+    },
+    {
+      "id": "fNovO",
+      "width": 1440,
+      "height": 900,
+      "colors": 33,
+      "passed": true
+    },
+    {
+      "id": "Z8RJr",
+      "width": 1440,
+      "height": 900,
+      "colors": 22,
+      "passed": true
+    },
+    {
+      "id": "R7UB58",
+      "width": 1440,
+      "height": 900,
+      "colors": 26,
+      "passed": true
+    },
+    {
+      "id": "D3ymGU",
+      "width": 1440,
+      "height": 900,
+      "colors": 19,
+      "passed": true
+    },
+    {
+      "id": "aqYHG",
+      "width": 1440,
+      "height": 900,
+      "colors": 23,
+      "passed": true
+    },
+    {
+      "id": "mtU5H",
+      "width": 1440,
+      "height": 900,
+      "colors": 25,
+      "passed": true
+    },
+    {
+      "id": "IfT1l",
+      "width": 1440,
+      "height": 900,
+      "colors": 22,
+      "passed": true
+    },
+    {
+      "id": "q80KFm",
+      "width": 1440,
+      "height": 900,
+      "colors": 27,
+      "passed": true
+    },
+    {
+      "id": "ECGTd",
+      "width": 1280,
+      "height": 720,
+      "colors": 37,
+      "passed": true
+    },
+    {
+      "id": "FUpEk",
+      "width": 1920,
+      "height": 1080,
+      "colors": 33,
+      "passed": true
+    },
+    {
+      "id": "KPDmn",
+      "width": 2560,
+      "height": 1440,
+      "colors": 24,
+      "passed": true
+    },
+    {
+      "id": "UQ37J",
+      "width": 1440,
+      "height": 900,
+      "colors": 22,
+      "passed": true
+    },
+    {
+      "id": "x91jZ6",
+      "width": 1440,
+      "height": 1120,
+      "colors": 52,
+      "passed": true
+    },
+    {
+      "id": "FRVYu",
+      "width": 1440,
+      "height": 900,
+      "colors": 48,
+      "passed": true
+    },
+    {
+      "id": "e2TVz",
+      "width": 1440,
+      "height": 900,
+      "colors": 30,
+      "passed": true
+    },
+    {
+      "id": "T5mdUs",
+      "width": 1440,
+      "height": 900,
+      "colors": 37,
+      "passed": true
+    },
+    {
+      "id": "wIQ55",
+      "width": 1440,
+      "height": 900,
+      "colors": 13,
+      "passed": true
+    }
+  ],
+  "editableBoards": 48,
+  "reusableComponents": 43,
+  "layoutProblems": 0,
+  "startedAt": "2026-09-24T09:58:54+08:00",
+  "finishedAt": "2026-09-24T10:31:48.8421247+08:00"
+}

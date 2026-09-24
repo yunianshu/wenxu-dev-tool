@@ -5,7 +5,10 @@ import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import App from './App.vue'
 import './styles.css'
+import './desktop-v2.css'
+import { initializeTheme } from './utils/ui-prefs'
 
+initializeTheme()
 const app = createApp(App)
 const bridgeReady = window.__TAURI_INTERNALS__
   ? import('./tauri-bridge.generated.js')

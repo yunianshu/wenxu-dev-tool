@@ -4,20 +4,20 @@
     <Teleport v-if="topbarReady" to="#app-topbar-slot">
       <div class="topbar-page">
         <h1 class="topbar-page-title">活动报告</h1>
+        <span class="page-scope">全部项目</span>
+        <el-button type="primary" class="page-primary" :loading="busy" :disabled="busy" @click="generate">
+          <el-icon><MagicStick /></el-icon><span>生成报告</span>
+        </el-button>
       </div>
     </Teleport>
 
     <!-- 顶部工具条：选周期 → 点生成，一键完成 -->
-    <el-card shadow="never" class="card report-toolbar-card">
+    <section class="report-toolbar-card">
       <div class="report-toolbar">
         <div class="toolbar-left">
-          <el-radio-group v-model="period">
-            <el-radio-button value="daily">日报</el-radio-button>
-            <el-radio-button value="weekly">周报</el-radio-button>
-            <el-radio-button value="biweekly">双周报</el-radio-button>
-            <el-radio-button value="monthly">月报</el-radio-button>
-            <el-radio-button value="custom">自定义</el-radio-button>
-          </el-radio-group>
+          <el-select v-model="period" class="period-select" aria-label="报告周期">
+            <el-option v-for="(label, value) in periodLabels" :key="value" :label="label" :value="value" />
+          </el-select>
 
           <el-date-picker
             v-if="period === 'daily'"
@@ -31,19 +31,14 @@
             <el-date-picker v-model="customUntil" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" />
           </template>
 
-          <el-switch v-model="onlyMine" active-text="只看本人" inactive-text="全部作者" class="mine-switch" />
+          <span v-if="!['daily', 'custom'].includes(period)" class="range-label">{{ rangeLabel }}</span>
+          <el-select v-model="onlyMine" class="author-select" aria-label="作者范围">
+            <el-option label="只看本人" :value="true" />
+            <el-option label="全部作者" :value="false" />
+          </el-select>
         </div>
         <div class="toolbar-right">
-          <span class="repo-count">{{ scopedRepos.length }} 个活动源</span>
-          <el-button
-            type="primary"
-            size="large"
-            :loading="busy"
-            :disabled="busy"
-            @click="generate"
-          >
-            <el-icon style="margin-right: 4px"><MagicStick /></el-icon>生成报告
-          </el-button>
+          <span class="repo-count">{{ scopedRepos.length }} 个 Git 活动源</span>
         </div>
       </div>
 
@@ -68,7 +63,7 @@
         title="尚未配置本人身份，「只看本人」会匹配不到任何提交。请到「设置 → 个人身份」添加 Git 账号。"
         class="warn"
       />
-    </el-card>
+    </section>
 
     <!-- 收集范围与当前活动源不一致（如 AI 助手页按单项目刷新过）：旧数据不作展示 -->
     <el-alert
@@ -102,7 +97,7 @@
 
     <!-- 结果 tabs：始终显示，明细/统计仅生成后可见 -->
     <el-tabs v-model="resultTab" :class="['result-tabs', 'report-tabs', { 'tabs-lone': state.report.phase !== 'done' }]">
-      <el-tab-pane v-if="state.report.phase === 'done'" label="报告明细" name="detail">
+      <el-tab-pane label="提交明细" name="detail" :disabled="state.report.phase !== 'done'">
             <el-alert
               v-if="periodMismatch"
               type="warning"
@@ -122,21 +117,21 @@
                 <el-button size="small" :disabled="!filteredCommits.length || stale" @click="copyReport">
                   <el-icon style="margin-right: 4px"><CopyDocument /></el-icon>复制报告
                 </el-button>
-                <el-button type="success" size="small" :disabled="!filteredCommits.length || stale" @click="exportReport">
+                <el-button size="small" :disabled="!filteredCommits.length || stale" @click="exportReport">
                   <el-icon style="margin-right: 4px"><Download /></el-icon>导出 Markdown
                 </el-button>
               </div>
             </div>
             <div v-if="filteredGroups.length" class="report-detail-list">
               <div v-for="g in filteredGroups" :key="g.repo" class="project-card" :class="{ 'is-collapsed': isCollapsed(g.repo) }">
-                <div class="project-header" @click="toggleCollapse(g.repo)">
+                <div class="project-header" role="button" tabindex="0" :aria-expanded="!isCollapsed(g.repo)" @click="toggleCollapse(g.repo)" @keydown.enter="toggleCollapse(g.repo)" @keydown.space.prevent="toggleCollapse(g.repo)">
                   <div class="project-head-left">
                     <el-icon class="fold-icon"><CaretRight /></el-icon>
                     <span class="project-name">{{ g.project }}</span>
                   </div>
                   <div class="project-right" @click.stop>
                     <span class="project-count">{{ g.commits.length }} 条提交</span>
-                    <el-button size="small" text type="primary" @click="copyProject(g)">
+                    <el-button size="small" text :disabled="stale" @click="copyProject(g)">
                       <el-icon style="margin-right: 3px"><CopyDocument /></el-icon>复制
                     </el-button>
                   </div>
@@ -157,7 +152,7 @@
           </el-tab-pane>
 
           <!-- 统计分析：KPI + 图表 -->
-          <el-tab-pane v-if="state.report.phase === 'done'" label="统计分析" name="stats">
+          <el-tab-pane label="统计概览" name="stats" :disabled="state.report.phase !== 'done'">
             <el-row :gutter="12" class="stats">
               <el-col :span="6">
                 <div class="kpi-card">
@@ -212,25 +207,41 @@
           </el-tab-pane>
 
       <!-- 历史记录 tab（始终显示） -->
-      <el-tab-pane label="历史记录" name="history">
-        <el-table :data="historyList" size="small">
-          <el-table-column prop="createdAt" label="生成时间" width="175" />
+      <el-tab-pane label="历史报告" name="history">
+        <div class="history-toolbar">
+          <el-input v-model="historySearch" clearable placeholder="搜索报告标题" aria-label="搜索报告标题" class="history-search"><template #prefix><el-icon><Search /></el-icon></template></el-input>
+          <span class="history-count">{{ filteredHistory.length }} 份报告</span>
+          <el-select v-model="historyPeriod" :empty-values="[null, undefined]" class="history-period" aria-label="筛选历史报告周期">
+            <el-option label="全部周期" value="" />
+            <el-option v-for="(label, value) in periodLabels" :key="value" :label="label" :value="value" />
+          </el-select>
+        </div>
+        <el-alert v-if="historyError" type="error" :closable="false" :title="historyError" class="stale-alert"><el-button text @click="loadHistory">重试</el-button></el-alert>
+        <el-table ref="historyTable" v-loading="historyLoading" :data="pagedHistory" class="history-table" highlight-current-row row-key="id" :default-sort="{ prop: 'createdAt', order: 'descending' }" @sort-change="sortHistory" @row-dblclick="viewHistory" @row-contextmenu="openHistoryMenu">
           <el-table-column prop="title" label="标题" min-width="220" show-overflow-tooltip />
-          <el-table-column prop="commitCount" label="提交数" width="80" />
-          <el-table-column prop="projectCount" label="项目数" width="80" />
-          <el-table-column label="操作" width="140">
+          <el-table-column label="周期" width="92"><template #default="{ row }">{{ periodLabels[row.period] || '报告' }}</template></el-table-column>
+          <el-table-column prop="commitCount" label="提交数" width="92" sortable="custom" />
+          <el-table-column prop="projectCount" label="项目数" width="92" sortable="custom" />
+          <el-table-column prop="createdAt" label="生成时间" width="168" sortable="custom" />
+          <el-table-column label="操作" width="64" align="center">
             <template #default="{ row }">
-              <el-button size="small" @click="viewHistory(row)">查看</el-button>
-              <el-button size="small" type="danger" plain @click="delHistory(row)">删除</el-button>
+              <el-dropdown trigger="click" @command="(command) => historyAction(command, row)">
+                <el-button text class="row-more" aria-label="报告操作"><el-icon><MoreFilled /></el-icon></el-button>
+                <template #dropdown><el-dropdown-menu><el-dropdown-item command="view">查看报告</el-dropdown-item><el-dropdown-item command="copy">复制报告</el-dropdown-item><el-dropdown-item command="delete" divided>删除记录</el-dropdown-item></el-dropdown-menu></template>
+              </el-dropdown>
             </template>
           </el-table-column>
           <template #empty>
             <div class="table-empty">
               <el-icon><Document /></el-icon>
-              <p>暂无记录</p>
+              <p>{{ historySearch || historyPeriod ? '没有匹配的报告' : '暂无报告，生成后自动保存在这里' }}</p>
             </div>
           </template>
         </el-table>
+        <div class="history-footer">
+          <span>{{ filteredHistory.length ? `显示 ${historyStart}–${Math.min(historyPage * historyPageSize, filteredHistory.length)}，` : '' }}共 {{ filteredHistory.length }} 份报告</span>
+          <el-pagination v-model:current-page="historyPage" :page-size="historyPageSize" :total="filteredHistory.length" :pager-count="5" layout="prev, pager, next" />
+        </div>
       </el-tab-pane>
     </el-tabs>
 
@@ -238,11 +249,18 @@
     <el-dialog v-model="historyDialog.visible" :title="historyDialog.title" width="760" top="6vh">
       <pre class="history-content">{{ historyDialog.content }}</pre>
     </el-dialog>
+    <Teleport to="body">
+      <div v-if="historyMenu.row" ref="historyMenuElement" class="report-context-menu" role="menu" :style="{ left: `${historyMenu.x}px`, top: `${historyMenu.y}px` }" @pointerdown.stop @contextmenu.prevent @keydown="moveMenuFocus">
+        <button role="menuitem" @click="historyAction('view', historyMenu.row)">查看报告<span>双击</span></button>
+        <button role="menuitem" @click="historyAction('copy', historyMenu.row)">复制报告</button>
+        <button role="menuitem" class="is-danger" @click="historyAction('delete', historyMenu.row)">删除记录</button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { state } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
@@ -254,6 +272,7 @@ import BaseChart from '../components/BaseChart.vue'
 import CountUp from '../components/CountUp.vue'
 
 const period = ref('daily')
+const periodLabels = { daily: '日报', weekly: '周报', biweekly: '双周报', monthly: '月报', custom: '自定义' }
 /** 顶栏是否在位（沉浸全屏时整个顶栏被卸载，此时不投递页头） */
 const topbarReady = useTopbarReady()
 // 活动报告固定汇总全部项目（不跟随顶栏当前项目）：报告口径是全量活动，项目维度由分组与图表呈现
@@ -277,8 +296,73 @@ watch(
 
 // 历史记录
 const historyList = ref([])
+const historySearch = ref('')
+const historyPeriod = ref('')
+const historyPage = ref(1)
+const historyPageSize = 12
+const historyLoading = ref(false)
+const historyError = ref('')
+const historySort = ref({ prop: 'createdAt', order: 'descending' })
+const historyMenu = ref({ row: null, x: 0, y: 0 })
+const historyTable = ref(null)
+const historyMenuElement = ref(null)
+const filteredHistory = computed(() => {
+  const search = historySearch.value.trim().toLocaleLowerCase()
+  const rows = historyList.value.filter((row) => (!search || String(row.title || '').toLocaleLowerCase().includes(search)) && (!historyPeriod.value || row.period === historyPeriod.value))
+  const { prop, order } = historySort.value
+  return rows.sort((a, b) => {
+    const difference = ['commitCount', 'projectCount'].includes(prop) ? Number(a[prop] || 0) - Number(b[prop] || 0) : String(a[prop] || '').localeCompare(String(b[prop] || ''))
+    return order === 'ascending' ? difference : -difference
+  })
+})
+const historyStart = computed(() => (historyPage.value - 1) * historyPageSize + 1)
+const pagedHistory = computed(() => filteredHistory.value.slice(historyStart.value - 1, historyPage.value * historyPageSize))
+watch([historySearch, historyPeriod], () => { historyPage.value = 1 })
+watch(() => filteredHistory.value.length, (length) => { historyPage.value = Math.min(historyPage.value, Math.max(1, Math.ceil(length / historyPageSize))) })
+function sortHistory(sort) { historySort.value = sort.prop && sort.order ? sort : { prop: 'createdAt', order: 'descending' } }
+function closeHistoryMenu() { historyMenu.value.row = null }
+function historyMenuKey(event) { if (event.key === 'Escape') closeHistoryMenu() }
+function moveMenuFocus(event) {
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  const buttons = [...historyMenuElement.value.querySelectorAll('button')]
+  const current = buttons.indexOf(document.activeElement)
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (current + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length
+  buttons[next]?.focus()
+}
+async function openHistoryMenu(row, column, event) {
+  event.preventDefault()
+  historyTable.value?.setCurrentRow(row)
+  historyMenu.value = { row, x: Math.min(event.clientX, window.innerWidth - 184), y: Math.min(event.clientY, window.innerHeight - 124) }
+  await nextTick()
+  historyMenuElement.value?.querySelector('button')?.focus()
+}
+async function historyAction(command, row) {
+  closeHistoryMenu()
+  if (command === 'view') await viewHistory(row)
+  else if (command === 'delete') await delHistory(row)
+  else if (command === 'copy') {
+    try {
+      const data = await window.gitReport.readHistory(row.id)
+      if (data) await copyText(data.content)
+      else ElMessage.warning('这份报告已不存在，请刷新历史记录')
+    } catch { ElMessage.error('读取报告失败，请重试') }
+  }
+}
 const historyDialog = ref({ visible: false, title: '', content: '' })
-onMounted(loadHistory)
+onMounted(() => {
+  loadHistory()
+  document.addEventListener('pointerdown', closeHistoryMenu)
+  document.addEventListener('keydown', historyMenuKey)
+  document.addEventListener('scroll', closeHistoryMenu, true)
+  window.addEventListener('resize', closeHistoryMenu)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', closeHistoryMenu)
+  document.removeEventListener('keydown', historyMenuKey)
+  document.removeEventListener('scroll', closeHistoryMenu, true)
+  window.removeEventListener('resize', closeHistoryMenu)
+})
 
 // 生成过程状态全部存于共享 store.state.report，切换视图不中断
 const busy = computed(() => state.report.phase === 'scanning' || state.report.phase === 'collecting')
@@ -470,15 +554,21 @@ function toggleAllGroups() {
     : new Set(filteredGroups.value.map((g) => g.repo))
 }
 
+const chartPalette = computed(() => state.ui.theme === 'dark'
+  ? { text: '#A1A7B2', border: '#30343B', surface: '#181A1E', accent: '#72CBB9', area: '#19372F' }
+  : { text: '#71717A', border: '#E5E7EB', surface: '#FFFFFF', accent: '#0E7A6D', area: '#E7F2F0' })
+const chartTooltip = computed(() => ({ backgroundColor: chartPalette.value.surface, borderColor: chartPalette.value.border, textStyle: { color: chartPalette.value.text, fontSize: 12 } }))
 const projectBarOption = computed(() => {
   const top = filteredGroups.value.slice(0, 12).reverse()
   return {
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    tooltip: { ...chartTooltip.value, trigger: 'axis', axisPointer: { type: 'shadow' } },
     // containLabel：grid 自动为 y 轴项目名让出空间，长名不再被裁剪
     grid: { left: 16, right: 40, top: 10, bottom: 10, containLabel: true },
     xAxis: {
       type: 'value',
       minInterval: 1,
+      axisLabel: { color: chartPalette.value.text },
+      splitLine: { lineStyle: { color: chartPalette.value.border } },
       // 留 25% 余量：柱子不顶满格，数值 label 不贴边（日报单项目时尤其明显）
       max: ({ max }) => Math.max(Math.ceil((max || 5) * 1.25), 5),
     },
@@ -486,7 +576,7 @@ const projectBarOption = computed(() => {
       type: 'category',
       data: top.map((g) => g.project),
       axisLabel: {
-        color: '#5d6472',
+        color: chartPalette.value.text,
         fontSize: 11,
         formatter: (v) => (v.length > 22 ? `${v.slice(0, 21)}…` : v),
       },
@@ -498,19 +588,13 @@ const projectBarOption = computed(() => {
       data: top.map((g) => g.commits.length),
       barMaxWidth: 20,
       itemStyle: {
-        borderRadius: [0, 5, 5, 0],
-        color: {
-          type: 'linear', x: 0, y: 0, x2: 1, y2: 0,
-          colorStops: [
-            { offset: 0, color: '#0e7a6d' },
-            { offset: 1, color: '#2ea68f' },
-          ],
-        },
+        borderRadius: [0, 4, 4, 0],
+        color: chartPalette.value.accent,
       },
       label: {
         show: true,
         position: 'right',
-        color: '#4a5160',
+        color: chartPalette.value.text,
         fontSize: 11,
         fontFamily: "'IBM Plex Mono', monospace",
         fontWeight: 600,
@@ -528,40 +612,34 @@ const trendOption = computed(() => {
   // 单日/两天数据下折线退化为孤点（无线段、面积不可见、点被边缘裁剪）→ 改用柱状呈现
   if (sorted.length < 3) {
     return {
-      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      tooltip: { ...chartTooltip.value, trigger: 'axis', axisPointer: { type: 'shadow' } },
       grid: { left: 34, right: 20, top: 24, bottom: 10, containLabel: true },
       xAxis: {
         type: 'category',
         data: dates,
-        axisLabel: { color: '#8a909c', fontSize: 10 },
-        axisLine: { lineStyle: { color: '#eef0f4' } },
+        axisLabel: { color: chartPalette.value.text, fontSize: 11 },
+        axisLine: { lineStyle: { color: chartPalette.value.border } },
         axisTick: { show: false },
       },
       yAxis: {
         type: 'value',
         minInterval: 1,
         max: ({ max }) => Math.max(Math.ceil((max || 5) * 1.3), 4),
-        axisLabel: { color: '#8a909c', fontSize: 10 },
-        splitLine: { lineStyle: { color: '#f2f4f7', type: 'dashed' } },
+        axisLabel: { color: chartPalette.value.text, fontSize: 11 },
+        splitLine: { lineStyle: { color: chartPalette.value.border } },
       },
       series: [{
         type: 'bar',
         data: counts,
         barMaxWidth: 36,
         itemStyle: {
-          borderRadius: [5, 5, 0, 0],
-          color: {
-            type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-            colorStops: [
-              { offset: 0, color: '#2ea68f' },
-              { offset: 1, color: '#0e7a6d' },
-            ],
-          },
+          borderRadius: [4, 4, 0, 0],
+          color: chartPalette.value.accent,
         },
         label: {
           show: true,
           position: 'top',
-          color: '#4a5160',
+          color: chartPalette.value.text,
           fontSize: 11,
           fontFamily: "'IBM Plex Mono', monospace",
           fontWeight: 600,
@@ -570,20 +648,20 @@ const trendOption = computed(() => {
     }
   }
   return {
-    tooltip: { trigger: 'axis' },
+    tooltip: { ...chartTooltip.value, trigger: 'axis' },
     grid: { left: 34, right: 20, top: 24, bottom: 10, containLabel: true },
     xAxis: {
       type: 'category',
       data: dates,
       // 默认 boundaryGap（true）：首尾点不贴边，symbol/面积不被裁剪
-      axisLabel: { color: '#8a909c', fontSize: 10 },
-      axisLine: { lineStyle: { color: '#eef0f4' } },
+      axisLabel: { color: chartPalette.value.text, fontSize: 11 },
+      axisLine: { lineStyle: { color: chartPalette.value.border } },
     },
     yAxis: {
       type: 'value',
       minInterval: 1,
-      axisLabel: { color: '#8a909c', fontSize: 10 },
-      splitLine: { lineStyle: { color: '#f2f4f7', type: 'dashed' } },
+      axisLabel: { color: chartPalette.value.text, fontSize: 11 },
+      splitLine: { lineStyle: { color: chartPalette.value.border } },
     },
     series: [{
       type: 'line',
@@ -591,17 +669,9 @@ const trendOption = computed(() => {
       symbol: 'circle',
       symbolSize: 6,
       data: counts,
-      lineStyle: { width: 2.5, color: '#0e7a6d' },
-      itemStyle: { color: '#0e7a6d', borderColor: '#fff', borderWidth: 2 },
-      areaStyle: {
-        color: {
-          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [
-            { offset: 0, color: 'rgba(14, 122, 109, 0.26)' },
-            { offset: 1, color: 'rgba(14, 122, 109, 0.02)' },
-          ],
-        },
-      },
+      lineStyle: { width: 2, color: chartPalette.value.accent },
+      itemStyle: { color: chartPalette.value.accent, borderColor: chartPalette.value.surface, borderWidth: 2 },
+      areaStyle: { color: chartPalette.value.area },
     }],
   }
 })
@@ -649,16 +719,20 @@ async function autoSave() {
 }
 
 async function loadHistory() {
+  historyLoading.value = true
+  historyError.value = ''
   try {
     historyList.value = await window.gitReport.listHistory()
-  } catch { /* noop */ }
+  } catch { historyError.value = '历史报告加载失败，请重试。' }
+  finally { historyLoading.value = false }
 }
 
 async function viewHistory(row) {
-  const data = await window.gitReport.readHistory(row.id)
-  if (data) {
-    historyDialog.value = { visible: true, title: data.title, content: data.content }
-  }
+  try {
+    const data = await window.gitReport.readHistory(row.id)
+    if (data) historyDialog.value = { visible: true, title: data.title, content: data.content }
+    else ElMessage.warning('这份报告已不存在，请刷新历史记录')
+  } catch { ElMessage.error('读取报告失败，请重试') }
 }
 
 async function copyText(text) {
@@ -667,6 +741,7 @@ async function copyText(text) {
     ElMessage.success('已复制到剪贴板')
   } catch (e) {
     console.error('复制失败', e)
+    ElMessage.error('复制失败，请重试')
   }
 }
 
@@ -687,8 +762,10 @@ async function delHistory(row) {
   } catch {
     return
   }
-  await window.gitReport.deleteHistory(row.id)
-  loadHistory()
+  try {
+    await window.gitReport.deleteHistory(row.id)
+    await loadHistory()
+  } catch { ElMessage.error('删除失败，请重试') }
 }
 
 async function exportReport() {
@@ -705,26 +782,80 @@ async function exportReport() {
 </script>
 
 <style scoped>
+.report-page { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 0; padding: 0 24px; color: var(--brand-text); }
+.topbar-page { display: flex; align-items: center; gap: 16px; width: 100%; }
+.page-scope { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.page-primary { margin-left: auto; }
+.page-primary .el-icon { margin-right: 8px; }
+.report-toolbar-card { flex-shrink: 0; padding: 12px 0; min-height: 64px; }
+.report-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 32px; }
+.toolbar-left { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.period-select { width: 104px; }
+.author-select { width: 140px; }
+.toolbar-left :deep(.el-date-editor) { width: 164px; }
+.repo-count, .range-label, .range-sep { color: var(--text-muted); font-size: 12px; font-family: inherit; white-space: nowrap; }
+.author-filter-row { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
+.warn { margin-top: 12px; }
 .stale-alert { margin-bottom: 12px; }
-.collect-hint {
-  padding: 26px 0;
-  text-align: center;
-  color: #909399;
-  font-size: 13px;
-}
-.history-content {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: var(--brand-mono);
-  font-size: 12.5px;
-  line-height: 1.7;
-  color: #3a4150;
-  max-height: 62vh;
-  overflow: auto;
-  background: #fafbfc;
-  border: 1px solid var(--brand-card-border);
-  border-radius: 8px;
-  padding: 16px;
+.report-results { flex: 0 0 auto; padding: 0; overflow: visible; }
+.phase-card { background: var(--surface-subtle); padding: 16px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 12px; }
+.report-tabs { flex: 1; min-height: 0; }
+.report-tabs :deep(.el-tabs__header) { display: block !important; height: 44px; margin: 0; }
+.report-tabs :deep(.el-tabs__item) { height: 44px; padding: 0 12px; font-size: 13px; font-weight: 400; }
+.report-tabs :deep(.el-tabs__item.is-active) { font-weight: 600; }
+.report-tabs :deep(.el-tabs__content) { display: flex; flex-direction: column; min-height: 0; flex: 1; padding: 0; overflow: auto; }
+.report-tabs :deep(.el-tab-pane) { min-height: 0; }
+.report-tabs :deep(#pane-history) { display: flex; flex-direction: column; flex: 1; }
+.history-toolbar { display: flex; align-items: center; gap: 12px; padding: 12px 0; flex-shrink: 0; }
+.history-search { width: 260px; }
+.history-count { margin-left: auto; color: var(--text-muted); font-size: 12px; }
+.history-period { width: 112px; }
+.history-table { flex: 1; min-height: 120px; font-size: 12px; }
+.history-table :deep(.el-table__cell) { height: 40px; padding: 4px 0; }
+.history-table :deep(.el-table__header .el-table__cell) { height: 36px; }
+.history-table :deep(.cell) { padding: 0 16px; }
+.history-table :deep(.el-table__row) { cursor: default; }
+.row-more { padding: 4px; width: 28px; height: 28px; }
+.history-footer { display: flex; justify-content: space-between; align-items: center; gap: 16px; min-height: 56px; flex-shrink: 0; border-top: 1px solid var(--line-soft); font-size: 12px; color: var(--text-muted); }
+.history-footer :deep(.el-pager li), .history-footer :deep(.btn-prev), .history-footer :deep(.btn-next) { min-width: 32px; height: 32px; border-radius: 6px; font-weight: 400; }
+.history-footer :deep(.el-pager li.is-active) { border: 1px solid var(--line); color: var(--brand-text); background: var(--surface); }
+.detail-toolbar { min-height: 56px; margin: 0; }
+.detail-summary { font-size: 12px; font-family: inherit; color: var(--text-muted); }
+.detail-actions .el-button + .el-button { margin-left: 0; }
+.report-detail-list { gap: 0; }
+.project-card { padding: 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: var(--surface); }
+.project-header { margin: 0; min-height: 44px; padding: 0 12px; border-radius: 4px; }
+.project-header:hover { background: var(--surface-subtle); }
+.project-header:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
+.project-name { font-size: 13px; }
+.project-count, .fold-icon { color: var(--text-muted); font-size: 12px; }
+.commit-list { padding: 0 12px 8px; }
+.commit-row { padding: 8px 0; border-bottom: 1px solid var(--line-soft); min-height: 36px; }
+.commit-subject { font-size: 13px; color: var(--brand-text); }
+.commit-date, .commit-no { color: var(--text-muted); }
+.collect-hint { padding: 32px 0; text-align: center; color: var(--text-muted); font-size: 13px; }
+.stats { margin: 16px 0 24px !important; }
+.stats :deep(.el-col) { padding: 0 !important; }
+.kpi-card { padding: 12px 20px; border: 0; border-right: 1px solid var(--line); background: var(--surface); border-radius: 0; box-shadow: none; }
+.stats :deep(.el-col:last-child) .kpi-card { border-right: 0; }
+.kpi-card:hover { box-shadow: none; transform: none; }
+.kpi-icon { display: none; }
+.kpi-value { font-size: 24px; color: var(--brand-text); }
+.kpi-range { font-size: 14px; }
+.kpi-label { color: var(--text-muted); }
+.charts :deep(.el-card) { border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.charts :deep(.el-card__header) { font-size: 14px; padding: 16px; border-color: var(--line); }
+.charts :deep(.el-card__body) { padding: 16px; }
+.history-content { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--brand-mono, monospace); font-size: 12px; line-height: 1.7; color: var(--brand-text); max-height: 62vh; overflow: auto; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 6px; padding: 16px; }
+.report-context-menu { position: fixed; z-index: 2500; width: 176px; padding: 4px; background: var(--surface); color: var(--brand-text); border: 1px solid var(--line-strong); border-radius: 6px; box-shadow: 0 4px 16px #00000018; }
+.report-context-menu button { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; border: 0; border-radius: 4px; background: transparent; color: inherit; min-height: 32px; padding: 0 8px; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.report-context-menu button:hover { background: var(--surface-subtle); }
+.report-context-menu button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
+.report-context-menu button span { font-size: 11px; color: var(--text-muted); }
+.report-context-menu button.is-danger { color: var(--danger); border-top: 1px solid var(--line); margin-top: 4px; }
+@media (max-width: 1280px) {
+  .report-page { padding: 0 16px; }
+  .toolbar-left { gap: 8px; }
+  .history-table :deep(.cell) { padding: 0 12px; }
 }
 </style>

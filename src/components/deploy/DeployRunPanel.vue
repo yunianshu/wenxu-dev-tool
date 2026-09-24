@@ -1,67 +1,48 @@
 <template>
-  <el-card shadow="never" class="card deploy-card-publish">
-    <template #header>
-      <div class="card-header">
-        <span>发布</span>
-        <span class="ver-info">
-          目标 <b>{{ activeTarget ? (activeTarget.name || '未命名') : '—' }}</b>
-          <el-divider direction="vertical" />
-          本地版本 <b>{{ publishVersion || '—' }}</b>
-          <el-divider direction="vertical" />
-          线上版本 <b>{{ onlineVersion || '未知' }}</b>
-          <span v-if="onlineVersionSource" class="ver-src">{{ onlineVersionSource }}</span>
-          <el-button text size="small" type="primary" :disabled="!form.id || dirty" @click="queryReleases()">查询</el-button>
-        </span>
-      </div>
-    </template>
+  <section class="deploy-run-workspace">
     <div class="publish-row">
-      <el-button
-        type="primary"
-        size="large"
-        class="publish-btn"
-        :loading="state.deploy.running"
-        :disabled="!canPublish"
-        @click="publish"
-      >
-        🚀 发布 {{ publishVersion || '' }}
-      </el-button>
-      <el-button
-        size="large"
-        :disabled="!form.id || state.deploy.running"
-        @click="newVersion"
-      ><el-icon style="margin-right: 4px"><Plus /></el-icon>新版本</el-button>
-      <el-button v-if="state.deploy.running" size="large" type="warning" plain @click="cancelRun">取消发布</el-button>
+      <div class="version-summary">
+        <span class="ver-label">本地</span><strong class="local-version mono">{{ publishVersion || '未识别' }}</strong>
+        <el-tooltip :content="onlineVersionSource || '查询服务器线上版本'" placement="top">
+          <el-button text class="online-version" :disabled="!form.id || dirty" @click="queryReleases()">线上 {{ onlineVersion || '未知' }}<el-icon><Refresh /></el-icon></el-button>
+        </el-tooltip>
+        <span v-if="onlineVersion && publishVersion === onlineVersion" class="version-match"><span />版本一致</span>
+        <span v-else-if="publishVersion && onlineVersion" class="version-pending">待发布版本</span>
+      </div>
+      <div class="publish-actions">
       <el-select
         v-if="releases.length"
         v-model="rollbackVersion"
         placeholder="历史版本"
-        size="large"
-        style="width: 150px; margin-left: 8px"
+        class="rollback-select"
       >
         <el-option v-for="r in releases" :key="r" :value="r" :label="r" />
       </el-select>
       <el-button
         v-if="releases.length && rollbackVersion"
-        size="large"
         :loading="rollingBack"
         @click="doRollback(rollbackVersion)"
       >回滚到此版本</el-button>
       <el-button
         v-if="activeDatabase.enabled"
-        size="large"
         plain
         @click="openDbBackups"
-      ><el-icon style="margin-right: 4px"><DataBase /></el-icon>数据库备份</el-button>
-    </div>
-        <div v-if="hasRun" class="run-meta">
-      <div class="run-track" :class="runTrackClass">
-        <div class="run-fill" :style="{ width: runPercent + '%' }" />
+      ><el-icon><Coin /></el-icon>数据库备份</el-button>
+      <el-button :disabled="!form.id || state.deploy.running" @click="newVersion"><el-icon><Plus /></el-icon>新版本</el-button>
+      <el-button v-if="state.deploy.running" type="warning" plain @click="cancelRun">取消发布</el-button>
+      <el-tooltip v-else :disabled="canPublish" :content="publishBlockedReason" placement="top">
+        <span class="publish-button-wrap"><el-button type="primary" class="publish-btn" :disabled="!canPublish" @click="publish"><el-icon><Promotion /></el-icon>发布 {{ publishVersion || '' }}</el-button></span>
+      </el-tooltip>
       </div>
-      <span class="run-stat">
-        {{ doneCount }}/{{ stageTotal }} 阶段 · {{ state.deploy.running ? '已用时' : '总耗时' }}
-        <b class="mono">{{ fmtElapsed(elapsedMs) }}</b>
-      </span>
     </div>
+    <div class="run-output">
+      <section class="deploy-stages" aria-label="部署阶段">
+      <div class="section-heading">
+        <h2>{{ runTitle }}</h2>
+        <span v-if="hasRun" class="run-stat">{{ doneCount }}/{{ stageTotal }} · <span class="mono">{{ fmtElapsed(elapsedMs) }}</span></span>
+        <span v-else class="run-stat">{{ stageTotal }} 个阶段</span>
+      </div>
+      <div class="run-track" :class="runTrackClass" role="progressbar" :aria-valuenow="runPercent" :aria-valuemin="0" :aria-valuemax="100" :aria-label="`${runTitle}，已结束 ${doneCount} 个阶段`"><div class="run-fill" :style="{ width: runPercent + '%' }" /></div>
     <div class="stages">
       <div
         v-for="(s, i) in stageList"
@@ -69,28 +50,27 @@
         class="stage-chip"
         :class="stageClass(s.id)"
       >
-        <span class="stage-idx">{{ i + 1 }}</span>
+        <span class="stage-idx">{{ stageMark(s.id) || i + 1 }}</span>
         <span>{{ s.label }}</span>
-        <span v-if="stageDur(s.id)" class="stage-dur">{{ stageDur(s.id) }}</span>
-        <span class="stage-mark">{{ stageMark(s.id) }}</span>
+        <span class="stage-dur">{{ stageDur(s.id) || stageStatus(s.id) }}</span>
       </div>
     </div>
-  </el-card>
+      </section>
 
-  <el-card shadow="never" class="card deploy-card-log">
-    <template #header>
-      <div class="card-header">
-        <span>发布日志</span>
-        <el-button text size="small" @click="clearLogs">清屏</el-button>
+      <section class="deploy-card-log">
+      <div class="section-heading">
+        <h2>发布日志</h2>
+        <div class="log-actions"><el-button text size="small" :disabled="!state.deploy.logs.length" @click="copyLogs"><el-icon><CopyDocument /></el-icon>复制</el-button><el-button text size="small" :disabled="!state.deploy.logs.length" @click="clearLogs">清屏</el-button></div>
       </div>
-    </template>
     <div ref="logBox" class="log-box" :class="{ 'is-empty': !state.deploy.logs.length }">
       <div v-if="!state.deploy.logs.length" class="log-empty">暂无日志，点击「发布」后此处实时显示服务器输出</div>
       <div v-for="(l, i) in state.deploy.logs" :key="i" class="log-line" :class="'log-' + l.level">
         <span class="log-ts">{{ l.ts }}</span>{{ l.text }}
       </div>
     </div>
-  </el-card>
+      </section>
+    </div>
+  </section>
 
   <!-- 添加新版本（spec R7）：候选预测 + 自定义 -->
   <el-dialog v-model="versionDialogVisible" title="添加新版本" width="440px">
@@ -197,6 +177,14 @@ const canPublish = computed(() => {
   if (state.deploy.running || !props.form.id || props.dirty || !props.activeTarget) return false
   const t = props.activeTarget
   return !!(props.form.name && props.form.localPath && t.server.host && (props.form.deployMode === 'auto' || (props.publishVersion && t.remotePath)))
+})
+const publishBlockedReason = computed(() => {
+  if (props.dirty) return '请先保存部署设置中的修改'
+  if (!props.form.localPath) return '请先在部署设置中填写项目目录'
+  if (!props.activeTarget?.server?.host) return '请先选择并配置部署服务器'
+  if (props.form.deployMode !== 'auto' && !props.publishVersion) return '请先识别或设置发布版本'
+  if (props.form.deployMode !== 'auto' && !props.activeTarget?.remotePath) return '请先配置部署目录'
+  return '请先补全部署设置'
 })
 
 const activeDatabase = computed(() => {
@@ -317,6 +305,12 @@ const runFailed = computed(() => STAGE_LIST.some((s) => {
   const st = state.deploy.stages[s.id]
   return !!st && (st.status === 'failed' || st.status === 'rollback')
 }))
+const runTitle = computed(() => {
+  if (state.deploy.running) return '正在发布'
+  if (!hasRun.value) return '发布阶段'
+  if (runFailed.value) return '发布异常'
+  return doneCount.value === stageTotal.value ? '发布完成' : '发布已结束'
+})
 
 const runTrackClass = computed(() => {
   if (state.deploy.running) return ''
@@ -399,9 +393,19 @@ function stageMark(id) {
     waiting: '·', running: '…', success: '✓', failed: '✗', skipped: '—', rollback: '↩',
   }[st.status] || ''
 }
+function stageStatus(id) {
+  const status = state.deploy.stages[id]?.status
+  return { waiting: '等待', running: '进行中', success: '完成', failed: '失败', skipped: '跳过', rollback: '回滚' }[status] || '等待'
+}
 
 // ─── 日志 ───
 function clearLogs() { state.deploy.logs = [] }
+async function copyLogs() {
+  try {
+    await window.gitReport.copyText(state.deploy.logs.map((line) => `${line.ts} ${line.text}`).join('\n'))
+    ElMessage.success('已复制发布日志')
+  } catch { ElMessage.error('复制发布日志失败，请重试') }
+}
 watch(() => state.deploy.logs.length, async () => {
   await nextTick()
   if (logBox.value) logBox.value.scrollTop = logBox.value.scrollHeight
@@ -547,80 +551,59 @@ defineExpose({ doRollback, resetSelection })
 </script>
 
 <style scoped>
-.ver-info { font-size: 13px; color: var(--brand-text-sub); font-weight: 400; }
-.ver-info b { color: var(--brand-text); font-family: var(--brand-mono); }
-.ver-src { margin-left: 4px; font-size: 11.5px; color: var(--brand-text-sub); }
+.deploy-run-workspace { min-width: 0; }
+.publish-row { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.version-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-width: 0; }
+.ver-label, .online-version, .version-pending { color: var(--text-muted); font-size: 12px; }
+.local-version { font-size: 18px; font-weight: 600; color: var(--brand-text); }
+.online-version { padding: 0; height: 28px; }
+.online-version :deep(span) { gap: 8px; }
+.version-match { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--accent-strong); }
+.version-match > span { width: 6px; height: 6px; border-radius: 50%; background: var(--brand-accent); }
+.publish-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.publish-actions .el-button { margin: 0; height: 32px; }
+.publish-btn { min-width: 112px; font-size: 13px; font-weight: 500; }
+.publish-button-wrap { display: inline-flex; }
+.rollback-select { width: 132px; }
+.run-output { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 24px; padding-top: 20px; }
+.section-heading { height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.section-heading h2 { margin: 0; font-size: 14px; font-weight: 600; color: var(--brand-text); }
+.log-actions { display: flex; align-items: center; gap: 4px; }
+.log-actions .el-button { margin: 0; }
+.run-track { height: 4px; margin-bottom: 8px; border-radius: 2px; background: var(--surface-subtle); overflow: hidden; }
+.run-fill { height: 100%; border-radius: 2px; background: var(--brand-accent); transition: width .3s ease; }
+.run-track.is-failed .run-fill { background: var(--danger); }
+.run-stat { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stages { display: flex; flex-direction: column; gap: 0; }
+.stage-chip { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0; font-size: 12px; color: var(--text-muted); }
+.stage-idx { width: 16px; height: 16px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--text-muted); font-size: 10px; flex: none; }
+.stage-dur { margin-left: auto; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text-muted); }
+.stage-chip.is-running { color: var(--accent-strong); font-weight: 500; }
+.stage-chip.is-running .stage-idx { background: var(--accent-soft); border-color: var(--accent-strong); color: var(--accent-strong); }
+.stage-chip.is-success { color: var(--brand-text); }
+.stage-chip.is-success .stage-idx { color: var(--accent-strong); border-color: var(--accent-strong); }
+.stage-chip.is-failed, .stage-chip.is-failed .stage-idx { color: var(--danger); border-color: var(--danger); }
+.stage-chip.is-rollback, .stage-chip.is-rollback .stage-idx { color: var(--el-color-warning); border-color: var(--el-color-warning); }
+.stage-chip.is-skipped .stage-idx { border-color: transparent; }
+.deploy-card-log { min-width: 0; }
+.log-box { height: 264px; overflow: auto; background: #14181f; border-radius: 6px; padding: 16px; font-family: var(--brand-mono); font-size: 12px; line-height: 2; }
+.log-empty { color: #9ba7b5; display: grid; place-items: center; height: 100%; padding: 24px; text-align: center; line-height: 1.7; }
+.log-line { white-space: pre-wrap; word-break: break-word; color: #c0c8d2; }
+.log-ts { color: #9ba7b5; margin-right: 12px; }
+.log-success { color: #87d7c4; }
+.log-warn { color: #e8b45e; }
+.log-error { color: #f08a8a; }
 .ver-hint { font-size: 13px; color: var(--brand-text-sub); margin-bottom: 12px; }
 .ver-hint b { color: var(--brand-text); font-family: var(--brand-mono); }
 .ver-options { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
 .ver-options .el-radio { margin-right: 0; height: auto; }
 
-.publish-row { display: flex; align-items: center; margin-bottom: 14px; flex-wrap: wrap; row-gap: 10px; }
-.publish-btn { min-width: 220px; font-size: 15px; font-weight: 600; }
-
-.run-meta { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.run-track { flex: 1; max-width: 240px; height: 4px; border-radius: 2px; background: #e8ebf0; overflow: hidden; }
-.run-fill { height: 100%; border-radius: 2px; background: var(--brand-accent); transition: width .3s ease; }
-.run-track.is-done .run-fill { background: #67c23a; }
-.run-track.is-failed .run-fill { background: #f56c6c; }
-.run-stat { font-size: 12.5px; color: var(--brand-text-sub); }
-.run-stat b { color: var(--brand-text); }
-
-/* 等宽网格：flex 自动换行时每个 chip 宽度由文字长短决定，9 个排成参差的 5+4；
-   等宽后即使最后一行不满，列也是对齐的 */
-.stages { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
-.stage-chip {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 5px 8px;
-  border-radius: 7px;
-  border: 1px solid #e2e6ed;
-  font-size: 12.5px;
-  color: #8a909c;
-  background: #fafbfc;
-  transition: all .2s ease;
-}
-.stage-idx {
-  width: 16px; height: 16px; line-height: 16px; text-align: center;
-  border-radius: 50%;
-  background: #e2e6ed; color: #fff;
-  font-size: 11px;
-  font-family: var(--brand-mono);
-}
-.stage-mark { font-family: var(--brand-mono); font-weight: 600; }
-.stage-dur { font-size: 11.5px; opacity: .75; font-family: var(--brand-mono); }
-.stage-chip.is-running { border-color: var(--brand-accent); color: var(--brand-accent); background: var(--el-color-primary-light-9); }
-.stage-chip.is-running .stage-idx { background: var(--brand-accent); }
-.stage-chip.is-success { border-color: #b7e1b7; color: #3f9d3f; background: #f2faf2; }
-.stage-chip.is-success .stage-idx { background: #67c23a; }
-.stage-chip.is-failed { border-color: #efb8b8; color: #d54949; background: #fdf3f3; }
-.stage-chip.is-failed .stage-idx { background: #f56c6c; }
-.stage-chip.is-rollback { border-color: #f0d3a8; color: #c8842c; background: #fdf8ef; }
-.stage-chip.is-rollback .stage-idx { background: #e6a23c; }
-.stage-chip.is-skipped { opacity: .65; }
-
-.log-box {
-  height: 300px;
-  overflow: auto;
-  background: #14181f;
-  border-radius: 8px;
-  padding: 12px 14px;
-  font-family: var(--brand-mono);
-  font-size: 12.5px;
-  line-height: 1.65;
-}
-.log-empty { color: #5b6470; text-align: center; padding-top: 120px; }
-/* 空态不铺深色：300px 高的整块黑在空态时压过页面主体，而空态本来就没有输出可读 */
-.log-box.is-empty { background: var(--surface-subtle); border: 1px solid var(--line); }
-.log-box.is-empty .log-empty { color: var(--brand-text-sub); padding-top: 132px; }
-.log-line { white-space: pre-wrap; word-break: break-all; color: #b8c0ca; }
-.log-ts { color: #5b6470; margin-right: 10px; }
-.log-success { color: #7fd07f; }
-.log-warn { color: #e8b45e; }
-.log-error { color: #f08a8a; }
-
 .db-restore-alert { margin-bottom: 12px; }
 .db-empty { color: var(--brand-text-sub); font-size: 13px; padding: 20px 0; }
+@media (max-width: 1280px) {
+  .run-output { grid-template-columns: 256px minmax(0, 1fr); gap: 20px; }
+  .version-summary { gap: 8px; }
+  .publish-row { flex-wrap: wrap; }
+  .publish-actions { margin-left: auto; }
+}
 </style>

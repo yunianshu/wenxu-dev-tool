@@ -1,10 +1,8 @@
 <template>
   <aside class="app-sidebar">
     <div class="brand-block">
-      <img class="brand-mark" :src="appIcon" alt="Personnel PLM 图标" />
       <div class="brand-text">
-        <div class="brand-name">Personnel PLM</div>
-        <div class="brand-subtitle">项目工作台</div>
+        <div class="brand-subtitle">工作空间</div>
       </div>
       <!-- 收起/展开侧栏：收起后只留图标，菜单项文案由 el-menu 自带的 tooltip 补上 -->
       <button
@@ -27,9 +25,9 @@
       class="app-menu"
       @select="$emit('update:modelValue', $event)"
     >
-      <el-menu-item-group title="工作区">
+      <el-menu-item-group class="workspace-nav-group">
         <el-menu-item index="dashboard">
-          <el-icon><HomeFilled /></el-icon>
+          <el-icon><House /></el-icon>
           <template #title><span>工作台</span></template>
         </el-menu-item>
         <el-menu-item index="projects">
@@ -92,7 +90,6 @@
 
 <script setup>
 import { computed } from 'vue'
-import appIcon from '../../build/icon.png'
 import { state } from '../store'
 
 defineProps({

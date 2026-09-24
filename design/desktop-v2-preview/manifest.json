@@ -1,0 +1,290 @@
+[
+  {
+    "id": "gZoVh",
+    "name": "02 项目 · 1440×900",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "hVtYz",
+    "name": "01 工作台 · 1440×900",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "XYZi0",
+    "name": "06 活动报告 · 历史记录",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "mx46k",
+    "name": "03 AI 助手 · 项目上下文",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "f12Iy",
+    "name": "05 终端工作台 · 四窗格",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "odWC1",
+    "name": "04 DeepSeek Harness · 嵌入工作区",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "V4SHAR",
+    "name": "07 一键填报 · 生成与绑定",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "ysOU5",
+    "name": "08 部署 · 发布工作区",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "lIkmC",
+    "name": "10.1 设置 · AI 服务",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "f9I4pD",
+    "name": "10.2 设置 · Git 活动",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "YELiA",
+    "name": "10.3 设置 · 个人身份",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "I83p6",
+    "name": "10.4 设置 · 一键填报",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "uhK3K",
+    "name": "10.5 设置 · 界面",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "t3CoaN",
+    "name": "10.6 设置 · 应用信息",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "Y0QnkV",
+    "name": "09 扩展管理 · 技能列表",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "LJIKj",
+    "name": "11 适配 · 项目 1280×720",
+    "width": 1280,
+    "height": 720
+  },
+  {
+    "id": "Z7HW3n",
+    "name": "12 适配 · 终端 1920×1080",
+    "width": 1920,
+    "height": 1080
+  },
+  {
+    "id": "hCU6h",
+    "name": "12 适配 · 终端 2560×1440",
+    "width": 2560,
+    "height": 1440
+  },
+  {
+    "id": "zNnTn",
+    "name": "07.1 一键填报 · 生成前",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "zfW7y",
+    "name": "00 设计系统 · 控件与交互状态",
+    "width": 1440,
+    "height": 1120
+  },
+  {
+    "id": "juY8X",
+    "name": "13 新建项目 · Dialog",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "yVzVL",
+    "name": "14 活动报告 · 右键菜单",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "AY7yd",
+    "name": "15 一键填报 · 绑定任务 Drawer",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "UGuKG",
+    "name": "00.2 反馈规范 · Empty Loading Error",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "esxZ6",
+    "name": "黑色 · 02 项目 · 1440×900",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "dnt65",
+    "name": "黑色 · 01 工作台 · 1440×900",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "VBisD",
+    "name": "黑色 · 06 活动报告 · 历史记录",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "hmC0t",
+    "name": "黑色 · 03 AI 助手 · 项目上下文",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "dXAdC",
+    "name": "黑色 · 05 终端工作台 · 四窗格",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "xDyfa",
+    "name": "黑色 · 04 DeepSeek Harness · 嵌入工作区",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "s4Sizc",
+    "name": "黑色 · 07 一键填报 · 生成与绑定",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "fNovO",
+    "name": "黑色 · 08 部署 · 发布工作区",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "Z8RJr",
+    "name": "黑色 · 10.1 设置 · AI 服务",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "R7UB58",
+    "name": "黑色 · 10.2 设置 · Git 活动",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "D3ymGU",
+    "name": "黑色 · 10.3 设置 · 个人身份",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "aqYHG",
+    "name": "黑色 · 10.4 设置 · 一键填报",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "mtU5H",
+    "name": "黑色 · 10.5 设置 · 界面",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "IfT1l",
+    "name": "黑色 · 10.6 设置 · 应用信息",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "q80KFm",
+    "name": "黑色 · 09 扩展管理 · 技能列表",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "ECGTd",
+    "name": "黑色 · 11 适配 · 项目 1280×720",
+    "width": 1280,
+    "height": 720
+  },
+  {
+    "id": "FUpEk",
+    "name": "黑色 · 12 适配 · 终端 1920×1080",
+    "width": 1920,
+    "height": 1080
+  },
+  {
+    "id": "KPDmn",
+    "name": "黑色 · 12 适配 · 终端 2560×1440",
+    "width": 2560,
+    "height": 1440
+  },
+  {
+    "id": "UQ37J",
+    "name": "黑色 · 07.1 一键填报 · 生成前",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "x91jZ6",
+    "name": "黑色 · 00 设计系统 · 控件与交互状态",
+    "width": 1440,
+    "height": 1120
+  },
+  {
+    "id": "FRVYu",
+    "name": "黑色 · 13 新建项目 · Dialog",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "e2TVz",
+    "name": "黑色 · 14 活动报告 · 右键菜单",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "T5mdUs",
+    "name": "黑色 · 15 一键填报 · 绑定任务 Drawer",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "id": "wIQ55",
+    "name": "黑色 · 00.2 反馈规范 · Empty Loading Error",
+    "width": 1440,
+    "height": 900
+  }
+]

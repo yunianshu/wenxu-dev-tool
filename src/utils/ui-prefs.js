@@ -7,6 +7,40 @@ export const FONT_SIZE_DEFAULT = 13
 export const FONT_FAMILY_DEFAULT = ''
 const DEFAULT_FONT_STACK = 'Consolas, "Cascadia Mono", "Sarasa Mono SC", Menlo, monospace'
 let terminalFontRevision = 0
+let themeRevision = 0
+const THEME_CACHE_KEY = 'personnel-plm-theme'
+
+export function normalizeTheme(value) { return value === 'dark' ? 'dark' : 'light' }
+export function getThemeRevision() { return themeRevision }
+
+function renderTheme(value) {
+  const theme = normalizeTheme(value)
+  state.ui.theme = theme
+  if (typeof document !== 'undefined') {
+    document.documentElement.dataset.theme = theme
+    document.documentElement.style.colorScheme = theme
+  }
+  try { window.localStorage?.setItem(THEME_CACHE_KEY, theme) } catch { /* 缓存不可用时仍由后台持久化 */ }
+}
+
+/** 首帧使用上次主题快照；后台读取完成后以正式偏好为准。 */
+export function initializeTheme() {
+  let cached = 'light'
+  try { cached = window.localStorage?.getItem(THEME_CACHE_KEY) } catch { /* 使用默认浅色 */ }
+  renderTheme(cached)
+}
+
+export function restoreThemePrefs(saved, revision) {
+  if (revision === themeRevision) renderTheme(saved?.theme)
+}
+
+export async function applyTheme(value) {
+  themeRevision += 1
+  renderTheme(value)
+  const result = await saveUiPrefs()
+  if (result?.ok === false) throw new Error(result.error || '无法保存主题偏好')
+  return result
+}
 
 /** 保存单个本机字体名称，校验规则与主进程一致。 */
 export function normalizeTerminalFontFamily(raw) {
@@ -42,6 +76,7 @@ export function restoreTerminalFontPrefs(saved, revision) {
  */
 export function saveUiPrefs() {
   return window.gitReport?.uiPrefsSave?.({
+    theme: normalizeTheme(state.ui.theme),
     sidebarCollapsed: state.ui.sidebarCollapsed,
     terminalFontSize: state.ui.terminalFontSize,
     terminalFontFamily: state.ui.terminalFontFamily,

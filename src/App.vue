@@ -7,6 +7,7 @@
       'is-sidebar-animatable': sidebarAnimatable,
     }"
   >
+    <AppTitlebar v-if="!state.ui.fullscreen" />
     <AppSidebar
       v-if="!state.ui.fullscreen"
       v-model="view"
@@ -54,6 +55,13 @@
       </div>
     </section>
 
+    <footer v-if="!state.ui.fullscreen" class="app-statusbar">
+      <span>Personnel PLM <span class="statusbar-version">v{{ appVersion }}</span></span>
+      <span v-if="backendDown" class="statusbar-error">后台连接中断</span>
+      <span v-else-if="state.scan.scanning || state.scan.collecting">正在同步 Git 活动…</span>
+      <span v-else>所有数据保存在本机</span>
+    </footer>
+
     <ChangelogDialog v-model="changelogVisible" />
     <ProjectEditor v-model:visible="editorVisible" :project="editingProject" :saving="editorSaving" @saved="saveEditorProject" />
   </div>
@@ -65,6 +73,7 @@ import { ElMessage, ElMessageBox, ElNotification, ElCheckbox } from 'element-plu
 import AppSidebar from './components/AppSidebar.vue'
 import ChangelogDialog from './components/ChangelogDialog.vue'
 import AppTopbar from './components/AppTopbar.vue'
+import AppTitlebar from './components/AppTitlebar.vue'
 import ProjectEditor from './components/ProjectEditor.vue'
 import DashboardView from './views/DashboardView.vue'
 import ProjectsView from './views/ProjectsView.vue'
@@ -79,10 +88,11 @@ import SettingsView from './views/SettingsView.vue'
 import { state } from './store'
 import { useProjects } from './composables/useProjects'
 import { toPlain } from './utils/ipc'
-import { saveUiPrefs, getTerminalFontRevision, restoreTerminalFontPrefs } from './utils/ui-prefs'
+import { saveUiPrefs, getTerminalFontRevision, restoreTerminalFontPrefs, getThemeRevision, restoreThemePrefs } from './utils/ui-prefs'
 import { shortPath } from './utils/path'
 
 const view = ref('dashboard')
+const appVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''
 const changelogVisible = ref(false)
 const settingsSection = ref('ai')
 const editorVisible = ref(false)
@@ -147,6 +157,7 @@ async function closeApp() {
  *  恢复过程本身不加动画（见 sidebarAnimatable），避免每次启动都看到侧栏滑一次 */
 async function restoreSidebarPref() {
   const fontRevision = getTerminalFontRevision()
+  const themeRevision = getThemeRevision()
   let saved = null
   try {
     saved = await window.gitReport.uiPrefsLoad?.()
@@ -155,6 +166,7 @@ async function restoreSidebarPref() {
   // 否则会把刚切换的状态倒回磁盘上的旧值（侧栏自己弹回去）
   if (!sidebarTouched) state.ui.sidebarCollapsed = saved?.sidebarCollapsed === true
   restoreTerminalFontPrefs(saved, fontRevision)
+  if (saved) restoreThemePrefs(saved, themeRevision)
   await nextTick()
   sidebarAnimatable.value = true
 }

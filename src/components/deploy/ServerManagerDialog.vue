@@ -64,6 +64,6 @@ async function remove(server) {
 
 <style scoped>
 .server-hint { color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.7; }
-.add-server { margin: 14px 0; }
+.add-server { margin: 16px 0; }
 .server-editor { border-top: 1px solid var(--el-border-color-lighter); padding-top: 20px; }
 </style>
