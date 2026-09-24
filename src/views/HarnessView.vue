@@ -7,8 +7,14 @@
         <h1 class="topbar-page-title">DeepSeek Harness</h1>
         <div class="harness-actions">
           <span :class="['harness-pill', `is-${snapshot.status}`]">{{ statusLabel }}</span>
-          <!-- 新版本：常驻入口；安装期间原地变成进度（安装可达分钟级，不能只给个转圈） -->
-          <el-button v-if="updating" :loading="true" disabled>{{ updateProgressText }}</el-button>
+          <!-- 新版本：常驻入口；安装期间原地变成进度（安装可达分钟级，不能只给个转圈）。
+               顶栏一行放不下整句进度（版本号+包数会把徽标压成两行、按钮顶出窗口），
+               这里只留阶段与秒数，完整进度挂 hover 提示并落到服务设置面板 -->
+          <el-tooltip v-if="updating" :content="updateProgressText" placement="bottom" :show-after="200">
+            <span class="harness-pill is-updating">
+              <el-icon class="is-spin"><Loading /></el-icon>{{ updateShortText }}
+            </span>
+          </el-tooltip>
           <el-button v-else-if="updateAvailable && updateCanUpdate" type="primary" plain @click="promptUpdate">
             <el-icon><Download /></el-icon>更新到 {{ updateLatest }}
           </el-button>
@@ -113,7 +119,8 @@
               @click="promptUpdate"
             >更新到 {{ updateLatest }}</el-button>
           </div>
-          <div v-if="updateReason" class="harness-hint">{{ updateReason }}</div>
+          <div v-if="updating" class="harness-hint">{{ updateProgressText }}</div>
+          <div v-else-if="updateReason" class="harness-hint">{{ updateReason }}</div>
           <div v-else-if="updateError" class="harness-hint">{{ updateError }}</div>
         </el-form-item>
         <el-form-item label="监听端口">
@@ -216,6 +223,13 @@ const updateProgressText = computed(() => {
   else if (install.fetched) parts.push(`已下载 ${install.fetched}`)
   if (install.elapsedMs) parts.push(`${Math.max(1, Math.round(install.elapsedMs / 1000))} 秒`)
   return parts.join(' · ')
+})
+/** 顶栏那一行只放得下阶段与秒数，版本号与包数见 updateProgressText */
+const updateShortText = computed(() => {
+  const install = updateInstall.value
+  const stage = UPDATE_STAGE_TEXT[install.status] || '更新中'
+  const seconds = install.elapsedMs ? Math.max(1, Math.round(install.elapsedMs / 1000)) : 0
+  return seconds ? `${stage} · ${seconds} 秒` : stage
 })
 
 let unsubscribe = null
@@ -518,6 +532,11 @@ onBeforeUnmount(() => {
 .harness-pill {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
+  /* 状态徽标是定宽标签：顶栏可用宽度被按钮挤紧时，宁可让插槽横向滚动，
+     也不能让它折成两行（折行后的「运行/中」是错版，见页头更新态） */
+  flex: 0 0 auto;
+  white-space: nowrap;
   height: 28px;
   padding: 0 12px;
   border-radius: 6px;
@@ -529,6 +548,10 @@ onBeforeUnmount(() => {
 .harness-pill.is-running { color: var(--accent-strong); background: var(--accent-soft); }
 .harness-pill.is-starting { color: var(--warning); background: var(--warning-soft); }
 .harness-pill.is-error { color: var(--danger); background: var(--danger-soft); }
+/* 更新中：与状态徽标同形，替代原先禁用按钮的灰字（禁用态文字在顶栏里既挤不下也读不清） */
+.harness-pill.is-updating { font-weight: 400; color: var(--ink-soft); }
+.harness-pill.is-updating .el-icon { color: var(--accent-strong); }
+.harness-pill.is-updating .el-icon.is-spin { animation: harness-spin 1.1s linear infinite; }
 
 .harness-shell {
   position: relative;

@@ -159,7 +159,10 @@ button, input, select, textarea { font-family: inherit; }
 .app-shell.is-sidebar-collapsed .app-menu .el-menu-item-group__title { margin: 16px 8px 8px; padding: 0 !important; }
 .app-topbar, .app-topbar--terminal { height: 64px; padding: 0 var(--page-gutter); gap: 16px; background: var(--surface); border-bottom: 1px solid var(--line); -webkit-app-region: no-drag; }
 .topbar-slot { gap: 16px; width: 100%; }
-.topbar-slot > .topbar-page { flex: 1; min-width: 0; }
+/* 页头是单行、不可回卷的（标题与按钮都 nowrap）：可用宽度不足时让插槽横向滚动
+   （.topbar-slot 已 overflow-x: auto），不能让 flex 把里面的状态徽标压成两行、
+   把按钮顶出窗口——min-width: max-content 就是这条「不许再挤」的底线 */
+.topbar-slot > .topbar-page { flex: 1; min-width: max-content; }
 .topbar-page { width: 100%; gap: 16px; }
 .topbar-page-title { font-size: 22px; line-height: 28px; font-weight: 600; letter-spacing: 0; }
 .topbar-context { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
