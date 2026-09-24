@@ -17,6 +17,7 @@ const releaseNotes = require('./release-notes')
 const store = require('../store')
 const automatic = require('./auto-deploy')
 const moduleDataSync = require('./data-sync')
+const workspace = require('./build-workspace')
 const { validateArtifact } = require('./artifact-check')
 const { detectVersion, bumpVersionFiles } = require('./version-detector')
 
@@ -672,14 +673,11 @@ async function run(projectId, targetId) {
         const entry = command.match(/^\s*(?:bash|sh)\s+["']?([^"'\s]+\.sh)/)
         if (entry && !fs.existsSync(path.resolve(project.localPath, entry[1]))) throw new Error(`打包入口不存在: ${entry[1]}；可切换为自动发布，由程序生成部署方案`)
         buildWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'onedeploy-build-'))
-        const artifactRoot = path.resolve(project.localPath, project.scriptMode?.artifactDir || 'release')
-        await fs.promises.cp(project.localPath, buildWorkspace, { recursive: true, dereference: false, filter: (source) => {
-          const rel = path.relative(project.localPath, source)
-          if (!rel) return true
-          if (/^(?:\.git|\.local|release|releases)$/.test(rel.split(path.sep)[0])) return false
-          const artifactRel = path.relative(artifactRoot, source)
-          return !(artifactRel && !artifactRel.startsWith('..') && ARTIFACT_EXTS.some((ext) => source.toLowerCase().endsWith(ext)))
-        } })
+        const copied = await workspace.copyProject(project.localPath, buildWorkspace, { artifactDir: project.scriptMode?.artifactDir, artifactExts: ARTIFACT_EXTS })
+        if (copied.skipped.length) {
+          const head = copied.skipped.slice(0, 3).join('、')
+          log('warn', `已跳过 ${copied.skipped.length} 个本机读不了的条目（WSL 建的符号链接在 Windows 上无法访问）：${head}${copied.skipped.length > 3 ? ' 等' : ''}`)
+        }
         if (isCanceled()) throw new Error('发布已取消')
         const buildProject = { ...project, localPath: buildWorkspace }
         const syncNote = syncProjectVersionForPackage(buildProject, ver)

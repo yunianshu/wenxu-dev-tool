@@ -17,6 +17,8 @@ const dataSync = require('./data-sync')
 const DEFAULT_EXCLUDES = [
   '.git', '.idea', '.vscode', 'node_modules', 'target', 'build', 'dist',
   '.gradle', 'logs', 'tmp', 'temp', '*.log', '*.tmp',
+  // Python 本地环境与缓存：对服务器无用，且 WSL 建的 venv 里含本机读不了的重解析点
+  '.venv', 'venv', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.eggs', '*.egg-info', '*.pyc', '*.pyo',
 ]
 
 /**
@@ -84,7 +86,17 @@ function isWalkableDir(ent, abs) {
 /** 递归收集未被忽略的文件（POSIX 相对路径）；visited 按 realpath 防符号链接环路 */
 function collectFiles(rootDir, matcher, onFile, safeRoot = false, exclude) {
   const base = fs.realpathSync(rootDir)
-  const inside = (p) => { const r = path.relative(base, fs.realpathSync(p)); return !r.startsWith('..') && !path.isAbsolute(r) }
+  // 目标读不出来时返回 null（WSL 建的符号链接在 Windows 上是 LX_SYMLINK 重解析点，realpath 直接 EACCES）
+  const inside = (p) => {
+    let real
+    try {
+      real = fs.realpathSync(p)
+    } catch {
+      return null
+    }
+    const r = path.relative(base, real)
+    return !r.startsWith('..') && !path.isAbsolute(r)
+  }
   const visited = new Set()
   const walk = (dir, rel) => {
     let realDir
@@ -105,7 +117,11 @@ function collectFiles(rootDir, matcher, onFile, safeRoot = false, exclude) {
       const relPath = rel ? `${rel}/${ent.name}` : ent.name
       if (exclude?.(relPath)) continue
       const abs = path.join(dir, ent.name)
-      if (safeRoot && ent.isSymbolicLink() && !inside(abs)) throw new Error(`发布文件越出项目目录: ${relPath}`)
+      if (safeRoot && ent.isSymbolicLink()) {
+        const within = inside(abs)
+        if (within === false) throw new Error(`发布文件越出项目目录: ${relPath}`)
+        if (within === null) continue // 目标在本机读不出来（如 WSL 符号链接），无法收录其内容
+      }
       if (matcher.ignored(relPath) && !(isWalkableDir(ent, abs) && matcher.mayInclude(relPath))) continue
       if (isWalkableDir(ent, abs)) {
         walk(abs, relPath)

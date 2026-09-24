@@ -36,6 +36,7 @@ const SUITES = [
   'syntax-check-selftest.cjs',
   'deploy-version-guard-selftest.cjs',
   'deploy-packager-symlink-selftest.cjs',
+  'deploy-workspace-selftest.cjs',
   'report-history-selftest.cjs',
   'git-service-selftest.cjs',
   'git-client-selftest.cjs',
