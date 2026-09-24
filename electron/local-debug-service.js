@@ -3,15 +3,15 @@
  *
  * 行为约定：
  * - status(dir)：探测项目根目录是否存在 start.bat
- * - run(dir)：在新控制台窗口执行 start.bat（非 detached，与 PowerShell 快捷入口
- *   同款结论：detached 会让批处理命令静默失效；GUI 进程 spawn cmd 自动分配新控制台，
- *   服务器类脚本常驻时窗口保持，脚本退出后窗口随 cmd 关闭）
+ * - run(dir)：在可见的新控制台窗口执行 start.bat（服务器类脚本常驻时窗口保持，
+ *   脚本退出后窗口随 cmd 关闭）。注意不能改成 detached：Windows 下 detached
+ *   会让批处理命令静默失效
  * - generate(dir)：生成 start.bat 模板（已存在则拒绝，绝不覆盖用户文件）；
  *   首两行纯 ASCII + chcp 65001，保证 UTF-8 中文注释在批处理里正常显示
  */
 const fs = require('fs')
 const path = require('path')
-const { spawn } = require('child_process')
+const { spawnInNewConsole } = require('./console-window')
 
 const TEMPLATE = [
   '@echo off',
@@ -44,14 +44,17 @@ function status(dir) {
   return { batPath: p, hasStartBat: fs.existsSync(p) }
 }
 
-function run(dir) {
+/** opts（测试专用）：inheritConsole=true 时不新开窗口，直接 spawn 以便观察退出码与工作目录 */
+function run(dir, opts = {}) {
   const p = batPath(dir)
   if (!fs.existsSync(p)) throw new Error('项目目录未找到 start.bat，可先生成模板')
   // spawn 的失败是异步事件，主进程早已返回 ok：这里先同步确认解释器存在，
   // 否则界面会提示「已启动」而实际什么都没打开（看不到任何窗口与报错）
   if (!hasOnPath('cmd.exe')) throw new Error('未找到 cmd.exe（系统 PATH 异常或被杀毒软件拦截），无法运行 start.bat')
-  // cmd /c 执行批处理；不加 detached（Windows 下 detached 会使命令静默失效）
-  const child = spawn('cmd.exe', ['/c', p], { cwd: dir, stdio: 'ignore' })
+  // 生产入口：start 直接执行批处理（新控制台窗口）；自测形态走 cmd /c 拿真实子进程的退出码与工作目录
+  const { child } = opts.inheritConsole
+    ? spawnInNewConsole('cmd.exe', ['/c', p], { cwd: dir, inheritConsole: true })
+    : spawnInNewConsole(p, [], { cwd: dir })
   child.once('error', (err) => console.error('[local-debug] start.bat 启动失败：', err.message))
   child.unref()
   return { cwd: dir, batPath: p, child }

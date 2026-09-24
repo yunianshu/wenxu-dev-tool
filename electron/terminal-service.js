@@ -2,7 +2,7 @@
  * 终端服务 —— 在指定目录打开系统终端（Windows 为 PowerShell）
  *
  * 各平台行为：
- * - Windows: 在目标目录启动独立 PowerShell 窗口（detached，随主进程退出不受影响）
+ * - Windows: 在目标目录打开独立 PowerShell 窗口（可见的新控制台窗口，随主进程退出不受影响）
  * - macOS:   open -a Terminal <dir>
  * - Linux:   依次在 PATH 中探测 x-terminal-emulator / gnome-terminal / konsole /
  *            xfce4-terminal，找到第一个可用者即以对应参数启动
@@ -10,6 +10,7 @@
 const { spawn } = require('child_process')
 const fs = require('fs')
 const path = require('path')
+const { spawnInNewConsole } = require('./console-window')
 
 /** 在 PATH 中同步探测可执行文件（Linux 无递归 PATH 搜索时使用） */
 function findOnPath(cmd) {
@@ -38,13 +39,16 @@ function openTerminal(dir, opts = {}) {
   if (!fs.statSync(dir).isDirectory()) throw new Error(`不是目录：${dir}`)
 
   const extraArgs = Array.isArray(opts.extraArgs) ? opts.extraArgs : []
-  let cmd, args, spawnOpts
+  // 命令模式（自测注入 -Command 并等待进程退出）不新开窗口：它要拿真实子进程的退出码与工作目录
+  const inheritConsole = opts.noExit === false
+  let cmd, args, spawnOpts, newConsole = false
   if (process.platform === 'win32') {
-    // 注意：Windows 下 detached:true 会使 powershell -Command 静默失效（exit 0 但不执行）；
-    // GUI 进程 spawn 控制台程序本身就会分配新控制台窗口，-NoExit 保持常驻，
-    // 子进程默认不随 Electron 退出被杀
+    // 交互终端必须是可见的新控制台窗口：后台 Node 由 Tauri 主进程以 CREATE_NO_WINDOW 启动、
+    // 自身没有可见控制台，直接 spawn 会让 PowerShell 继承那个隐藏控制台（点了没反应）。
+    // -NoExit 保持常驻，子进程默认不随本应用退出被杀
     cmd = 'powershell.exe'
-    args = opts.noExit === false ? extraArgs : ['-NoExit', ...extraArgs]
+    args = inheritConsole ? extraArgs : ['-NoExit', ...extraArgs]
+    newConsole = !inheritConsole
     spawnOpts = { cwd: dir, stdio: 'ignore' }
   } else if (process.platform === 'darwin') {
     cmd = 'open'
@@ -68,7 +72,7 @@ function openTerminal(dir, opts = {}) {
   if (!findOnPath(cmd.replace(/\.exe$/i, ''))) {
     throw new Error(`未找到 ${cmd}（系统 PATH 异常或被杀毒软件拦截），无法打开终端`)
   }
-  const child = spawn(cmd, args, spawnOpts)
+  const child = newConsole ? spawnInNewConsole(cmd, args, { cwd: dir }).child : spawn(cmd, args, spawnOpts)
   child.once('error', (err) => console.error('[terminal] 打开终端失败：', err.message))
   child.unref()
   return { cwd: dir, child }

@@ -36,9 +36,11 @@ async function main() {
     console.log('  ✓ start.bat 模板生成、防覆盖、探测正确')
 
     // ── 3. 真实运行：批处理写入工作目录标记后退出 ──
+    // 生产入口在可见的新控制台窗口里跑（窗口可见性由 console-window-selftest 断言），
+    // 这里要观察子进程退出码与工作目录，所以走不新开窗口的 inheritConsole 形态
     const marker = path.join(tempDir, 'run-marker.txt')
     fs.writeFileSync(path.join(tempDir, 'start.bat'), `@echo off\r\n(cd) > "${marker}"\r\nexit /b 0\r\n`, 'utf8')
-    const run = localDebugService.run(tempDir)
+    const run = localDebugService.run(tempDir, { inheritConsole: true })
     const code = await new Promise((resolve, reject) => {
       run.child.once('exit', (c) => resolve(c))
       run.child.once('error', reject)

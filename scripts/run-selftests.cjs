@@ -52,6 +52,8 @@ const SUITES = [
   'terminal-workbench-selftest.cjs',
   'terminal-font-selftest.cjs',
   'local-debug-selftest.cjs',
+  // 外部终端可见性：会短暂弹出 1~2 个控制台窗口（断言后台进程里也能开出可见窗口）
+  'console-window-selftest.cjs',
   'projects-selftest.cjs',
   'knowledge-selftest.cjs',
   'knowledge-state-selftest.cjs',
