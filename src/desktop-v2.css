@@ -120,7 +120,9 @@
   --shadow-float: 0 8px 24px #00000033;
 }
 
-body { font-family: var(--el-font-family); font-size: 13px; line-height: 1.5; }
+body { font-family: var(--el-font-family); font-size: 13px; line-height: 1.5; -webkit-user-select: none; user-select: none; }
+/* 桌面界面拖动时不选中文字，输入与正文编辑仍保留选取、复制和光标操作。 */
+input, textarea, [contenteditable]:not([contenteditable='false']) { -webkit-user-select: text; user-select: text; }
 button, input, select, textarea { font-family: inherit; }
 ::selection { background: var(--accent-soft); color: var(--brand-text); }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
