@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Personnel PLM",
-  "version": "1.4.97",
+  "version": "1.4.98",
   "identifier": "com.prt.devprojectmanager",
   "build": {
     "frontendDist": "../dist",
