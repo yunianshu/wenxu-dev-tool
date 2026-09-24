@@ -1,6 +1,6 @@
 [package]
 name = "personnel-plm"
-version = "1.4.101"
+version = "1.4.102"
 description = "Personnel PLM desktop workbench"
 authors = ["yunainshu"]
 license = "MIT"
@@ -29,3 +29,12 @@ tauri-plugin-opener = "2"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
+
+# 标题栏按钮修复：子 Webview 存在时 tauri 窗口 API 因主线程不泵消息而失效，
+# Windows 上改用 Win32 直调（见 backend.rs host_window_op_win32）
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_Graphics_Gdi",
+] }

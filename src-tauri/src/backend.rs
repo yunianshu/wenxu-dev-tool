@@ -207,15 +207,72 @@ impl Backend {
 }
 
 fn handle_host(app: &tauri::AppHandle, message: &Value) {
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
     let action = message
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or_default();
     let payload = message.get("payload").cloned().unwrap_or(Value::Null);
-    let result = match action {
+    if action == "quit" {
+        if let Some(backend) = app.try_state::<Backend>() {
+            backend.allow_quit();
+            backend.stop();
+        }
+        // Windows 中子 Webview 尚存时，事件循环退出可能留下空壳进程。
+        std::process::exit(0);
+    }
+    if action == "close" {
+        return;
+    }
+    const WINDOW_ACTIONS: [&str; 8] = [
+        "minimize",
+        "restore",
+        "show",
+        "maximize",
+        "unmaximize",
+        "fullscreen",
+        "hide",
+        "focus",
+    ];
+    if !WINDOW_ACTIONS.contains(&action) {
+        let _ = app.emit("backend-host-event", message);
+        return;
+    }
+    // Windows：创建过原生子 Webview（Harness 内嵌页）后，事件循环线程不再泵排队消息，
+    // tauri 的窗口 API（内部经主线程投递）全部静默失效——标题栏三个按钮点了没反应。
+    // Win32 直调不依赖主线程泵（ShowWindow 等由内核处理、sent 消息在等待点被处理），
+    // 所以这里绕开 tauri API 直接操作系统窗口。
+    #[cfg(windows)]
+    let result = (|| -> Result<(), String> {
+        use tauri::Manager;
+        let hwnd = match app.get_webview_window("main") {
+            Some(w) => w.hwnd().map_err(|e| e.to_string())?.0 as isize,
+            // 子 Webview 存在时 get_webview_window 可能取不到，退回 window 管理器
+            None => app
+                .get_window("main")
+                .ok_or_else(|| "主窗口不存在".to_string())?
+                .hwnd()
+                .map_err(|e| e.to_string())?
+                .0 as isize,
+        };
+        host_window_op_win32_by_hwnd(hwnd, action, &payload)
+    })();
+    #[cfg(not(windows))]
+    let result = app
+        .get_webview_window("main")
+        .ok_or_else(|| "主窗口不存在".to_string())
+        .and_then(|window| host_window_op_tauri(&window, action, &payload));
+    if let Err(error) = result {
+        eprintln!("桌面窗口操作失败：{error}")
+    }
+}
+
+#[allow(dead_code)]
+fn host_window_op_tauri(
+    window: &tauri::WebviewWindow,
+    action: &str,
+    payload: &Value,
+) -> Result<(), tauri::Error> {
+    match action {
         "minimize" => window.minimize(),
         "restore" | "show" => window.show(),
         "maximize" => window.maximize(),
@@ -223,23 +280,111 @@ fn handle_host(app: &tauri::AppHandle, message: &Value) {
         "fullscreen" => window.set_fullscreen(payload.as_bool().unwrap_or(false)),
         "hide" => window.hide(),
         "focus" => window.set_focus(),
-        "close" => return,
-        "quit" => {
-            if let Some(backend) = app.try_state::<Backend>() {
-                backend.allow_quit();
-                backend.stop();
-            }
-            // Windows 中子 Webview 尚存时，事件循环退出可能留下空壳进程。
-            std::process::exit(0);
-        }
-        _ => {
-            let _ = app.emit("backend-host-event", message);
-            return;
-        }
-    };
-    if let Err(error) = result {
-        eprintln!("桌面窗口操作失败：{error}")
+        _ => Ok(()),
     }
+}
+
+#[cfg(windows)]
+fn host_window_op_win32_by_hwnd(
+    raw_hwnd: isize,
+    action: &str,
+    payload: &Value,
+) -> Result<(), String> {
+    use std::sync::Mutex;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, GetWindowPlacement, SetForegroundWindow, SetWindowLongPtrW,
+        SetWindowPlacement, SetWindowPos, ShowWindow, GWL_STYLE, HWND_TOP, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOOWNERZORDER, SWP_NOZORDER, SWP_SHOWWINDOW,
+        SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, WINDOWPLACEMENT, WS_OVERLAPPEDWINDOW,
+        WS_POPUP,
+    };
+
+    // 进入全屏前的样式与位置，退出时还原（tao 的做法）
+    static FULLSCREEN_SAVED: Mutex<Option<(isize, WINDOWPLACEMENT)>> = Mutex::new(None);
+
+    let hwnd = HWND(raw_hwnd as _);
+    unsafe {
+        match action {
+            "minimize" => {
+                let _ = ShowWindow(hwnd, SW_MINIMIZE);
+            }
+            "restore" | "show" => {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
+            "maximize" => {
+                let _ = ShowWindow(hwnd, SW_MAXIMIZE);
+            }
+            "unmaximize" => {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
+            "hide" => {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+            "focus" => {
+                let _ = SetForegroundWindow(hwnd);
+            }
+            "fullscreen" => {
+                let want = payload.as_bool().unwrap_or(false);
+                let mut saved = FULLSCREEN_SAVED.lock().map_err(|e| e.to_string())?;
+                if want {
+                    if saved.is_none() {
+                        let mut placement = WINDOWPLACEMENT {
+                            length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                            ..Default::default()
+                        };
+                        let _ = GetWindowPlacement(hwnd, &mut placement);
+                        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+                        *saved = Some((style, placement));
+                        let _ = SetWindowLongPtrW(
+                            hwnd,
+                            GWL_STYLE,
+                            (style & !(WS_OVERLAPPEDWINDOW.0 as isize)) | WS_POPUP.0 as isize,
+                        );
+                        let mut mi = MONITORINFO {
+                            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                            ..Default::default()
+                        };
+                        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                        if !GetMonitorInfoW(monitor, &mut mi).as_bool() {
+                            return Err("读取显示器信息失败".into());
+                        }
+                        let r = mi.rcMonitor;
+                        SetWindowPos(
+                            hwnd,
+                            Some(HWND_TOP),
+                            r.left,
+                            r.top,
+                            r.right - r.left,
+                            r.bottom - r.top,
+                            SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_SHOWWINDOW,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+                } else if let Some((style, placement)) = saved.take() {
+                    let _ = SetWindowLongPtrW(hwnd, GWL_STYLE, style);
+                    let _ = SetWindowPlacement(hwnd, &placement);
+                    // FRAMECHANGED 让样式变更立即生效；不动位置（placement 已还原）
+                    SetWindowPos(
+                        hwnd,
+                        None,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOMOVE | SWP_NOSIZE
+                            | SWP_NOZORDER | SWP_NOACTIVATE,
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+            _ => return Ok(()),
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
