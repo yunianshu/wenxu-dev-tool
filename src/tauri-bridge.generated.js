@@ -144,6 +144,13 @@ contextBridge.exposeInMainWorld('gitReport', {
   projectsList: () => ipcRenderer.invoke('projects:list'),
   projectsSave: (project) => ipcRenderer.invoke('projects:save', toPlain(project)),
   projectsRemove: (projectId) => ipcRenderer.invoke('projects:remove', projectId),
+  // 本地知识库（Markdown 文件）
+  knowledgeList: () => ipcRenderer.invoke('knowledge:list'),
+  knowledgeSave: (record) => ipcRenderer.invoke('knowledge:save', toPlain(record)),
+  knowledgeTrash: (id, revision) => ipcRenderer.invoke('knowledge:trash', { id, revision }),
+  knowledgeRestore: (id, revision) => ipcRenderer.invoke('knowledge:restore', { id, revision }),
+  knowledgeImport: (payload) => ipcRenderer.invoke('knowledge:import', toPlain(payload)),
+  knowledgeExport: (id) => ipcRenderer.invoke('knowledge:export', id),
   // 扩展管理（四平台技能与插件）
   extensionsList: () => ipcRenderer.invoke('extensions:list'),
   extensionsToggleSkill: (platform, name, enable) =>

@@ -28,12 +28,10 @@
       />
       <main class="content-area" :class="{ 'content-area--flush': view === 'harness' || view === 'terminal', 'content-area--terminal': view === 'terminal' }">
         <transition name="view-fade" mode="out-in">
-          <DashboardView v-if="view === 'dashboard'" key="dashboard" @navigate="navigate" @create-project="openProjectEditor()" />
+          <AIWorkbenchView v-if="view === 'dashboard'" key="dashboard" @navigate="navigate" />
           <ProjectsView v-else-if="view === 'projects'" key="projects" @navigate="navigate" @create-project="openProjectEditor()" @edit-project="openProjectEditor" />
-          <ChatView v-else-if="view === 'chat'" key="chat" @navigate="navigate" />
           <TerminalWorkbenchView v-else-if="view === 'terminal'" key="terminal" />
           <HarnessView v-else-if="view === 'harness'" key="harness" />
-          <ReportView v-else-if="view === 'report'" key="report" @navigate="navigate" />
           <FillReportView v-else-if="view === 'fillreport'" key="fillreport" @navigate="navigate" />
           <DeployView v-else-if="view === 'deploy'" key="deploy" @navigate="navigate" />
           <ExtensionsView v-else-if="view === 'extensions'" key="extensions" />
@@ -45,7 +43,7 @@
       <div v-if="backendDown" class="backend-down">
         <div class="backend-down-card">
           <h3 class="backend-down-title">后台服务未运行</h3>
-          <p class="backend-down-text">项目、报告、部署与终端都依赖本机后台进程，当前操作无法执行。</p>
+          <p class="backend-down-text">知识库、项目、填报、部署与终端都依赖本机后台进程，当前操作无法执行。</p>
           <p class="backend-down-text">请关闭应用后重新打开；若反复出现，检查杀毒软件是否拦截了应用目录下的 node.exe。</p>
           <div class="backend-down-actions">
             <el-button type="primary" :loading="backendRetrying" @click="retryBackend">重试连接</el-button>
@@ -75,12 +73,10 @@ import ChangelogDialog from './components/ChangelogDialog.vue'
 import AppTopbar from './components/AppTopbar.vue'
 import AppTitlebar from './components/AppTitlebar.vue'
 import ProjectEditor from './components/ProjectEditor.vue'
-import DashboardView from './views/DashboardView.vue'
+import AIWorkbenchView from './views/AIWorkbenchView.vue'
 import ProjectsView from './views/ProjectsView.vue'
-import ChatView from './views/ChatView.vue'
 import TerminalWorkbenchView from './views/TerminalWorkbenchView.vue'
 import HarnessView from './views/HarnessView.vue'
-import ReportView from './views/ReportView.vue'
 import FillReportView from './views/FillReportView.vue'
 import DeployView from './views/DeployView.vue'
 import ExtensionsView from './views/ExtensionsView.vue'
@@ -181,6 +177,7 @@ function toggleSidebar() {
 
 /** 将页面导航意图集中映射；活动源列表复用设置页的 Git 活动分区。 */
 function navigate(target) {
+  if (target === 'settings') settingsSection.value = 'ai'
   if (target === 'activity-sources') {
     settingsSection.value = 'git'
     view.value = 'settings'

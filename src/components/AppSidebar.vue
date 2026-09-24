@@ -28,7 +28,7 @@
       <el-menu-item-group class="workspace-nav-group">
         <el-menu-item index="dashboard">
           <el-icon><House /></el-icon>
-          <template #title><span>工作台</span></template>
+          <template #title><span>AI 工作台</span></template>
         </el-menu-item>
         <el-menu-item index="projects">
           <el-icon><FolderOpened /></el-icon>
@@ -36,10 +36,6 @@
         </el-menu-item>
       </el-menu-item-group>
       <el-menu-item-group title="项目能力">
-        <el-menu-item index="chat">
-          <el-icon><ChatDotRound /></el-icon>
-          <template #title><span>AI 助手</span></template>
-        </el-menu-item>
         <el-menu-item index="harness">
           <el-icon class="nav-ico">
             <Cpu />
@@ -51,10 +47,6 @@
         <el-menu-item index="terminal">
           <el-icon><Monitor /></el-icon>
           <template #title><span>终端工作台</span></template>
-        </el-menu-item>
-        <el-menu-item index="report">
-          <el-icon><DataAnalysis /></el-icon>
-          <template #title><span>活动报告</span></template>
         </el-menu-item>
         <el-menu-item index="fillreport">
           <el-icon><Timer /></el-icon>

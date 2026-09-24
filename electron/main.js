@@ -9,6 +9,7 @@ const store = require('./store')
 const reportHistory = require('./report-history')
 const aiService = require('./ai-service')
 const projectService = require('./project-service')
+const knowledgeService = require('./knowledge-service')
 const extensionsService = require('./extensions-service')
 const terminalService = require('./terminal-service')
 const ptyService = require('./pty-service')
@@ -457,7 +458,7 @@ function registerIpc() {
   // 报告导出
   ipcMain.handle('report:save', async (_e, { defaultName, content }) => {
     const r = await dialog.showSaveDialog(mainWindow, {
-      title: '保存报告',
+      title: '保存 Markdown',
       defaultPath: path.join(app.getPath('documents'), defaultName),
       filters: [{ name: 'Markdown', extensions: ['md'] }],
     })
@@ -554,6 +555,14 @@ function registerIpc() {
   ipcMain.handle('projects:list', () => projectService.list())
   ipcMain.handle('projects:save', (_e, project) => projectService.save(project))
   ipcMain.handle('projects:remove', (_e, projectId) => projectService.remove(projectId))
+
+  // 知识记录与项目配置独立保存；删除项目不会删除记录。
+  ipcMain.handle('knowledge:list', () => knowledgeService.list())
+  ipcMain.handle('knowledge:save', (_e, record) => knowledgeService.save(record))
+  ipcMain.handle('knowledge:trash', (_e, { id, revision } = {}) => knowledgeService.trash(id, revision))
+  ipcMain.handle('knowledge:restore', (_e, { id, revision } = {}) => knowledgeService.restore(id, revision))
+  ipcMain.handle('knowledge:import', (_e, payload) => knowledgeService.importMarkdown(payload))
+  ipcMain.handle('knowledge:export', (_e, id) => knowledgeService.exportMarkdown(id))
 
   // 扩展管理：统一管理 Claude Code / Codex / Kimi CLI / Zcode 的技能与插件
   ipcMain.handle('extensions:list', () => extensionsService.listAll())

@@ -19,11 +19,10 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     chunkSizeWarningLimit: 1500,
-    // 大依赖独立分包：首屏不需要 echarts（统计页才用），拆分后主包显著变小且利于缓存
+    // 界面组件独立分包，便于缓存。
     rollupOptions: {
       output: {
         manualChunks: {
-          echarts: ['echarts'],
           'element-plus': ['element-plus', '@element-plus/icons-vue'],
         },
       },

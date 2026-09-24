@@ -102,12 +102,12 @@
         <div class="project-section">
           <div class="section-heading"><div><h3>项目能力</h3></div></div>
           <div class="project-capabilities">
-            <button type="button" @click="$emit('navigate', 'chat')"><el-icon><ChatDotRound /></el-icon><span><strong>AI 助手</strong><small>基于项目资料开展分析</small></span><el-icon><TopRight /></el-icon></button>
-            <button type="button" @click="$emit('navigate', 'report')"><el-icon><DataAnalysis /></el-icon><span><strong>活动报告</strong><small>查看全部项目的 Git 活动</small></span><el-icon><TopRight /></el-icon></button>
+            <button type="button" @click="detailTab = 'knowledge'"><el-icon><Collection /></el-icon><span><strong>知识与复盘</strong><small>积累想法、问题、决策和项目经验</small></span><el-icon><ArrowRight /></el-icon></button>
             <button type="button" @click="$emit('navigate', 'deploy')"><el-icon><Promotion /></el-icon><span><strong>部署</strong><small>{{ deploymentConfigured(selected) ? `进入 ${selected.name} 发布工作区` : '需要时再配置部署' }}</small></span><el-icon><TopRight /></el-icon></button>
           </div>
         </div>
           </el-tab-pane>
+          <el-tab-pane label="知识记录" name="knowledge"><ProjectKnowledge v-if="detailTab === 'knowledge'" :project="selected" @navigate="$emit('navigate', $event)" /></el-tab-pane>
           <el-tab-pane :label="`Git 活动源 (${matchedRepos.length})`" name="sources">
             <div class="project-sources-heading"><span>关联本地目录发现的仓库</span><el-button text @click="$emit('navigate', 'activity-sources')">管理活动源<el-icon><TopRight /></el-icon></el-button></div>
             <el-table :data="matchedRepos" empty-text="未发现关联仓库，可到设置中检查扫描根目录" class="project-source-table">
@@ -138,6 +138,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import EmptyState from '../components/EmptyState.vue'
+import ProjectKnowledge from '../components/knowledge/ProjectKnowledge.vue'
 import { state } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
 import { useProjects } from '../composables/useProjects'
