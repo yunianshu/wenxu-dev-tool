@@ -5,7 +5,7 @@ const clone = value => JSON.parse(JSON.stringify(value))
 /** 缓存随应用存活；保存按记录串行，切页或切换项目不会改变写入目标。 */
 export function createKnowledgeStore(api, delay = 600, storage = null) {
   const data = reactive({ records: [], drafts: {}, saving: {}, mutating: {}, errors: {}, loading: false, error: '', backupError: '', warnings: [], directory: '', loaded: false })
-  const workspace = reactive({ view: 'inbox', query: '', type: '', projectId: '', selectedId: '' })
+  const workspace = reactive({ view: 'globe', query: '', type: '', projectId: '', selectedId: '' })
   const timers = new Map()
   const flights = new Map()
   const edits = new Map()

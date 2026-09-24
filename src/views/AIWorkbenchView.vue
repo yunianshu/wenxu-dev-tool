@@ -5,24 +5,31 @@
         <h1 class="topbar-page-title">AI 工作台</h1><span class="topbar-context">个人知识与方法</span>
         <div class="knowledge-topbar-actions">
           <el-button @click="startAnalysis('idea')"><el-icon><MagicStick /></el-icon>分析想法</el-button>
+          <el-button @click="createRecord()"><el-icon><Plus /></el-icon>新建记录</el-button>
           <el-dropdown trigger="click" @command="handleCommand"><el-button text aria-label="知识库更多操作"><el-icon><MoreFilled /></el-icon></el-button><template #dropdown><el-dropdown-menu>
             <el-dropdown-item command="import">导入 Markdown</el-dropdown-item>
             <el-dropdown-item command="folder" :disabled="!data.directory">打开知识库目录</el-dropdown-item>
             <el-dropdown-item command="refresh">刷新记录</el-dropdown-item>
           </el-dropdown-menu></template></el-dropdown>
-          <el-button :type="analysisOpen ? 'default' : 'primary'" :loading="creating" @click="createRecord()"><el-icon><Plus /></el-icon>新建记录</el-button>
+          <el-button type="primary" @click="focusIdeaInput"><el-icon><EditPen /></el-icon>记录想法</el-button>
         </div>
       </div>
     </Teleport>
     <input ref="fileInput" class="knowledge-file-input" type="file" accept=".md,.markdown,text/markdown,text/plain" multiple @change="importFiles($event.target.files)" />
     <nav class="knowledge-tabs" aria-label="知识视图">
-      <button v-for="item in views" :key="item.id" :class="{ active: workspace.view === item.id }" @click="workspace.view = item.id"><el-icon><component :is="item.icon" /></el-icon>{{ item.label }}<span v-if="item.id === 'inbox'">{{ inboxCount }}</span></button>
+      <button v-for="item in views" :key="item.id" :class="{ active: workspace.view === item.id }" @click="setView(item.id)"><el-icon><component :is="item.icon" /></el-icon>{{ item.label }}<span v-if="item.id === 'inbox'">{{ inboxCount }}</span></button>
     </nav>
     <div v-if="data.error" class="knowledge-error" role="alert">{{ data.error }}<el-button text @click="refresh">重试</el-button></div>
     <div v-if="data.backupError" class="knowledge-error" role="alert">{{ data.backupError }}</div>
     <div v-if="data.warnings.length" class="knowledge-error" role="alert">{{ data.warnings.length }} 个文件未能读取，原文件已保留。<el-button text @click="showWarnings = !showWarnings">{{ showWarnings ? '收起' : '查看详情' }}</el-button><pre v-if="showWarnings">{{ data.warnings.map(item => typeof item === 'string' ? item : JSON.stringify(item)).join('\n') }}</pre></div>
     <div class="knowledge-layout" :class="{ 'has-panel': !!current || analysisOpen }" @dragover.prevent @drop.prevent="onDrop">
-      <section class="knowledge-records" aria-label="知识记录">
+      <section v-if="workspace.view === 'globe'" class="knowledge-idea-surface" aria-label="想法地球工作区">
+        <form class="knowledge-capture idea-capture" @submit.prevent="quickCapture">
+          <el-icon><EditPen /></el-icon><input ref="ideaInput" v-model="capture" maxlength="2000" aria-label="快速记录" placeholder="写下一个想法，按 Enter 放进地球…" /><button type="submit" :disabled="!capture.trim() || creating" title="Enter 保存想法" aria-label="保存快速记录"><el-icon><TopRight /></el-icon></button>
+        </form>
+        <IdeaGlobe :records="ideaRecords" :selected-id="current?.type === 'idea' ? current.id : ''" :highlight-id="highlightIdeaId" :loading="data.loading" @select="selectRow" @browse="setView('all')" />
+      </section>
+      <section v-else class="knowledge-records" aria-label="知识记录">
         <form v-if="workspace.view !== 'trash'" class="knowledge-capture" @submit.prevent="quickCapture">
           <el-icon><EditPen /></el-icon><input v-model="capture" maxlength="2000" aria-label="快速记录" placeholder="一句话记下想法、问题或经验…" /><button type="submit" :disabled="!capture.trim() || creating" title="Enter 保存到收件箱" aria-label="保存快速记录"><el-icon><TopRight /></el-icon></button>
         </form>
@@ -66,23 +73,26 @@
 <script setup>
 import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Search, MessageBox, Collection, Guide, Tickets, Flag, Delete } from '@element-plus/icons-vue'
+import { Search, Connection, MessageBox, Collection, Guide, Tickets, Flag, Delete } from '@element-plus/icons-vue'
 import { state } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
 import { useKnowledge } from '../composables/useKnowledge'
 import { KNOWLEDGE_TYPES, KNOWLEDGE_STATUSES, knowledgeMatches, knowledgeTime } from '../utils/knowledge'
 import KnowledgeEditor from '../components/knowledge/KnowledgeEditor.vue'
 import KnowledgeAnalysis from '../components/knowledge/KnowledgeAnalysis.vue'
+import IdeaGlobe from '../components/knowledge/IdeaGlobe.vue'
 
 defineEmits(['navigate'])
 const topbarReady = useTopbarReady()
 const knowledge = useKnowledge()
 const { data, workspace } = knowledge
 const capture = ref(''), creating = ref(false), page = ref(1), sort = ref('updated'), checked = ref([])
-const fileInput = ref(null), tableRef = ref(null), searchInput = ref(null), menuRef = ref(null), contextMenu = ref(null), showWarnings = ref(false)
+const fileInput = ref(null), tableRef = ref(null), searchInput = ref(null), ideaInput = ref(null), menuRef = ref(null), contextMenu = ref(null), showWarnings = ref(false)
 const analysisOpen = ref(false), analysisMode = ref('organize'), analysisRecords = ref([]), analysisKey = ref(0)
-const views = [{ id: 'inbox', label: '收件箱', icon: MessageBox }, { id: 'all', label: '全部记录', icon: Collection }, { id: 'methods', label: '方法与流程', icon: Guide }, { id: 'reviews', label: '决策与复盘', icon: Tickets }, { id: 'principles', label: '个人原则', icon: Flag }, { id: 'trash', label: '回收站', icon: Delete }]
+const highlightIdeaId = ref('')
+const views = [{ id: 'globe', label: '想法地球', icon: Connection }, { id: 'inbox', label: '收件箱', icon: MessageBox }, { id: 'all', label: '全部记录', icon: Collection }, { id: 'methods', label: '方法与流程', icon: Guide }, { id: 'reviews', label: '决策与复盘', icon: Tickets }, { id: 'principles', label: '个人原则', icon: Flag }, { id: 'trash', label: '回收站', icon: Delete }]
 const current = computed(() => knowledge.record(workspace.selectedId))
+const ideaRecords = computed(() => data.records.filter(row => !row.deletedAt && row.type === 'idea'))
 const inboxCount = computed(() => data.records.filter(row => !row.deletedAt && row.status === 'inbox').length)
 const sourceRecords = computed(() => (current.value?.sourceIds || []).map(id => data.records.find(row => row.id === id)).filter(Boolean))
 const projectOptions = computed(() => {
@@ -96,12 +106,14 @@ watch(() => [workspace.view, workspace.query, workspace.type, workspace.projectI
   page.value = 1
   checked.value = []
   tableRef.value?.clearSelection()
-  if (!filtered.value.some(row => row.id === workspace.selectedId)) workspace.selectedId = ''
+  if (workspace.view === 'globe' ? !ideaRecords.value.some(row => row.id === workspace.selectedId) : !filtered.value.some(row => row.id === workspace.selectedId)) workspace.selectedId = ''
 })
 watch(() => filtered.value.length, length => { page.value = Math.min(page.value, Math.max(1, Math.ceil(length / 30))) })
 function projectLabel(row) { return state.projects.items.find(project => project.id === row.projectId)?.name || (row.projectId ? `${row.projectName || '历史项目'}（已移除）` : '未关联') }
 function clearFilters() { workspace.query = ''; workspace.type = ''; workspace.projectId = '' }
 function selectRow(row) { workspace.selectedId = row.id; analysisOpen.value = false }
+function setView(view) { workspace.view = view; if (view === 'globe') { analysisOpen.value = false; if (current.value?.type !== 'idea') workspace.selectedId = '' } }
+async function focusIdeaInput() { setView('globe'); workspace.selectedId = ''; await nextTick(); ideaInput.value?.focus() }
 async function focusEditor(row) { selectRow(row); await nextTick(); document.querySelector('.knowledge-detail input')?.focus() }
 function projectFields() { const project = state.projects.items.find(row => row.id === workspace.projectId); return project ? { projectId: project.id, projectName: project.name } : {} }
 async function createRecord(fields = {}) {
@@ -114,7 +126,20 @@ async function createRecord(fields = {}) {
     return row
   } catch (error) { ElMessage.error(error.message) } finally { creating.value = false }
 }
-async function quickCapture() { const text = capture.value; if (!text.trim()) return; const row = await createRecord({ title: text.trim().slice(0, 120), body: text.trim(), status: 'inbox' }); if (row) { if (capture.value === text) capture.value = ''; workspace.view = 'inbox' } }
+async function quickCapture() {
+  const text = capture.value.trim()
+  if (!text || creating.value) return
+  creating.value = true
+  try {
+    const row = await knowledge.create({ title: text.split(/\r?\n/)[0].slice(0, 120), body: text, type: 'idea', status: 'inbox', ...projectFields() })
+    if (capture.value.trim() === text) capture.value = ''
+    workspace.selectedId = ''
+    analysisOpen.value = false
+    workspace.view = 'globe'
+    highlightIdeaId.value = row.id
+    ElMessage.success('想法已加入地球')
+  } catch (error) { ElMessage.error(error.message) } finally { creating.value = false }
+}
 async function saveCurrent() { if (current.value) await knowledge.flush(current.value.id) }
 async function saveCopy() { const row = current.value; if (row) { const copy = await createRecord({ ...row, title: `${row.title.slice(0, 230)}（草稿副本）` }); if (copy) { if (knowledge.record(row.id) === row) knowledge.discard(row.id); await knowledge.load(true) } } }
 async function lifecycle(action, id = current.value?.id) {
@@ -171,8 +196,9 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closeMenu); 
 .knowledge-tabs button span { padding: 0 6px; background: var(--surface-subtle); border-radius: 4px; font-size: 11px; }
 .knowledge-tabs .el-icon { font-size: 16px; }
 .knowledge-layout { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.knowledge-idea-surface { min-width: 0; flex: 1; display: flex; flex-direction: column; }
 .knowledge-records { min-width: 0; flex: 1; display: flex; flex-direction: column; }
-.has-panel .knowledge-records { flex: 0 0 44%; }
+.has-panel .knowledge-records, .has-panel .knowledge-idea-surface { flex: 0 0 44%; }
 .knowledge-detail { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: var(--surface); overflow: hidden; }
 .knowledge-detail-status { display: flex; align-items: center; gap: 8px; padding: 0 16px; height: 40px; flex-shrink: 0; background: var(--surface-subtle); border-bottom: 1px solid var(--line); color: var(--text-muted); font-size: 12px; }
 .knowledge-detail-status > span { flex: 1; }
@@ -182,6 +208,7 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closeMenu); 
 .knowledge-capture input { width: 100%; border: 0; outline: none; background: transparent; color: var(--brand-text); font-size: 13px; line-height: 24px; }
 .knowledge-capture button { border: 0; background: var(--surface-subtle); color: var(--accent-strong); display: grid; place-items: center; width: 28px; height: 28px; border-radius: 4px; cursor: pointer; }
 .knowledge-capture button:disabled { color: var(--text-disabled); cursor: default; }
+.idea-capture { flex-shrink: 0; margin-bottom: 8px; }
 .knowledge-filters { display: flex; gap: 8px; padding: 16px 24px 8px; }
 .knowledge-filters > .el-input { min-width: 120px; flex: 1; }
 .knowledge-project-filter { width: 160px; flex-shrink: 0; }.knowledge-type-filter { width: 112px; flex-shrink: 0; }
@@ -204,5 +231,5 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closeMenu); 
 .knowledge-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 40px 24px; line-height: 1.6; }.knowledge-empty > .el-icon { font-size: 24px; color: var(--text-muted); }.knowledge-empty strong { font-size: 14px; color: var(--brand-text); }.knowledge-empty p { font-size: 13px; margin: 0; max-width: 320px; }
 .knowledge-error { padding: 8px 16px; color: var(--danger); font-size: 13px; background: var(--danger-soft); }.knowledge-error pre { white-space: pre-wrap; max-height: 100px; overflow: auto; }
 .knowledge-context { position: fixed; z-index: 2300; width: 172px; padding: 4px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 6px; box-shadow: 0 4px 16px #0002; }.knowledge-context button { width: 100%; display: block; border: 0; text-align: left; padding: 8px 12px; font-size: 13px; background: transparent; color: var(--brand-text); border-radius: 4px; cursor: pointer; }.knowledge-context button:hover,.knowledge-context button:focus-visible { background: var(--surface-subtle); outline: none; }
-@media (max-width: 1366px) { .knowledge-tabs { gap: 20px; padding: 0 16px; }.has-panel .knowledge-records { flex-basis: 42%; }.knowledge-capture { margin-top: 16px; } }
+@media (max-width: 1366px) { .knowledge-tabs { gap: 20px; padding: 0 16px; }.has-panel .knowledge-records, .has-panel .knowledge-idea-surface { flex-basis: 42%; }.knowledge-capture { margin-top: 16px; } }
 </style>
