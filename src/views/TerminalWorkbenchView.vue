@@ -55,17 +55,9 @@
               </el-radio-button>
             </el-tooltip>
           </el-radio-group>
-
-          <span class="terminal-toolbar-divider" aria-hidden="true" />
-          <el-button class="terminal-quiet-button" @click="fontSettingsVisible = true">字体</el-button>
-          <el-button v-if="panes.length" class="terminal-quiet-button" @click="closeAll">关闭全部</el-button>
         </div>
       </div>
     </Teleport>
-
-    <el-dialog v-model="fontSettingsVisible" title="终端字体" width="460px" class="terminal-font-dialog">
-      <TerminalFontSettings />
-    </el-dialog>
 
     <p v-if="!state.projects.items.length" class="terminal-hint">
       还没有项目：先到「项目」页创建项目并关联本地目录，再回到这里分屏开终端。
@@ -126,10 +118,9 @@
  * 进程本身不跨应用重启（pty 随应用退出结束），恢复时按项目目录重新拉起会话。
  */
 import { computed, nextTick, onBeforeMount, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { ArrowDown, Plus } from '@element-plus/icons-vue'
 import TerminalPane from '../components/TerminalPane.vue'
-import TerminalFontSettings from '../components/TerminalFontSettings.vue'
 import { state } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
 
@@ -167,7 +158,6 @@ const panes = computed({
   set: (list) => { state.terminal.panes = list },
 })
 const gridMode = ref('auto')
-const fontSettingsVisible = ref(false)
 const shellOptions = ref([])
 const activeIndex = ref(0)
 const columnWidths = ref([0.5, 0.5])
@@ -312,23 +302,6 @@ async function removePane(index) {
   if (pane.sessionId) await window.gitReport.terminalClose(pane.sessionId).catch(() => {})
   panes.value.splice(index, 1)
   activeIndex.value = Math.max(0, Math.min(activeIndex.value, panes.value.length - 1))
-}
-
-async function closeAll() {
-  try {
-    await ElMessageBox.confirm('会结束所有窗格里的终端进程（未保存的命令行会丢失）。', '关闭全部窗格', {
-      type: 'warning',
-      confirmButtonText: '全部关闭',
-      cancelButtonText: '取消',
-    })
-  } catch {
-    return // 用户取消
-  }
-  for (const pane of panes.value) {
-    if (pane.sessionId) await window.gitReport.terminalClose(pane.sessionId).catch(() => {})
-  }
-  panes.value = []
-  state.terminal.focusedProjectId = ''
 }
 
 /** 子组件回传会话状态（含进程退出），落到对应窗格 */
@@ -603,16 +576,6 @@ function focusProject(projectId) {
   padding: 0 11px;
   font-size: 12px;
   font-weight: 600;
-}
-.terminal-toolbar :deep(.terminal-quiet-button) {
-  --el-button-bg-color: transparent;
-  --el-button-border-color: transparent;
-  --el-button-text-color: #b2bdca;
-  --el-button-hover-bg-color: #29313b;
-  --el-button-hover-border-color: #29313b;
-  --el-button-hover-text-color: #fff;
-  padding: 0 9px;
-  font-size: 12px;
 }
 .terminal-toolbar :deep(.el-radio-group) {
   border: 1px solid #39434e;

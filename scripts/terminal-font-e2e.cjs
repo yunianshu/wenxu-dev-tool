@@ -1,6 +1,9 @@
 /**
  * 终端字体 E2E：真实 Electron、真实 xterm 与 IPC，全部使用临时项目和用户数据。
  * 不复制真实配置，不调用 AI、服务器或安装流程。
+ *
+ * 入口：字体设置只在「设置 → 界面」（2026-09-24 起终端工作台工具栏不再有「字体」按钮，
+ * 工作台侧只验证「设置页改完、切回终端页所有窗格按新字体渲染且会话未重启」）。
  * 前置：npm run build:renderer；运行：node scripts/terminal-font-e2e.cjs
  */
 const { spawn } = require('child_process')
@@ -90,17 +93,6 @@ const HELPERS = `
       && value.panes.every((p) => p.family && (!family || p.family.includes(family)) && (!size || p.size === size))
       ? value : null
   }, '终端窗格 ' + count + ' / ' + (family || '默认字体') + ' / ' + (size || '任意字号'))
-  const openFonts = async () => {
-    click(await waitFor(() => document.querySelector('button.terminal-font-settings-trigger'), '字体设置入口'), '字体设置入口')
-    const dialog = await waitFor(() => [...document.querySelectorAll('.el-dialog')]
-      .find((el) => visible(el) && el.querySelector('.el-dialog__title')?.textContent.trim() === '终端字体'), '终端字体对话框')
-    return waitFor(() => dialog.querySelector('.terminal-font-settings'), '字体设置组件')
-  }
-  const closeFonts = async (control) => {
-    const dialog = control.closest('.el-dialog')
-    click(dialog.querySelector('.el-dialog__headerbtn'), '关闭字体对话框')
-    await waitFor(() => !visible(dialog), '字体对话框关闭')
-  }
   const selectFamily = async (control, name) => {
     const select = control.querySelector('.terminal-font-family')
     click(select?.querySelector('.el-select__wrapper'), '字体选择框')
@@ -124,6 +116,16 @@ const HELPERS = `
     click(findText('.app-menu .el-menu-item', text), text + '导航')
     await sleep(180)
   }
+  /** 打开字体设置：唯一入口是「设置 → 界面」 */
+  const openFonts = async () => {
+    await navigate('设置')
+    click(findText('.settings-sections .el-segmented__item', '界面'), '界面设置分区')
+    return waitFor(() => [...document.querySelectorAll('.settings-ui .terminal-font-settings')].find(visible), '设置页字体组件')
+  }
+  /** 关掉字体设置 = 切回终端工作台（窗格在那里重新挂载） */
+  const closeFonts = async () => {
+    await navigate('终端工作台')
+  }
 `
 
 function probe(body) {
@@ -142,18 +144,21 @@ const FIRST = probe(`
   result.before = await ready(1, '', 13)
   let control = await openFonts()
   await selectFamily(control, ${JSON.stringify(PRESET)})
+  await closeFonts()
   result.preset = await ready(1, ${JSON.stringify(PRESET)}, 13)
+
+  control = await openFonts()
   await selectFamily(control, ${JSON.stringify(CUSTOM)})
   const firstSize = await stepSize(control)
-  result.changed = await ready(1, ${JSON.stringify(CUSTOM)}, firstSize)
   result.preview = {
     family: getComputedStyle(control.querySelector('.terminal-font-preview')).fontFamily,
     size: Number.parseFloat(getComputedStyle(control.querySelector('.terminal-font-preview')).fontSize),
   }
   ${CAPTURE ? 'await sleep(20000)' : ''}
-  await closeFonts(control)
+  await closeFonts()
+  result.changed = await ready(1, ${JSON.stringify(CUSTOM)}, firstSize)
 
-  click(findText('.terminal-toolbar button', '添加窗格'), '添加窗格')
+  click(findText('.terminal-toolbar button', '新建终端'), '新建终端')
   click(await waitFor(() => findText('.el-dropdown-menu__item', ${JSON.stringify(PROJECTS[1].name)}), '第二个测试项目'), '第二个测试项目')
   result.added = await ready(2, ${JSON.stringify(CUSTOM)}, firstSize)
 
@@ -165,7 +170,7 @@ const FIRST = probe(`
     family: control.querySelector('.terminal-font-family')?.textContent.trim() || '',
   }
   const secondSize = await stepSize(control)
-  await navigate('终端工作台')
+  await closeFonts()
   result.back = await ready(2, ${JSON.stringify(CUSTOM)}, secondSize)
 `)
 
@@ -181,9 +186,9 @@ const SECOND = probe(`
     const prefs = await window.gitReport.uiPrefsLoad()
     return prefs.terminalFontFamily === '' && prefs.terminalFontSize === 13
   }, '默认字体与字号保存')
-  result.reset = await ready(2, '', 13)
   result.resetLabel = control.querySelector('.terminal-font-family')?.textContent.trim() || ''
-  await closeFonts(control)
+  await closeFonts()
+  result.reset = await ready(2, '', 13)
 `)
 
 async function startInstance(expression, capture = false) {
@@ -204,14 +209,15 @@ async function startInstance(expression, capture = false) {
   })
   if (capture) {
     env.SMOKE_SHOT_MS = '15000'
-    env.SMOKE_SCREENSHOT_PATH = path.join(SANDBOX, 'terminal-font-dialog.png')
+    env.SMOKE_SCREENSHOT_PATH = path.join(SANDBOX, 'terminal-font-settings.png')
   }
   if (process.platform === 'win32') {
-    // 子进程的用户目录也独立，避免新窗格读取真实用户的 shell / 应用配置。
-    env.USERPROFILE = path.join(SANDBOX, 'profile')
+    // 子进程的漫游目录也独立，避免新窗格读取真实用户的应用配置。
+    // 不能改 USERPROFILE：Electron 用它解析 appData，指向沙箱目录后启动即失败
+    // （`Failed to get 'userData' path`，实测 2026-09-24）。
     env.APPDATA = path.join(SANDBOX, 'roaming')
     env.LOCALAPPDATA = path.join(SANDBOX, 'local')
-    for (const dir of [env.USERPROFILE, env.APPDATA, env.LOCALAPPDATA]) fs.mkdirSync(dir, { recursive: true })
+    for (const dir of [env.APPDATA, env.LOCALAPPDATA]) fs.mkdirSync(dir, { recursive: true })
   }
   // 直接启动 Electron 可执行文件，异常时只结束本测试创建的进程。
   const child = spawn(require('electron'), ['.', '--host-resolver-rules=MAP * ~NOTFOUND'], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -243,12 +249,12 @@ function readPrefs() { return JSON.parse(fs.readFileSync(PREFS, 'utf8')) }
 async function main() {
   console.log(`终端字体隔离 E2E 开始：${new Date(STARTED_AT).toISOString()}`)
   prepare()
-  console.log('[1/2] 即时应用、添加窗格、设置页同步')
+  console.log('[1/2] 设置页改字体、终端页生效、新窗格继承')
   const first = await startInstance(FIRST, CAPTURE)
   check('默认字体与字号可渲染', first.before.panes[0].size === 13 && !!first.before.panes[0].family)
-  check('预设字体立即应用', first.preset.panes[0].family.includes(PRESET))
-  check('自定义字体立即应用且保留等宽回退', first.changed.panes[0].family.includes(CUSTOM) && first.changed.panes[0].family.includes('monospace'))
-  check('字体与字号变更不重启当前终端', identities(first.before) === identities(first.preset) && identities(first.before) === identities(first.changed))
+  check('预设字体在终端页生效', first.preset.panes[0].family.includes(PRESET))
+  check('自定义字体在终端页生效且保留等宽回退', first.changed.panes[0].family.includes(CUSTOM) && first.changed.panes[0].family.includes('monospace'))
+  check('改字体期间会话不重启（切页前后同一 pty）', identities(first.before) === identities(first.preset) && identities(first.before) === identities(first.changed))
   check('预览同步字体与字号', first.preview.family.includes(CUSTOM) && first.preview.size === 14)
   check('新窗格继承字体和字号', first.added.panes.length === 2 && first.added.panes.every((pane) => pane.family.includes(CUSTOM) && pane.size === 14))
   check('新增窗格保留原会话', first.added.sessions.some((s) => `${s.id}:${s.pid}` === identities(first.before)))
