@@ -225,6 +225,23 @@ async function main() {
       for (const [label, name] of [['AI 工作台', 'knowledge'], ['项目', 'projects'], ['终端工作台', 'terminal'], ['部署', 'deploy']]) { await navigate(label); await capture(name, 'dark', width, height) }
     }
     await page.setViewportSize({ width: 1440, height: 900 })
+    await navigate('部署')
+    await page.evaluate(async () => {
+      const { state } = await import('/src/store.js')
+      state.deploy.startedAt = Date.now() - 12500
+      state.deploy.finishedAt = 0
+      state.deploy.stages = { check: { status: 'success', durationMs: 300 }, package: { status: 'running', durationMs: 0 } }
+      state.deploy.packageCount = 42
+      state.deploy.running = true
+    })
+    await page.locator('.run-live').waitFor()
+    assert.equal(await page.locator('.run-live-copy strong').textContent(), '项目打包', '发布运行态显示当前阶段')
+    assert.equal(await page.locator('.run-live-copy').textContent().then(text => text.includes('已处理 42 个文件')), true, '发布运行态显示真实阶段进度')
+    assert.equal(await page.locator('.stages').count(), 0, '运行中以加载动画代替阶段列表')
+    await capture('deploy-running', 'dark', 1440, 900)
+    await page.evaluate(async () => { const { state } = await import('/src/store.js'); state.deploy.running = false; state.deploy.finishedAt = Date.now() })
+    await page.locator('.stages').waitFor()
+    interactions.push('发布运行态加载动画与完成后阶段明细')
     await navigate('AI 工作台')
     await page.locator('.knowledge-tabs').getByRole('button', { name: '想法地球', exact: true }).click()
     const ideaCount = await page.locator('.idea-globe-heading span').textContent()

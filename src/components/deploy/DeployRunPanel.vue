@@ -41,24 +41,37 @@
           <div class="run-heading-title"><span class="run-status-dot" :class="runTrackClass" /><h2>{{ runTitle }}</h2></div>
           <span v-if="hasRun" class="run-elapsed mono">{{ fmtElapsed(elapsedMs) }}</span>
         </div>
-        <div class="run-summary">
-          <span v-if="hasRun">{{ successCount }} 已完成<span v-if="skippedCount"> · {{ skippedCount }} 已跳过</span><span v-if="failedCount"> · {{ failedCount }} 失败</span><span v-if="rollbackCount"> · {{ rollbackCount }} 已回滚</span></span>
-          <span v-else>准备就绪 · {{ stageTotal }} 个阶段</span>
-          <span class="run-fraction mono">{{ doneCount }}/{{ stageTotal }}</span>
-        </div>
-        <div class="run-track" :class="runTrackClass" role="progressbar" :aria-valuenow="runPercent" :aria-valuemin="0" :aria-valuemax="100" :aria-label="`${runTitle}，已结束 ${doneCount} 个阶段`"><div class="run-fill" :style="{ width: runPercent + '%' }" /></div>
-        <div class="stages">
-          <div
-            v-for="(s, i) in stageList"
-            :key="s.id"
-            class="stage-chip"
-            :class="stageClass(s.id)"
-          >
-            <span class="stage-idx" aria-hidden="true">{{ stageMark(s.id) || i + 1 }}</span>
-            <span class="stage-label">{{ s.label }}</span>
-            <span class="stage-dur">{{ stageDur(s.id) || stageStatus(s.id) }}</span>
+        <div v-if="state.deploy.running" class="run-live" role="status" aria-live="polite">
+          <div class="run-live-main">
+            <div class="run-loader" aria-hidden="true">
+              <svg viewBox="0 0 80 80"><circle class="run-loader-track" cx="40" cy="40" r="34" /><circle class="run-loader-fill" cx="40" cy="40" r="34" pathLength="100" :style="{ strokeDasharray: `${runPercent} 100` }" /></svg>
+              <span class="run-loader-spin" />
+              <span class="run-loader-count mono">{{ doneCount }}<small>/{{ stageTotal }}</small></span>
+            </div>
+            <div class="run-live-copy"><span>当前阶段</span><strong>{{ activeStageLabel }}</strong><span>{{ activeStageDetail }}</span></div>
           </div>
+          <div class="run-live-footer"><span>{{ successCount }} 已完成<span v-if="skippedCount"> · {{ skippedCount }} 已跳过</span></span><span>发布日志实时更新</span></div>
         </div>
+        <template v-else>
+          <div class="run-summary">
+            <span v-if="hasRun">{{ successCount }} 已完成<span v-if="skippedCount"> · {{ skippedCount }} 已跳过</span><span v-if="failedCount"> · {{ failedCount }} 失败</span><span v-if="rollbackCount"> · {{ rollbackCount }} 已回滚</span></span>
+            <span v-else>准备就绪 · {{ stageTotal }} 个阶段</span>
+            <span class="run-fraction mono">{{ doneCount }}/{{ stageTotal }}</span>
+          </div>
+          <div class="run-track" :class="runTrackClass" role="progressbar" :aria-valuenow="runPercent" :aria-valuemin="0" :aria-valuemax="100" :aria-label="`${runTitle}，已结束 ${doneCount} 个阶段`"><div class="run-fill" :style="{ width: runPercent + '%' }" /></div>
+          <div class="stages">
+            <div
+              v-for="(s, i) in stageList"
+              :key="s.id"
+              class="stage-chip"
+              :class="stageClass(s.id)"
+            >
+              <span class="stage-idx" aria-hidden="true">{{ stageMark(s.id) || i + 1 }}</span>
+              <span class="stage-label">{{ s.label }}</span>
+              <span class="stage-dur">{{ stageDur(s.id) || stageStatus(s.id) }}</span>
+            </div>
+          </div>
+        </template>
       </section>
 
       <section class="deploy-card-log">
@@ -308,13 +321,22 @@ const failedCount = computed(() => STAGE_LIST.filter((s) => state.deploy.stages[
 const rollbackCount = computed(() => STAGE_LIST.filter((s) => state.deploy.stages[s.id]?.status === 'rollback').length)
 
 const runPercent = computed(() => (stageTotal.value ? Math.round((doneCount.value / stageTotal.value) * 100) : 0))
+const activeStage = computed(() => stageList.value.find(s => state.deploy.stages[s.id]?.status === 'running'))
+const activeStageLabel = computed(() => restoringDb.value ? '恢复数据库' : activeStage.value?.label || (rollingBack.value ? '准备回滚' : '准备发布'))
+const activeStageDetail = computed(() => {
+  if (restoringDb.value) return '正在执行恢复流程'
+  if (activeStage.value?.id === 'package' && state.deploy.packageCount) return `已处理 ${state.deploy.packageCount} 个文件`
+  if (activeStage.value?.id === 'upload' && state.deploy.uploadPercent) return `已上传 ${state.deploy.uploadPercent}%`
+  if (activeStage.value?.id === 'datasync' && state.deploy.datasyncPercent) return `已同步 ${state.deploy.datasyncPercent}%`
+  return '正在处理，请稍候'
+})
 
 const runFailed = computed(() => STAGE_LIST.some((s) => {
   const st = state.deploy.stages[s.id]
   return !!st && (st.status === 'failed' || st.status === 'rollback')
 }))
 const runTitle = computed(() => {
-  if (state.deploy.running) return '正在发布'
+  if (state.deploy.running) return restoringDb.value ? '正在恢复' : rollingBack.value ? '正在回滚' : '正在发布'
   if (!hasRun.value) return '发布阶段'
   if (runFailed.value) return '发布异常'
   return doneCount.value === stageTotal.value ? '发布完成' : '发布已结束'
@@ -587,6 +609,21 @@ defineExpose({ doRollback, resetSelection })
 .run-status-dot.is-done { background: var(--accent-strong); }
 .run-status-dot.is-failed { background: var(--danger); }
 .run-elapsed { color: var(--brand-text); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.run-live { min-height: 208px; display: flex; flex-direction: column; justify-content: center; gap: 24px; padding: 20px 0; }
+.run-live-main { display: flex; align-items: center; gap: 20px; }
+.run-loader { position: relative; width: 80px; height: 80px; flex: none; }
+.run-loader svg { width: 100%; height: 100%; transform: rotate(-90deg); fill: none; stroke-width: 2; }
+.run-loader-track { stroke: var(--line-strong); }
+.run-loader-fill { stroke: var(--accent-strong); stroke-linecap: round; transition: stroke-dasharray .35s ease; }
+.run-loader-spin { position: absolute; inset: -4px; border: 2px solid transparent; border-top-color: var(--accent-strong); border-radius: 50%; animation: run-loader-spin 1.4s linear infinite; }
+.run-loader-count { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--brand-text); font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.run-loader-count small { padding-top: 4px; color: var(--text-muted); font-size: 11px; font-weight: 400; }
+.run-live-copy { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.run-live-copy span { color: var(--text-muted); font-size: 11px; }
+.run-live-copy strong { overflow: hidden; color: var(--brand-text); font-size: 15px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.run-live-footer { display: flex; justify-content: space-between; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--text-muted); font-size: 11px; }
+@keyframes run-loader-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .run-loader-spin { animation: none; } }
 .run-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 0 10px; color: var(--text-muted); font-size: 11px; }
 .run-fraction { flex: none; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .run-track { height: 3px; margin-bottom: 12px; background: var(--surface-subtle); overflow: hidden; }
