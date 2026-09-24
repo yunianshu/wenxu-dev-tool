@@ -583,7 +583,7 @@ body {
 }
 /* 侧栏收起/展开的宽度过渡：只在外壳就绪后开启（is-sidebar-animatable），
    否则启动时从磁盘恢复收起状态会连带播一次滑出动画 */
-.app-shell.is-sidebar-animatable { transition: grid-template-columns .18s ease; }
+.app-shell.is-sidebar-animatable { transition: grid-template-columns 240ms cubic-bezier(.4, 0, .2, 1); }
 .app-sidebar {
   min-width: 0;
   background: var(--surface-subtle);
@@ -696,35 +696,7 @@ body {
 /* 这条必须排在上面的 .app-shell.is-immersive 之前：两者特异性相同，
    全屏时侧栏本就整体隐藏，宽度要归沉浸全屏那条管 */
 .app-shell.is-sidebar-collapsed { grid-template-columns: var(--sidebar-collapsed-width) minmax(0, 1fr); }
-/* 品牌名与分组标题在 64px 里放不下：顶部只留展开按钮（与收起按钮同位，位置记忆一致） */
-.app-shell.is-sidebar-collapsed .brand-block { padding: 0; justify-content: center; }
-.app-shell.is-sidebar-collapsed .brand-mark,
-.app-shell.is-sidebar-collapsed .brand-text { display: none; }
-/* el-menu 收起时自带 64px 固定宽度，这里跟随变量走，避免改宽度时对不上 */
-.app-shell.is-sidebar-collapsed .app-menu { width: 100%; }
-/* 收起后菜单项只剩一个图标：el-menu 会把内容包进绝对定位的 tooltip 触发层，
-   该层自带 20px 左内边距（图标会明显偏右），这里清零并在整项宽度内居中 */
-.app-shell.is-sidebar-collapsed .app-menu .el-menu-item { padding: 0 !important; }
-.app-shell.is-sidebar-collapsed .app-menu .el-menu-item .el-menu-tooltip__trigger {
-  justify-content: center;
-  padding: 0;
-}
-/* 图标右侧原本留 5px 与文案的间距，没了文案就只剩偏心（图标会左移 2~3px） */
-.app-shell.is-sidebar-collapsed .app-menu .el-menu-item .el-icon { margin-right: 0; }
-/* 分组标题退化为一条细分隔线：图标列表仍看得出「工作区 / 项目能力 / 系统」三组 */
-.app-shell.is-sidebar-collapsed .app-menu .el-menu-item-group__title {
-  height: 1px;
-  margin: 8px 16px;
-  padding: 0 !important;
-  background: var(--line);
-  font-size: 0;
-  line-height: 0;
-}
-/* 页脚同样只留状态点与版本号（「本地数据」「· 更新日志」由 title 提示补上） */
-.app-shell.is-sidebar-collapsed .sidebar-footer { flex-direction: column; justify-content: center; gap: 5px; padding: 0; }
-.app-shell.is-sidebar-collapsed .footer-label,
-.app-shell.is-sidebar-collapsed .version-label { display: none; }
-.app-shell.is-sidebar-collapsed .sidebar-version { margin-left: 0; padding: 0; font-size: 11px; }
+/* 折叠文字与布局的连续过渡由 desktop-v2.css 统一控制。 */
 .shell-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .app-topbar {
   height: var(--topbar-height);

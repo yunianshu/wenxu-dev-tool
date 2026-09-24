@@ -144,21 +144,38 @@ button, input, select, textarea { font-family: inherit; }
 .app-shell.is-immersive { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
 .shell-main { overflow: hidden; background: var(--surface); }
 .app-sidebar { background: var(--brand-bg); overflow: hidden; }
-.brand-block { height: 52px; min-height: 52px; border: 0; padding: 12px 16px 4px 20px; gap: 8px; }
+.brand-block { position: relative; height: 52px; min-height: 52px; border: 0; padding: 12px 20px 4px; gap: 8px; }
+.app-sidebar .brand-text { position: absolute; left: 20px; width: 128px; }
 .brand-subtitle { margin: 0; color: var(--text-muted); font-size: 12px; font-weight: 500; }
-.sidebar-toggle { width: 24px; height: 24px; border-radius: 4px; }
-.app-menu { padding: 0 12px; --el-menu-text-color: var(--ink-soft); --el-menu-hover-bg-color: var(--surface-subtle); --el-menu-active-color: var(--accent-strong); }
-.app-menu .el-menu-item-group__title { padding: 28px 0 12px !important; font-size: 11px; font-weight: 400; letter-spacing: 0; }
+.sidebar-toggle { width: 24px; height: 24px; border-radius: 4px; margin-left: auto; }
+.app-menu { padding: 0 12px; overflow-x: hidden; --el-menu-text-color: var(--ink-soft); --el-menu-hover-bg-color: var(--surface-subtle); --el-menu-active-color: var(--accent-strong); }
+.app-menu .el-menu-item-group__title { position: relative; height: 52px; padding: 28px 0 12px !important; font-size: 11px; line-height: 12px; font-weight: 400; letter-spacing: 0; }
 .app-menu .workspace-nav-group > .el-menu-item-group__title { display: none; }
-.app-menu .el-menu-item { height: 36px; min-height: 36px; line-height: 36px; margin: 4px 0; padding: 0 12px !important; font-size: 13px; border-radius: 6px; }
-.app-menu .el-menu-item .el-icon { width: 16px; font-size: 16px; margin-right: 8px; }
+.app-menu .el-menu-item { position: relative; overflow: hidden; height: 36px; min-height: 36px; line-height: 36px; margin: 4px 0; padding: 0 12px !important; font-size: 13px; border-radius: 6px; }
+.app-menu .el-menu-item .el-icon { width: 16px; font-size: 16px; margin-right: 8px; flex-shrink: 0; }
+.sidebar-item-label { position: absolute; left: 36px; white-space: nowrap; }
 .app-menu .el-menu-item.is-active { font-weight: 500; }
 .nav-badge { box-shadow: 0 0 0 2px var(--brand-bg); background: var(--accent-strong); }
-.sidebar-footer { min-height: 48px; padding: 0 20px; gap: 8px; border: 0; color: var(--text-muted); font-size: 11px; }
+.sidebar-footer { position: relative; height: 48px; min-height: 48px; padding: 0 20px; gap: 8px; border: 0; color: var(--text-muted); font-size: 11px; }
+.sidebar-footer .status-dot { position: absolute; left: 20px; top: 21px; }
+.sidebar-footer .footer-label { position: absolute; left: 34px; top: 16px; }
 .status-dot { width: 6px; height: 6px; background: var(--accent-strong); }
-.sidebar-version { color: var(--text-muted); font-family: inherit; }
+.sidebar-version { position: absolute; right: 16px; top: 16px; margin: 0; padding: 0; color: var(--text-muted); font-family: inherit; }
 .version-label { display: none; }
-.app-shell.is-sidebar-collapsed .app-menu .el-menu-item-group__title { margin: 16px 8px 8px; padding: 0 !important; }
+/* 收起先淡出文字；展开等宽度留出空间后淡入，节点不卸载，反向点击可连续过渡。 */
+.app-sidebar :is(.brand-text, .sidebar-item-label, .sidebar-group-label, .footer-label) { opacity: 1; transform: translateX(0); }
+.app-shell.is-sidebar-animatable .app-sidebar :is(.brand-text, .sidebar-item-label, .sidebar-group-label, .footer-label) { transition: opacity 160ms ease 80ms, transform 160ms ease 80ms; }
+.sidebar-group-label { display: block; white-space: nowrap; }
+.app-shell.is-sidebar-collapsed .app-sidebar :is(.brand-text, .sidebar-item-label, .sidebar-group-label, .footer-label) { opacity: 0; transform: translateX(-4px); pointer-events: none; transition-delay: 0ms; transition-duration: 120ms; }
+.app-menu .el-menu-item-group__title::after { content: ''; position: absolute; left: 8px; right: 8px; top: 32px; height: 1px; background: var(--line); opacity: 0; }
+.app-shell.is-sidebar-animatable .el-menu-item-group__title::after { transition: opacity 120ms ease; }
+.app-shell.is-sidebar-collapsed .el-menu-item-group__title::after { opacity: 1; transition-delay: 120ms; }
+.app-shell.is-sidebar-animatable .sidebar-footer :is(.status-dot, .sidebar-version) { transition: left 240ms cubic-bezier(.4, 0, .2, 1), right 240ms cubic-bezier(.4, 0, .2, 1), top 240ms cubic-bezier(.4, 0, .2, 1); }
+.app-shell.is-sidebar-collapsed .sidebar-footer .status-dot { left: 28px; top: 8px; }
+.app-shell.is-sidebar-collapsed .sidebar-version { right: 8px; top: 24px; }
+@media (prefers-reduced-motion: reduce) {
+  .app-shell.is-sidebar-animatable, .app-shell.is-sidebar-animatable .app-sidebar *, .app-shell.is-sidebar-animatable .app-sidebar *::after { transition-duration: 0s !important; transition-delay: 0s !important; }
+}
 .app-topbar, .app-topbar--terminal { height: 64px; padding: 0 var(--page-gutter); gap: 16px; background: var(--surface); border-bottom: 1px solid var(--line); -webkit-app-region: no-drag; }
 .topbar-slot { gap: 16px; width: 100%; }
 /* 页头是单行、不可回卷的（标题与按钮都 nowrap）：可用宽度不足时让插槽横向滚动

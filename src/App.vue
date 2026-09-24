@@ -106,7 +106,7 @@ function afterFirstPaint() {
   ])
 }
 
-/** 侧栏折叠动画开关：从磁盘恢复收起状态时不能播一次滑出动画（见 restoreSidebarPref） */
+/** 首次用户操作后才启用侧栏动画，恢复磁盘偏好不播放过渡。 */
 const sidebarAnimatable = ref(false)
 /** 用户是否已手动开合过侧栏：用于压过迟到的偏好读取（见 restoreSidebarPref） */
 let sidebarTouched = false
@@ -163,13 +163,12 @@ async function restoreSidebarPref() {
   if (!sidebarTouched) state.ui.sidebarCollapsed = saved?.sidebarCollapsed === true
   restoreTerminalFontPrefs(saved, fontRevision)
   if (saved) restoreThemePrefs(saved, themeRevision)
-  await nextTick()
-  sidebarAnimatable.value = true
 }
 
 /** 侧栏收起/展开：外观偏好即时生效并落盘，下次启动按收起状态恢复 */
 function toggleSidebar() {
   sidebarTouched = true
+  sidebarAnimatable.value = true
   state.ui.sidebarCollapsed = !state.ui.sidebarCollapsed
   // 落盘失败不阻断交互（下次启动回落到展开态），仅记录，不打扰用户
   saveUiPrefs()?.catch((error) => console.error('侧栏偏好保存失败', error))

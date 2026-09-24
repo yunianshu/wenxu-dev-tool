@@ -1,10 +1,10 @@
 <template>
   <aside class="app-sidebar">
     <div class="brand-block">
-      <div class="brand-text">
+      <div class="brand-text" :aria-hidden="collapsed">
         <div class="brand-subtitle">工作空间</div>
       </div>
-      <!-- 收起/展开侧栏：收起后只留图标，菜单项文案由 el-menu 自带的 tooltip 补上 -->
+      <!-- 图标与文字保持同一组节点，动画期间不切换菜单的 DOM 分支。 -->
       <button
         class="sidebar-toggle"
         type="button"
@@ -17,62 +17,31 @@
       </button>
     </div>
 
-    <!-- label 放在 #title 插槽里：el-menu 收起时该插槽转为 tooltip 内容，
-         图标旁不再渲染文字（在 default 插槽里写死 span 则收不起文字） -->
+    <!-- 宽度和文字过渡统一由外壳控制；关闭组件自带折叠，避免标题被卸载。 -->
     <el-menu
       :default-active="modelValue"
-      :collapse="collapsed"
+      :collapse-transition="false"
       class="app-menu"
       @select="$emit('update:modelValue', $event)"
     >
-      <el-menu-item-group class="workspace-nav-group">
-        <el-menu-item index="dashboard">
-          <el-icon><House /></el-icon>
-          <template #title><span>AI 工作台</span></template>
-        </el-menu-item>
-        <el-menu-item index="projects">
-          <el-icon><FolderOpened /></el-icon>
-          <template #title><span>项目</span></template>
-        </el-menu-item>
-      </el-menu-item-group>
-      <el-menu-item-group title="项目能力">
-        <el-menu-item index="harness">
-          <el-icon class="nav-ico">
-            <Cpu />
-            <!-- 有新版本：图标右上角的小圆点（通知角标惯例，不占文字区） -->
-            <span v-if="harnessUpdateAvailable" class="nav-badge" title="有新版本" />
-          </el-icon>
-          <template #title><span>DeepSeek Harness</span></template>
-        </el-menu-item>
-        <el-menu-item index="terminal">
-          <el-icon><Monitor /></el-icon>
-          <template #title><span>终端工作台</span></template>
-        </el-menu-item>
-        <el-menu-item index="fillreport">
-          <el-icon><Timer /></el-icon>
-          <template #title><span>一键填报</span></template>
-        </el-menu-item>
-        <el-menu-item index="deploy">
-          <el-icon><Promotion /></el-icon>
-          <template #title><span>部署</span></template>
-        </el-menu-item>
-      </el-menu-item-group>
-      <el-menu-item-group title="系统">
-        <el-menu-item index="extensions">
-          <el-icon><MagicStick /></el-icon>
-          <template #title><span>扩展管理</span></template>
-        </el-menu-item>
-        <el-menu-item index="settings">
-          <el-icon><Setting /></el-icon>
-          <template #title><span>设置</span></template>
-        </el-menu-item>
+      <el-menu-item-group v-for="group in groups" :key="group.id" :class="{ 'workspace-nav-group': group.id === 'workspace' }">
+        <template #title><span class="sidebar-group-label" :aria-hidden="collapsed">{{ group.label }}</span></template>
+        <el-tooltip v-for="item in group.items" :key="item.id" :content="item.label" :disabled="!collapsed" :trigger="['hover', 'focus']" :trigger-keys="[]" placement="right" :show-after="240" :hide-after="0">
+          <el-menu-item :index="item.id" :aria-label="item.label" :tabindex="modelValue === item.id ? 0 : -1" @keydown="onItemKeydown">
+            <el-icon class="nav-ico">
+              <component :is="item.icon" />
+              <span v-if="item.id === 'harness' && harnessUpdateAvailable" class="nav-badge" title="有新版本" />
+            </el-icon>
+            <span class="sidebar-item-label" :aria-hidden="collapsed">{{ item.label }}</span>
+          </el-menu-item>
+        </el-tooltip>
       </el-menu-item-group>
     </el-menu>
 
     <!-- 收起后「本地数据」与「· 更新日志」都放不下：只留状态点与版本号，文案由 title 补 -->
     <div class="sidebar-footer">
       <span class="status-dot" />
-      <span class="footer-label">本地数据</span>
+      <span class="footer-label" :aria-hidden="collapsed">本地数据</span>
       <button class="sidebar-version" type="button" title="查看版本更新日志" @click="$emit('show-changelog')">
         <span class="version-num">v{{ appVersion }}</span><span class="version-label"> · 更新日志</span>
       </button>
@@ -95,4 +64,32 @@ defineEmits(['update:modelValue', 'show-changelog', 'toggle-collapse'])
 const appVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''
 /** 内置 Harness 有新版本时在菜单项上挂角标（提示常驻，不受一次性通知已读影响） */
 const harnessUpdateAvailable = computed(() => state.harnessUpdate?.updateAvailable === true)
+const groups = [
+  { id: 'workspace', label: '', items: [
+    { id: 'dashboard', label: 'AI 工作台', icon: 'House' },
+    { id: 'projects', label: '项目', icon: 'FolderOpened' },
+  ] },
+  { id: 'capabilities', label: '项目能力', items: [
+    { id: 'harness', label: 'DeepSeek Harness', icon: 'Cpu' },
+    { id: 'terminal', label: '终端工作台', icon: 'Monitor' },
+    { id: 'fillreport', label: '一键填报', icon: 'Timer' },
+    { id: 'deploy', label: '部署', icon: 'Promotion' },
+  ] },
+  { id: 'system', label: '系统', items: [
+    { id: 'extensions', label: '扩展管理', icon: 'MagicStick' },
+    { id: 'settings', label: '设置', icon: 'Setting' },
+  ] },
+]
+
+function onItemKeydown(event) {
+  if (!['Enter', ' ', 'ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  event.stopPropagation()
+  const item = event.currentTarget
+  if (event.key === 'Enter' || event.key === ' ') { item.click(); return }
+  const items = [...item.closest('.app-menu').querySelectorAll('[role="menuitem"]')]
+  const index = items.indexOf(item)
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length
+  items[next]?.focus()
+}
 </script>
