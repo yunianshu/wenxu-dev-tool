@@ -2,10 +2,11 @@
  * 内置运行时更新自测（合成资源 + 假 registry + 桩 npm，秒级）
  *
  * 验收标准（源自需求「监听 dsh 是否有更新 → 有更新要提示 → 可在应用内热更新」）：
- *   U1  版本比较正确处理预发布版本（alpha < rc < 正式版）
+ *   U1  版本比较正确处理预发布版本（alpha < rc < 正式版）；
+ *       最新版本取「源上版本号最大的一个，含预发布」，不受 dist-tags.latest 落后影响
  *   U2  发现源上有更新版本：updateAvailable=true，且首次发现时 notify=true（提示一次）
- *   U3  未到期不重复查询（6 小时节流），同一新版本不重复提示
- *   U4  源不可用时如实记录错误，不崩、不误报有新版本
+ *   U3  未到期不重复查询（6 小时节流），同一新版本不重复提示；检查口径变化后立即重查
+ *   U4  源不可用时如实记录错误，不崩、不误报有新版本；源上无有效版本号时同样如实报错
  *   U5  应用内热更新：装到暂存目录 → 校验 → 交换 → 写热更新标记 → 目录内容为新版本
  *   U6  热更新装出来的运行时优先复用，不被随包归档覆盖回旧版本
  *   U7  随包版本更新时以随包为准（重新解包，热更新标记不再生效）
@@ -24,9 +25,20 @@ const harnessPatch = require('../electron/harness-patch')
 const { compareVersions, isNewer } = require('../electron/version-compare')
 
 const SHIPPED = '0.1.5-alpha.1'
-const LATEST = '0.1.5-rc.1'
+/** 源上真正最新（预发布）：比 dist-tags.latest 更高，更新目标必须是它 */
+const LATEST = '0.1.7-rc.1'
+/** dist-tags.latest：官方正式 tag 常年落后于 alpha/rc 迭代（实测真实源即如此） */
+const LATEST_TAG = '0.1.5-rc.3'
 const PLATFORM = process.platform
 const ARCH = process.arch
+
+/** 源上的 packument：versions 全集 + 落后的 dist-tags（与真实 @deepseek-ai/dsh 同形） */
+const PACKUMENT = {
+  'dist-tags': { latest: LATEST_TAG, next: LATEST, alpha: '0.1.7-alpha.2' },
+  versions: Object.fromEntries(
+    [SHIPPED, '0.1.5-rc.1', LATEST_TAG, '0.1.7-alpha.2', LATEST].map((v) => [v, {}]),
+  ),
+}
 
 let failed = 0
 const check = (name, cond, detail) => {
@@ -82,8 +94,8 @@ function writeRuntimeTree(dir, version) {
   return entry
 }
 
-/** 假 registry：只服务 @deepseek-ai/dsh 的 packument */
-function startRegistry(latest, state) {
+/** 假 registry：只服务 @deepseek-ai/dsh 的 packument（对象或函数，函数用于按状态切换内容） */
+function startRegistry(packument, state) {
   const server = http.createServer((req, res) => {
     state.hits += 1
     if (state.failWith) {
@@ -95,7 +107,7 @@ function startRegistry(latest, state) {
       res.writeHead(404); res.end('{}'); return
     }
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ 'dist-tags': { latest: typeof latest === 'function' ? latest() : latest } }))
+    res.end(JSON.stringify(typeof packument === 'function' ? packument() : packument))
   })
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)))
 }
@@ -146,6 +158,17 @@ function startRegistry(latest, state) {
   check('U1c 同版本不算更新 / 旧版本不算更新',
     isNewer('0.1.5-alpha.1', '0.1.5-alpha.1') === false
     && isNewer('0.1.5-alpha.1', '0.1.5-rc.1') === false)
+  // 需求口径：升级要定位到「源上最新」，预发布版本也算——不能停在落后的 dist-tags.latest
+  check('U1d 最新版本取含预发布的版本号最大者（忽略落后的 latest tag）',
+    update.pickLatestVersion(PACKUMENT) === LATEST
+    && update.pickLatestVersion(PACKUMENT) !== LATEST_TAG)
+  check('U1e 更高号正式版优先于预发布 / v 前缀与脏 tag 值不误选',
+    update.pickLatestVersion({ versions: { '0.1.7-rc.1': {}, '0.2.0': {} } }) === '0.2.0'
+    && update.pickLatestVersion({ 'dist-tags': { latest: 'v1.2.3' }, versions: { '1.2.3': {} } }) === '1.2.3'
+    && update.pickLatestVersion({ 'dist-tags': { latest: 'beta' } }) === '')
+  check('U1f packument 只有 dist-tags 时退化可用',
+    update.pickLatestVersion({ 'dist-tags': { latest: LATEST_TAG } }) === LATEST_TAG
+    && update.pickLatestVersion({}) === '')
 
   // 造出「已解包的随包运行时」
   const runtimeDir = await rt.ensureBundledRuntime()
@@ -154,14 +177,14 @@ function startRegistry(latest, state) {
 
   // ── U2 检查更新 ──
   const registryState = { hits: 0, failWith: 0 }
-  const server = await startRegistry(LATEST, registryState)
+  const server = await startRegistry(() => (registryState.empty ? {} : PACKUMENT), registryState)
   const registry = `http://127.0.0.1:${server.address().port}`
 
   const events = []
   update.setEmitter((payload) => events.push(payload))
 
   const first = await update.check({ force: true, registry })
-  check('U2a 发现新版本（0.1.5-alpha.1 → 0.1.5-rc.1）',
+  check(`U2a 发现新版本（${SHIPPED} → ${LATEST}，非落后的 ${LATEST_TAG}）`,
     first.updateAvailable === true && first.latest === LATEST && first.current === SHIPPED,
     `${first.current} → ${first.latest}`)
   check('U2b 首次发现新版本时要求提示（notify=true）', events.some((e) => e.notify === true))
@@ -177,6 +200,20 @@ function startRegistry(latest, state) {
   await update.check({ force: true, registry })
   check('U3b 同一新版本不重复提示', !events.some((e) => e.notify === true))
 
+  // 旧版本应用留下的状态里没有检查口径标记：升级后必须立即按新口径重查一次，
+  // 否则界面会拿着旧结论（比如「已是最新」）再显示 6 小时
+  const statePath = path.join(root, 'harness-update.json')
+  const staleState = JSON.parse(fs.readFileSync(statePath, 'utf8'))
+  delete staleState.checkPolicy
+  staleState.lastCheckAt = Date.now()
+  fs.writeFileSync(statePath, JSON.stringify(staleState))
+  const hitsBeforePolicyChange = registryState.hits
+  const repolicy = await update.check({ registry })
+  check('U3c 检查口径变化后忽略节流重查',
+    registryState.hits > hitsBeforePolicyChange && repolicy.latest === LATEST
+    && JSON.parse(fs.readFileSync(statePath, 'utf8')).checkPolicy === update.CHECK_POLICY,
+    `hits=${registryState.hits}`)
+
   // ── U4 源不可用 ──
   const checkedAtBeforeFail = JSON.parse(fs.readFileSync(path.join(root, 'harness-update.json'), 'utf8')).lastCheckAt
   registryState.failWith = 500
@@ -189,6 +226,13 @@ function startRegistry(latest, state) {
     JSON.parse(fs.readFileSync(path.join(root, 'harness-update.json'), 'utf8')).lastCheckAt === checkedAtBeforeFail,
     `${checkedAtBeforeFail}`)
   registryState.failWith = 0
+
+  // 源被占位页/镜像接管、packument 里没有任何合法版本号：如实报错，并保留上次已知结论
+  registryState.empty = true
+  const emptyCheck = await update.check({ force: true, registry })
+  check('U4c 源上没有有效版本号时如实记录错误（保留上次结论）',
+    /未找到有效的版本号/.test(emptyCheck.error) && emptyCheck.latest === LATEST, emptyCheck.error)
+  registryState.empty = false
 
   // ── U5 应用内热更新（桩 npm 造树） ──
   // 桩 npm 睡够一个进度采样周期，覆盖「下载依赖 → 安装依赖」的阶段广播

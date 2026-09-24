@@ -2,6 +2,8 @@
  * DeepSeek Harness 内置运行时更新（版本检查 + 应用内热更新）
  *
  * 需求：监视 @deepseek-ai/dsh 是否有新版本，有新版本时提示用户，并支持在应用内直接升级。
+ * 版本口径：**取源上版本号最大的那个，包含预发布版本**（dsh 只发 alpha/rc，
+ * dist-tags.latest 常年停在旧版，例如 latest=0.1.5-rc.3 时源上已有 0.1.7-rc.1）。
  *
  * 为什么用「随包 npm」而不是自己写下载器：dsh 依赖树约 600 个包、2.6 万个文件，
  * 版本解析（依赖范围、可选依赖、平台过滤、peer、提升与冲突嵌套）是 npm 的活。
@@ -23,13 +25,16 @@ const fs = require('fs')
 const path = require('path')
 const harnessPatch = require('./harness-patch')
 const harnessRuntime = require('./harness-runtime')
-const { isValidVersion, isNewer } = require('./version-compare')
+const { isValidVersion, isNewer, compareVersions } = require('./version-compare')
 
 /** dsh 包名与默认源（源可在配置里改：公司内网镜像） */
 const PACKAGE = '@deepseek-ai/dsh'
 const DEFAULT_REGISTRY = 'https://registry.npmjs.org'
 /** 自动检查间隔：6 小时（手动「检查更新」不受限制） */
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+/** 检查口径标记：口径本身变化时（如从只认 dist-tags.latest 改为含预发布的最新版），
+ *  上次落盘的 lastCheckAt 不能把首次重查推后 6 小时——否则升级应用后界面仍显示旧结论 */
+const CHECK_POLICY = 'any-version-1'
 const CHECK_TIMEOUT_MS = 20000
 /** 随包更新组件（npm 官方包） */
 const UPDATER_ARCHIVE = 'harness-updater.tar.gz'
@@ -215,12 +220,33 @@ async function httpJson(url) {
   throw lastError
 }
 
+/**
+ * 挑选源上的最新版本：**取所有已发布版本里版本号最大的一个，包含预发布版本**。
+ *
+ * 不读 dist-tags.latest：dsh 只在 alpha/rc 上迭代，latest tag 常年落后
+ * （实测 latest=0.1.5-rc.3、next=0.1.7-rc.1，只认 latest 会一直提示装旧版）。
+ * 候选来自 versions 全集的键，另加 dist-tags 的值兜底（个别源的 packument
+ * 精简到只带 dist-tags）。非法版本号（tag 指向分支名等脏值）直接跳过。
+ */
+function pickLatestVersion(packument) {
+  const versions = (packument && packument.versions) || {}
+  const distTags = (packument && packument['dist-tags']) || {}
+  const candidates = [...Object.keys(versions), ...Object.values(distTags)]
+  let best = ''
+  for (const candidate of candidates) {
+    const text = String(candidate == null ? '' : candidate).trim().replace(/^v/, '')
+    if (!isValidVersion(text)) continue
+    if (!best || compareVersions(text, best) > 0) best = text
+  }
+  return best
+}
+
 /** 查询源上的最新版本（scoped 包名需转义斜杠） */
 async function fetchLatest(registry) {
   const url = `${registry}/${PACKAGE.replace('/', '%2f')}`
   const packument = await httpJson(url)
-  const latest = String((packument['dist-tags'] || {}).latest || '')
-  if (!isValidVersion(latest)) throw new Error('源上未找到有效的 latest 版本号')
+  const latest = pickLatestVersion(packument)
+  if (!isValidVersion(latest)) throw new Error('源上未找到有效的版本号')
   return { latest, distTags: packument['dist-tags'] || {} }
 }
 
@@ -231,7 +257,9 @@ async function fetchLatest(registry) {
 async function check(opts = {}) {
   if (runtime.install.status !== 'idle' && !['done', 'error'].includes(runtime.install.status)) return status()
   const state = readState()
-  if (!opts.force && Date.now() - Number(state.lastCheckAt || 0) < CHECK_INTERVAL_MS) return status()
+  // 口径变化时忽略节流：只查一次就写回新口径，之后恢复正常 6 小时节流
+  const policyStale = state.checkPolicy !== CHECK_POLICY
+  if (!opts.force && !policyStale && Date.now() - Number(state.lastCheckAt || 0) < CHECK_INTERVAL_MS) return status()
 
   runtime.checking = true
   emit()
@@ -244,6 +272,7 @@ async function check(opts = {}) {
     const notify = updateAvailable && state.notifiedVersion !== latest
     writeState({
       lastCheckAt: Date.now(),
+      checkPolicy: CHECK_POLICY,
       latestVersion: latest,
       registry,
       lastError: '',
@@ -517,7 +546,7 @@ async function install(opts = {}) {
   if (!guard.ok) return { ok: false, error: guard.reason }
 
   const registry = registryUrl(opts.registry)
-  let version = String(opts.version || readState().latestVersion || '').trim()
+  let version = String(opts.version || readState().latestVersion || '').trim().replace(/^v/, '')
   if (!isValidVersion(version)) {
     // 未指定版本（或记录已失效）时现查一次源
     try {
@@ -602,6 +631,8 @@ module.exports = {
   setEmitter,
   updateGuard,
   registryUrl,
+  fetchLatest,
+  pickLatestVersion,
   ensureUpdater,
   countPackages,
   runtimeDir,
@@ -612,5 +643,6 @@ module.exports = {
   stateFile,
   DEFAULT_REGISTRY,
   CHECK_INTERVAL_MS,
+  CHECK_POLICY,
   resetForTest,
 }
