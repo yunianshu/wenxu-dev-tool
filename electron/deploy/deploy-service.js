@@ -19,7 +19,7 @@ const automatic = require('./auto-deploy')
 const moduleDataSync = require('./data-sync')
 const workspace = require('./build-workspace')
 const { validateArtifact } = require('./artifact-check')
-const { detectVersion, bumpVersionFiles } = require('./version-detector')
+const { detectVersion, bumpVersionFiles, syncBackVersion } = require('./version-detector')
 
 /** 服务端脚本随应用分发（asar 内也可 readFileSync） */
 const DEPLOY_SCRIPT_PATH = path.join(__dirname, 'scripts', 'deploy.sh')
@@ -341,6 +341,7 @@ function killTree(child) {
  * 把项目内解析值等于旧版本的版本声明改写为发布版本——package.sh 等打包脚本
  * 读的是项目内版本号，不同步则产物永远落后于发布版本、匹配必然失败。
  * 自动识别版本即来自项目文件，天然一致，无需同步。返回日志文本（无需同步时为空）。
+ * 版本推进的另一半在发布成功后（syncBackAfterRelease）：只有发布真正成功才写回源项目。
  */
 function syncProjectVersionForPackage(project, ver) {
   if (ver.source !== '手动输入') return ''
@@ -354,6 +355,23 @@ function syncProjectVersionForPackage(project, ver) {
     return `项目版本文件为 ${cur.version}（${cur.source}），与发布版本 ${ver.version} 不一致，且未能自动同步版本文件；打包产物可能不含目标版本`
   }
   return `已将项目版本 ${cur.version} → ${ver.version}（同步 ${changed.join('、')}；仅修改本次构建副本）`
+}
+
+/**
+ * 发布成功后把源项目版本文件写回发布版本：打包阶段的同步只发生在临时构建副本，
+ * 源项目不跟上则版本文件永远停在旧值（如一直 1.0.5 起步）。只在全部发布步骤成功
+ * 且未回滚时推进——失败/回滚/取消不留半改状态；不自动提交，工作区改动随用户下次提交。
+ * 返回日志文本（无需写回时为空，发布结果不受写回成败影响）。
+ */
+function syncBackAfterRelease(project, ver) {
+  if (ver.source !== '手动输入') return ''
+  if ((project.scriptMode || {}).autoBumpVersion === false) return ''
+  const back = syncBackVersion(project.localPath, ver.version)
+  if (!back.version || back.version === ver.version) return ''
+  if (!back.changed.length) {
+    return `源项目版本仍为 ${back.version}，与发布版本 ${ver.version} 不一致且未能写回版本文件`
+  }
+  return `已将源项目版本 ${back.version} → ${ver.version}（同步 ${back.changed.join('、')}；不自动提交，随下次代码提交入库）`
 }
 
 /**
@@ -913,8 +931,13 @@ async function run(projectId, targetId) {
       } else {
         tracker.end('datasync', 'skipped')
       }
-      // 全部发布步骤成功后才打标，固定到开始时采集的提交，避免部署期间 HEAD 变化。
+      // 全部发布步骤成功后才推进源项目版本与打标，避免失败/回滚留下已推进的版本号；
+      // 标签固定到开始时采集的提交，不受写回版本产生的工作区改动影响。
       if (isCanceled()) return finish('canceled', '用户取消')
+      if (!resultBox.rolledBack && !isCanceled()) {
+        const backNote = syncBackAfterRelease(project, ver)
+        if (backNote) log(backNote.startsWith('已将') ? 'success' : 'warn', backNote)
+      }
       if (!resultBox.rolledBack && !isCanceled() && record.gitHead) {
         const tagName = releaseNotes.defaultTagName(record.version)
         const tagged = await releaseNotes.createTag(project.localPath, tagName, record.gitHead)

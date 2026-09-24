@@ -394,7 +394,7 @@ async function main() {
     console.log('  ✓ deploy.sh 同版本守卫：改动任何服务器状态前直接失败、运行目录零改动')
 
     // ── 11. 版本同步 bumpVersionFiles：各版本文件类型 + 不误伤其他版本号 ──
-    const { detectVersion, bumpVersionFiles } = require('../electron/deploy/version-detector')
+    const { detectVersion, bumpVersionFiles, syncBackVersion } = require('../electron/deploy/version-detector')
     const bumpDir = path.join(tmpRoot, 'bump-proj')
     fs.mkdirSync(path.join(bumpDir, 'server'), { recursive: true })
     fs.mkdirSync(path.join(bumpDir, 'app'), { recursive: true })
@@ -438,10 +438,17 @@ async function main() {
     assert.deepStrictEqual(bumpVersionFiles(flutterDir, '3.0.0', '3.0.1'), [], '旧版本不含 build number 时不动 pubspec')
     assert.deepStrictEqual(bumpVersionFiles(flutterDir, '3.0.0+5', '3.0.1'), ['pubspec.yaml'])
     assert.ok(fs.readFileSync(path.join(flutterDir, 'pubspec.yaml'), 'utf8').includes('version: 3.0.1'), 'pubspec 应整体替换为发布版本')
+    // syncBackVersion（发布成功后写回源项目）：一致零改动 / 无版本文件 / 联动写回幂等
+    assert.deepStrictEqual(syncBackVersion(bumpDir, '2.0.1'), { version: '2.0.1', changed: [] }, '版本已一致时写回零改动')
+    assert.deepStrictEqual(syncBackVersion(flutterDir, '3.0.2'), { version: '3.0.1', changed: ['pubspec.yaml'] }, '写回应联动全部版本声明')
+    assert.ok(fs.readFileSync(path.join(flutterDir, 'pubspec.yaml'), 'utf8').includes('version: 3.0.2'), '写回后文件内容为发布版本')
+    assert.deepStrictEqual(syncBackVersion(path.join(tmpRoot, 'no-version-dir'), '1.0.0'), { version: '', changed: [] }, '目录不存在/无版本文件时不报错零改动')
+    fs.mkdirSync(path.join(tmpRoot, 'no-version-dir'), { recursive: true })
+    assert.deepStrictEqual(syncBackVersion(path.join(tmpRoot, 'no-version-dir'), '1.0.0'), { version: '', changed: [] }, '无版本声明的目录零改动')
     passed += 1
-    console.log('  ✓ bumpVersionFiles：五类版本文件同步、parent/依赖/node_modules 不误伤、零改动幂等')
+    console.log('  ✓ bumpVersionFiles：五类版本文件同步、parent/依赖/node_modules 不误伤、零改动幂等；syncBackVersion 写回联动')
 
-    // ── 12. 手动版本自动同步 + 打包读项目版本：发布 5.0.1 时项目 5.0.0 联动升级 ──
+    // ── 12. 手动版本自动同步 + 打包读项目版本：发布 5.0.1 时项目 5.0.0 联动升级，成功后写回源项目 ──
     const proj4Dir = path.join(tmpRoot, 'proj-bump')
     fs.mkdirSync(path.join(proj4Dir, 'server'), { recursive: true })
     fs.writeFileSync(path.join(proj4Dir, 'VERSION'), '5.0.0\n')
@@ -493,21 +500,23 @@ async function main() {
     const { record: recBump, events: evBump } = await runDeploy(proj4.id)
     assert.strictEqual(recBump.status, 'success', `版本同步发布应成功: ${recBump.message}\n${evBump.logs.map((l) => l.text).join('\n')}`)
     assert.strictEqual(recBump.version, '5.0.1')
-    assert.strictEqual(fs.readFileSync(path.join(proj4Dir, 'VERSION'), 'utf8').trim(), '5.0.0', '源项目 VERSION 保持原值；构建副本同步版本')
+    assert.strictEqual(fs.readFileSync(path.join(proj4Dir, 'VERSION'), 'utf8').trim(), '5.0.1', '发布成功后源项目 VERSION 写回发布版本')
     const proj4Pom = fs.readFileSync(path.join(proj4Dir, 'server', 'pom.xml'), 'utf8')
-    assert.ok(proj4Pom.includes('<version>5.0.0</version>'), '源项目 pom.xml 保持原值')
+    assert.ok(proj4Pom.includes('<version>5.0.1</version>'), '源项目 pom.xml 直属版本随发布写回')
     assert.ok(proj4Pom.includes('<version>3.5.0</version>'), 'pom parent 版本不受影响')
     assert.ok(evBump.logs.some((l) => l.text.includes('项目版本 5.0.0 → 5.0.1') && l.text.includes('VERSION、server/pom.xml')), '日志应说明同步了哪些文件')
+    assert.ok(evBump.logs.some((l) => l.text.includes('已将源项目版本 5.0.0 → 5.0.1') && l.text.includes('VERSION、server/pom.xml')), '日志应说明写回了哪些源项目文件')
     assert.strictEqual(fs.readFileSync(path.join(SERVER_ROOT, 'CURRENT'), 'utf8').trim(), 'app-v5.0.1-301', '服务器应运行同步版本后的产物')
     // 关闭自动同步：打包成功但产物版本落后 → 失败信息指出项目版本与发布版本的偏差
     const proj5 = mkProj('6.0.0', false)
     const { record: recNoBump } = await runDeploy(proj5.id)
     assert.strictEqual(recNoBump.status, 'failed')
     assert.ok(recNoBump.message.includes('打包后仍无匹配产物'), `消息应提示打包后无匹配产物: ${recNoBump.message}`)
-    assert.ok(recNoBump.message.includes('项目版本文件仍为 5.0.0（VERSION），与发布版本 6.0.0 不一致'), `消息应指出版本偏差: ${recNoBump.message}`)
+    assert.ok(recNoBump.message.includes('项目版本文件仍为 5.0.1（VERSION），与发布版本 6.0.0 不一致'), `消息应指出版本偏差: ${recNoBump.message}`)
+    assert.strictEqual(fs.readFileSync(path.join(proj4Dir, 'VERSION'), 'utf8').trim(), '5.0.1', '发布失败不写回源项目版本')
     deployProjects.remove(proj4.id); deployProjects.remove(proj5.id)
     passed += 1
-    console.log('  ✓ 手动版本自动同步：VERSION+pom 联动升级→打包读新版本→发布成功；关闭同步时失败信息指出偏差')
+    console.log('  ✓ 手动版本自动同步：VERSION+pom 联动升级→打包读新版本→发布成功→写回源项目；失败/关闭同步时不写回')
 
     // ── 11. CURRENT 指针由本工具负责：项目升级脚本不写指针时也必须记录当前版本 ──
     // 背景：契约里 CURRENT（内容 = release 目录名）由部署工具维护。若项目脚本不写、工具也不写，

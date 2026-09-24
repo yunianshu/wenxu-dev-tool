@@ -269,6 +269,21 @@ function bumpVersionFiles(projectDir, oldVersion, newVersion) {
   return changed
 }
 
+/**
+ * 发布成功后把源项目版本写回发布版本：手动输入的发布版本只改过构建副本，
+ * 源项目版本文件不跟上，则每次发布都显示旧版本起步（如 1.0.5 → 1.0.9）。
+ * 与 bumpVersionFiles 同一定位规则（解析值等于当前版本才替换），失败零改动、幂等。
+ * 返回 { version, changed }：version 为写回前检测到的版本（空表示无可识别版本），
+ * changed 为改动的文件相对路径列表。
+ */
+function syncBackVersion(projectDir, releasedVersion) {
+  const cur = detectVersion(projectDir)
+  if (!cur.version || !releasedVersion || cur.version === releasedVersion) {
+    return { version: cur.version, changed: [] }
+  }
+  return { version: cur.version, changed: bumpVersionFiles(projectDir, cur.version, releasedVersion) }
+}
+
 function detectVersion(projectDir) {
   const dir = projectDir
   if (!dir || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
@@ -298,4 +313,4 @@ function detectVersion(projectDir) {
   return { version: '', source: '' }
 }
 
-module.exports = { detectVersion, bumpVersionFiles }
+module.exports = { detectVersion, bumpVersionFiles, syncBackVersion }

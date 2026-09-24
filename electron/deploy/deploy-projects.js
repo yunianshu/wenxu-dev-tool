@@ -113,7 +113,7 @@ function defaultProject() {
     // 脚本部署：产物目录（相对项目根，放 tar.gz/tgz/zip 发布包）与升级入口脚本名；
     // 环境引导开关：服务器缺 Java17 / pg_dump 时自动装用户态环境（不动系统）；
     // 打包命令：配置后每次在隔离项目副本中执行（如 bash package.sh）；
-    // 版本同步：只更新本次构建副本的版本声明，失败不改变源项目；
+    // 版本同步：打包在临时副本中改版本声明，失败不改变源项目；发布成功后把源项目版本文件写回发布版本；
     // 发布说明：项目遵循「release-notes-<版本>.md 随版本提供」约定而目标版本缺失时，打包前自动生成初稿
     scriptMode: { artifactDir: 'release', upgradeScript: 'upgrade.sh', bootstrapJava: false, bootstrapPgdump: false, packageCommand: '', packageTimeoutSec: 900, autoBumpVersion: true, autoReleaseNotes: true },
     // 项目级发布策略：跨环境统一的开关与保留份数；数据库备份配置按环境存放于 targets[].db

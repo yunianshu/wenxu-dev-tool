@@ -58,7 +58,7 @@
             <span class="f-mini">秒超时</span>
           </div>
           <div class="f-row check-row">
-            <el-checkbox v-model="form.scriptMode.autoBumpVersion">打包前自动同步项目版本号</el-checkbox>
+            <el-checkbox v-model="form.scriptMode.autoBumpVersion">自动同步项目版本号（成功发布后写回源项目）</el-checkbox>
             <el-checkbox v-model="form.scriptMode.autoReleaseNotes">缺失发布说明时自动生成初稿</el-checkbox>
           </div>
                     <div class="f-row check-row">
