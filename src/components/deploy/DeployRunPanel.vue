@@ -37,24 +37,28 @@
     </div>
     <div class="run-output">
       <section class="deploy-stages" aria-label="部署阶段">
-      <div class="section-heading">
-        <h2>{{ runTitle }}</h2>
-        <span v-if="hasRun" class="run-stat">{{ doneCount }}/{{ stageTotal }} · <span class="mono">{{ fmtElapsed(elapsedMs) }}</span></span>
-        <span v-else class="run-stat">{{ stageTotal }} 个阶段</span>
-      </div>
-      <div class="run-track" :class="runTrackClass" role="progressbar" :aria-valuenow="runPercent" :aria-valuemin="0" :aria-valuemax="100" :aria-label="`${runTitle}，已结束 ${doneCount} 个阶段`"><div class="run-fill" :style="{ width: runPercent + '%' }" /></div>
-    <div class="stages">
-      <div
-        v-for="(s, i) in stageList"
-        :key="s.id"
-        class="stage-chip"
-        :class="stageClass(s.id)"
-      >
-        <span class="stage-idx">{{ stageMark(s.id) || i + 1 }}</span>
-        <span>{{ s.label }}</span>
-        <span class="stage-dur">{{ stageDur(s.id) || stageStatus(s.id) }}</span>
-      </div>
-    </div>
+        <div class="run-heading">
+          <div class="run-heading-title"><span class="run-status-dot" :class="runTrackClass" /><h2>{{ runTitle }}</h2></div>
+          <span v-if="hasRun" class="run-elapsed mono">{{ fmtElapsed(elapsedMs) }}</span>
+        </div>
+        <div class="run-summary">
+          <span v-if="hasRun">{{ successCount }} 已完成<span v-if="skippedCount"> · {{ skippedCount }} 已跳过</span><span v-if="failedCount"> · {{ failedCount }} 失败</span><span v-if="rollbackCount"> · {{ rollbackCount }} 已回滚</span></span>
+          <span v-else>准备就绪 · {{ stageTotal }} 个阶段</span>
+          <span class="run-fraction mono">{{ doneCount }}/{{ stageTotal }}</span>
+        </div>
+        <div class="run-track" :class="runTrackClass" role="progressbar" :aria-valuenow="runPercent" :aria-valuemin="0" :aria-valuemax="100" :aria-label="`${runTitle}，已结束 ${doneCount} 个阶段`"><div class="run-fill" :style="{ width: runPercent + '%' }" /></div>
+        <div class="stages">
+          <div
+            v-for="(s, i) in stageList"
+            :key="s.id"
+            class="stage-chip"
+            :class="stageClass(s.id)"
+          >
+            <span class="stage-idx" aria-hidden="true">{{ stageMark(s.id) || i + 1 }}</span>
+            <span class="stage-label">{{ s.label }}</span>
+            <span class="stage-dur">{{ stageDur(s.id) || stageStatus(s.id) }}</span>
+          </div>
+        </div>
       </section>
 
       <section class="deploy-card-log">
@@ -298,6 +302,10 @@ const doneCount = computed(() => STAGE_LIST.filter((s) => {
   const st = state.deploy.stages[s.id]
   return !!st && ['success', 'failed', 'skipped', 'rollback'].includes(st.status)
 }).length)
+const successCount = computed(() => STAGE_LIST.filter((s) => state.deploy.stages[s.id]?.status === 'success').length)
+const skippedCount = computed(() => STAGE_LIST.filter((s) => state.deploy.stages[s.id]?.status === 'skipped').length)
+const failedCount = computed(() => STAGE_LIST.filter((s) => state.deploy.stages[s.id]?.status === 'failed').length)
+const rollbackCount = computed(() => STAGE_LIST.filter((s) => state.deploy.stages[s.id]?.status === 'rollback').length)
 
 const runPercent = computed(() => (stageTotal.value ? Math.round((doneCount.value / stageTotal.value) * 100) : 0))
 
@@ -313,7 +321,8 @@ const runTitle = computed(() => {
 })
 
 const runTrackClass = computed(() => {
-  if (state.deploy.running) return ''
+  if (state.deploy.running) return 'is-running'
+  if (!hasRun.value) return 'is-idle'
   return runFailed.value ? 'is-failed' : 'is-done'
 })
 
@@ -390,7 +399,7 @@ function stageMark(id) {
   const st = state.deploy.stages[id]
   if (!st) return ''
   return {
-    waiting: '·', running: '…', success: '✓', failed: '✗', skipped: '—', rollback: '↩',
+    waiting: '', running: '•', success: '✓', failed: '×', skipped: '–', rollback: '↩',
   }[st.status] || ''
 }
 function stageStatus(id) {
@@ -565,28 +574,40 @@ defineExpose({ doRollback, resetSelection })
 .publish-btn { min-width: 112px; font-size: 13px; font-weight: 500; }
 .publish-button-wrap { display: inline-flex; }
 .rollback-select { width: 132px; }
-.run-output { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 24px; padding-top: 20px; }
+.run-output { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 28px; padding-top: 24px; }
 .section-heading { height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .section-heading h2 { margin: 0; font-size: 14px; font-weight: 600; color: var(--brand-text); }
 .log-actions { display: flex; align-items: center; gap: 4px; }
 .log-actions .el-button { margin: 0; }
-.run-track { height: 4px; margin-bottom: 8px; border-radius: 2px; background: var(--surface-subtle); overflow: hidden; }
-.run-fill { height: 100%; border-radius: 2px; background: var(--brand-accent); transition: width .3s ease; }
+.run-heading { min-height: 28px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.run-heading-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.run-heading h2 { margin: 0; color: var(--brand-text); font-size: 14px; font-weight: 600; }
+.run-status-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--line-strong); }
+.run-status-dot.is-running { background: var(--accent-strong); }
+.run-status-dot.is-done { background: var(--accent-strong); }
+.run-status-dot.is-failed { background: var(--danger); }
+.run-elapsed { color: var(--brand-text); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.run-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 0 10px; color: var(--text-muted); font-size: 11px; }
+.run-fraction { flex: none; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.run-track { height: 3px; margin-bottom: 12px; background: var(--surface-subtle); overflow: hidden; }
+.run-fill { height: 100%; background: var(--accent-strong); transition: width .35s ease; }
 .run-track.is-failed .run-fill { background: var(--danger); }
-.run-stat { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.stages { display: flex; flex-direction: column; gap: 0; }
-.stage-chip { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0; font-size: 12px; color: var(--text-muted); }
-.stage-idx { width: 16px; height: 16px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--text-muted); font-size: 10px; flex: none; }
-.stage-dur { margin-left: auto; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text-muted); }
-.stage-chip.is-running { color: var(--accent-strong); font-weight: 500; }
-.stage-chip.is-running .stage-idx { background: var(--accent-soft); border-color: var(--accent-strong); color: var(--accent-strong); }
+.stages { display: flex; flex-direction: column; gap: 2px; }
+.stage-chip { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 32px; padding: 0 8px; margin: 0 -8px; border-radius: 4px; color: var(--text-muted); font-size: 12px; }
+.stage-idx { width: 20px; display: grid; place-items: center; flex: none; color: var(--text-disabled); font-size: 11px; font-variant-numeric: tabular-nums; }
+.stage-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stage-dur { color: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stage-chip.is-running { background: var(--accent-soft); color: var(--accent-strong); font-weight: 600; }
+.stage-chip.is-running .stage-idx, .stage-chip.is-running .stage-dur { color: var(--accent-strong); }
 .stage-chip.is-success { color: var(--brand-text); }
-.stage-chip.is-success .stage-idx { color: var(--accent-strong); border-color: var(--accent-strong); }
-.stage-chip.is-failed, .stage-chip.is-failed .stage-idx { color: var(--danger); border-color: var(--danger); }
-.stage-chip.is-rollback, .stage-chip.is-rollback .stage-idx { color: var(--el-color-warning); border-color: var(--el-color-warning); }
-.stage-chip.is-skipped .stage-idx { border-color: transparent; }
+.stage-chip.is-success .stage-idx { color: var(--accent-strong); font-size: 14px; }
+.stage-chip.is-failed { background: var(--danger-soft); color: var(--danger); font-weight: 600; }
+.stage-chip.is-failed .stage-idx, .stage-chip.is-failed .stage-dur { color: var(--danger); }
+.stage-chip.is-rollback { background: var(--warning-soft); color: var(--warning); }
+.stage-chip.is-rollback .stage-idx, .stage-chip.is-rollback .stage-dur { color: var(--warning); }
+.stage-chip.is-skipped .stage-idx, .stage-chip.is-skipped .stage-dur { color: var(--text-disabled); }
 .deploy-card-log { min-width: 0; }
-.log-box { height: 264px; overflow: auto; background: #14181f; border-radius: 6px; padding: 16px; font-family: var(--brand-mono); font-size: 12px; line-height: 2; }
+.log-box { height: 326px; overflow: auto; background: #14181f; border-radius: 6px; padding: 16px; font-family: var(--brand-mono); font-size: 12px; line-height: 2; }
 .log-empty { color: #9ba7b5; display: grid; place-items: center; height: 100%; padding: 24px; text-align: center; line-height: 1.7; }
 .log-line { white-space: pre-wrap; word-break: break-word; color: #c0c8d2; }
 .log-ts { color: #9ba7b5; margin-right: 12px; }
@@ -601,7 +622,7 @@ defineExpose({ doRollback, resetSelection })
 .db-restore-alert { margin-bottom: 12px; }
 .db-empty { color: var(--brand-text-sub); font-size: 13px; padding: 20px 0; }
 @media (max-width: 1280px) {
-  .run-output { grid-template-columns: 256px minmax(0, 1fr); gap: 20px; }
+  .run-output { grid-template-columns: 280px minmax(0, 1fr); gap: 20px; }
   .version-summary { gap: 8px; }
   .publish-row { flex-wrap: wrap; }
   .publish-actions { margin-left: auto; }

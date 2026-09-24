@@ -15,14 +15,17 @@ const { spawnSync } = require('child_process')
 
 const ROOT = path.resolve(__dirname, '..')
 const env = { ...process.env }
+// Windows 上环境变量名不区分大小写，但展开为普通对象后 Path 与 PATH 是不同的键。
+// 沿用原键名，避免把原有 Node/npm 目录覆盖掉。
+const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path') || 'PATH'
 
 // rustup 默认装在 ~/.cargo/bin，但常不在 PATH 里
 const cargoBin = path.join(os.homedir(), '.cargo', 'bin')
 const cargoExe = path.join(cargoBin, process.platform === 'win32' ? 'cargo.exe' : 'cargo')
 if (fs.existsSync(cargoExe)) {
-  const parts = String(env.PATH || '').split(path.delimiter)
+  const parts = String(env[pathKey] || '').split(path.delimiter)
   if (!parts.some((p) => p.replace(/[\\/]+$/, '').toLowerCase() === cargoBin.toLowerCase())) {
-    env.PATH = `${cargoBin}${path.delimiter}${env.PATH}`
+    env[pathKey] = `${cargoBin}${path.delimiter}${env[pathKey] || ''}`
     console.log(`[update-local] 已把 ${cargoBin} 加入 PATH`)
   }
 } else {
