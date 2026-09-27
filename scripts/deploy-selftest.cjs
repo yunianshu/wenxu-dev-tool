@@ -31,7 +31,7 @@ const Module = require('module')
 const electronPath = require.resolve('electron')
 require.cache[electronPath] = { id: electronPath, filename: electronPath, loaded: true, exports: stubExports }
 
-const { detectVersion } = require('../electron/deploy/version-detector')
+const { detectVersion, syncBackVersion } = require('../electron/deploy/version-detector')
 const { createMatcher, buildPackage } = require('../electron/deploy/packager')
 const deployProjects = require('../electron/deploy/deploy-projects')
 const { buildDeployArgs, resolveCompose, resolveArtifact, sha256File, deployModeOf } = require('../electron/deploy/deploy-service')
@@ -125,12 +125,18 @@ test('根目录文件优先于子目录', () => {
   })
   assert.deepStrictEqual(detectVersion(dir), { version: '1.1.1', source: 'package.json' })
 })
-test('CHANGELOG 优先于子目录（项目级发布版本权威）', () => {
+test('子目录源码版本优先于旧 CHANGELOG，发布后只写回对应组件', () => {
   const dir = mkProj('v14', {
     'CHANGELOG.md': '# Changelog\n\n## [Unreleased]\n\n## [0.3.0] - 2026-08-01\n',
-    'backend/pom.xml': '<project><version>0.3.0-SNAPSHOT</version></project>',
+    'backend/pom.xml': '<project><parent><version>3.3.5</version></parent><version>0.3.0-SNAPSHOT</version></project>',
+    'frontend/package.json': '{"version":"0.1.0"}',
   })
-  assert.deepStrictEqual(detectVersion(dir), { version: '0.3.0', source: 'CHANGELOG.md' })
+  assert.deepStrictEqual(detectVersion(dir), { version: '0.3.0-SNAPSHOT', source: 'backend/pom.xml' })
+  assert.deepStrictEqual(syncBackVersion(dir, '1.0.8'), { version: '0.3.0-SNAPSHOT', changed: ['backend/pom.xml'] })
+  assert.deepStrictEqual(detectVersion(dir), { version: '1.0.8', source: 'backend/pom.xml' })
+  assert.ok(fs.readFileSync(path.join(dir, 'backend/pom.xml'), 'utf8').includes('<parent><version>3.3.5</version></parent>'))
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(dir, 'frontend/package.json'), 'utf8')).version, '0.1.0')
+  assert.ok(fs.readFileSync(path.join(dir, 'CHANGELOG.md'), 'utf8').includes('## [0.3.0]'))
 })
 
 // ═══════════ 忽略规则 ═══════════

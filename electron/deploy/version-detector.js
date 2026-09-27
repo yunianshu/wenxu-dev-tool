@@ -1,8 +1,8 @@
 /**
  * 版本号自动识别 —— 按方案 §5.2 的优先级从项目目录读取版本号：
- *   VERSION → 项目类型标准版本文件 → CHANGELOG → 手动指定（由调用方决定）
+ *   VERSION → 根目录标准版本文件 → 一级子目录标准版本文件 → CHANGELOG → 手动指定（由调用方决定）
  * 支持：VERSION / package.json / pom.xml / build.gradle(.kts) / pubspec.yaml / *.csproj
- *       / CHANGELOG.md（Keep a Changelog）；根目录均无时探测一级子目录（前后端分离项目）。
+ *       / CHANGELOG.md（Keep a Changelog）；标准文件均无时才使用历史发布版本。
  * 纯 Node 实现，不依赖 Electron，可独立单测。
  */
 const fs = require('fs')
@@ -302,14 +302,16 @@ function detectVersion(projectDir) {
     { v: fromGradle(dir), s: 'build.gradle' },
     { v: fromPubspec(dir), s: 'pubspec.yaml' },
     { v: fromCsproj(dir), s: '*.csproj' },
-    { v: fromChangelog(dir), s: 'CHANGELOG.md' },
   ]
   for (const a of attempts) {
     if (a.v && VERSION_RE.test(a.v)) return { version: a.v, source: a.s }
   }
-  // 根目录与 CHANGELOG 均无 → 前后端分离等项目，探测一级子目录
+  // 根目录无标准版本文件 → 前后端分离等项目，先探测一级子目录。
+  // CHANGELOG 记录的是历史发布版本，可能落后于当前源码版本。
   const sub = fromSubdirs(dir)
   if (sub) return { version: sub.v, source: sub.s }
+  const changelogVersion = fromChangelog(dir)
+  if (changelogVersion && VERSION_RE.test(changelogVersion)) return { version: changelogVersion, source: 'CHANGELOG.md' }
   return { version: '', source: '' }
 }
 
