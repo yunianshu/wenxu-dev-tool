@@ -308,6 +308,7 @@ async function main() {
       'set -euo pipefail',
       'cd -- "$(dirname -- "${BASH_SOURCE[0]}")"',
       'echo "[mkpkg] building v2.0.0 ..."',
+      'if [ -n "${PLM_SOURCE_PROJECT_DIR:-}" ]; then printf \'%s\\n\' "$PLM_SOURCE_PROJECT_DIR" > "$(dirname -- "$PLM_SOURCE_PROJECT_DIR")/pkg-env-marker.txt"; fi',
       'touch .pkg-ran',
       'name=app-v2.0.0-011',
       'd=".staging/$name"; rm -rf -- "$d"; mkdir -p -- "$d"',
@@ -344,6 +345,13 @@ async function main() {
     assert.ok(evAuto.logs.some((l) => l.text.includes('[打包] [mkpkg] building')), '打包输出应流入发布日志')
     assert.ok(evAuto.logs.some((l) => l.text.includes('产物未就绪')), '检查阶段应提示产物未就绪并推迟')
     assert.strictEqual(fs.readFileSync(path.join(SERVER_ROOT, 'CURRENT'), 'utf8').trim(), 'app-v2.0.0-011', '服务器应运行自动打出的新版本')
+    const pkgEnvMarker = path.join(tmpRoot, 'pkg-env-marker.txt')
+    assert.ok(fs.existsSync(pkgEnvMarker), '打包脚本应收到 PLM_SOURCE_PROJECT_DIR')
+    assert.strictEqual(
+      fs.readFileSync(pkgEnvMarker, 'utf8').trim().replace(/\\/g, '/'),
+      proj2Dir.replace(/\\/g, '/'),
+      'PLM_SOURCE_PROJECT_DIR 应指向源项目根（构建副本执行时的伴生资源定位）',
+    )
     // 打包失败（命令退出非 0）→ 整单失败
     const proj3 = deployProjects.save(deployProjects.normalizeProject({
       name: '打包失败项目', localPath: proj2Dir, deployMode: 'script',

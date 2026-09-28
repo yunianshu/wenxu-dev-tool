@@ -423,9 +423,9 @@ function findGitBashDir() {
 }
 
 /** 本地 shell 命令（打包脚本等）的子进程环境：把 Git Bash 前置到 PATH，
- * 与测试入口 run-selftests.cjs 的处理一致；仅影响本次 spawn。 */
-function localShellEnv() {
-  const env = { ...process.env }
+ * 与测试入口 run-selftests.cjs 的处理一致；baseEnv 缺省为 process.env，仅影响本次 spawn。 */
+function localShellEnv(baseEnv) {
+  const env = { ...(baseEnv || process.env) }
   const bashDir = findGitBashDir()
   if (bashDir) {
     const key = Object.keys(env).find((k) => k.toLowerCase() === 'path') || 'Path'
@@ -437,16 +437,21 @@ function localShellEnv() {
 /**
  * 执行项目打包命令（script 形态产物缺失时自动构建）：
  * 在项目根以 shell 运行 packageCommand，输出按行流到发布日志（[打包] 前缀）；
+ * sourceDir 为源项目根（在构建副本里执行时与 cwd 不同），经
+ * PLM_SOURCE_PROJECT_DIR 传给打包命令，供其定位源项目伴生资源（如仓库旁的 .tools）；
  * 超时杀整棵进程树；用户取消时同样终止。返回 { ok, problem? }。
  */
-function runPackageCommand(project) {
+function runPackageCommand(project, sourceDir) {
   const sm = project.scriptMode || {}
   const cmd = String(sm.packageCommand || '').trim()
   const timeoutMs = Math.max(30, Number(sm.packageTimeoutSec) || 900) * 1000
+  const baseEnv = sourceDir && sourceDir !== project.localPath
+    ? { ...process.env, PLM_SOURCE_PROJECT_DIR: sourceDir }
+    : process.env
   return new Promise((resolve) => {
     let child
     try {
-      child = spawn(cmd, { shell: true, cwd: project.localPath, env: localShellEnv(), windowsHide: true })
+      child = spawn(cmd, { shell: true, cwd: project.localPath, env: localShellEnv(baseEnv), windowsHide: true })
     } catch (e) {
       return resolve({ ok: false, problem: `打包命令无法启动: ${(e && e.message) || e}` })
     }
@@ -742,7 +747,7 @@ async function run(projectId, targetId) {
         if (syncNote) log('warn', syncNote)
         const rnNote = ensureReleaseNotesForPackage(buildProject, ver, gitInfo)
         if (rnNote) log('warn', rnNote)
-        const pc = await runPackageCommand(buildProject)
+        const pc = await runPackageCommand(buildProject, project.localPath)
         if (!pc.ok) {
           log('error', pc.problem)
           tracker.end('package', 'failed', t1)
