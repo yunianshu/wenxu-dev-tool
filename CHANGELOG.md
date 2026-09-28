@@ -3,6 +3,10 @@
 按版本从新到旧排列。标题里的时间是该版本发布的时刻（本地时区，精确到分钟），
 取自仓库里对应的发布提交。历史记录依据仓库提交整理，自 1.4.43 起收录；更早版本未整理。
 
+## 1.4.105 · 2026-09-28 17:22
+
+- 部署：版本号识别与同步支持 pyproject.toml（Python 项目）——识别 `[project]` 的 `version`（PEP 621），无 `[project]` 时回退 `[tool.poetry]`；版本同步（发布前构建副本、发布成功后写回源项目）同样联动根目录与一级子目录的 pyproject.toml，且只改版本声明行，dependencies 等数组里的同值字符串不受影响。此前 Python 双组件项目（如 SecWatch：server/pom.xml 与 worker/pyproject.toml 要求同版）只有 pom 被同步，pyproject 留在旧版本，下次发布即被项目自身的版本一致性检查拦下。新增自测：pom+pyproject 同版联动升级、poetry 回退、依赖数组不误伤。
+
 ## 1.4.104 · 2026-09-28 16:13
 
 - 部署：修复脚本部署形态的打包命令在 Windows 上被 WSL bash 截胡——装了 WSL 后（`C:\Windows\System32\bash.exe`），而应用进程 PATH 里只有 `Git\cmd` 不含 `Git\bin`，打包命令 `bash package.sh` 经 cmd 解析命中 WSL 的 Linux bash：WSL 里没有 Windows 构建工具链（uv/maven 等，bash 的 exec 也不解析 .exe 后缀），打包直接 127 退出（表现为 `exec: uv: not found`，即使本机明明装着 uv）。现在执行打包命令时把检测到的 Git Bash（PATH 中 `Git\cmd` 反推、常见安装位置探测）前置到该子进程的 PATH 首位，裸 `bash` 稳定命中 Git Bash，与测试入口 run-selftests.cjs 的既有处理一致；未装 Git 时行为不变。新增自测：剥掉 Git 目录的窄 PATH（模拟资源管理器启动的应用环境）下真实 spawn 断言命中 MINGW64，并带「不前置则命中 WSL」的对照。
