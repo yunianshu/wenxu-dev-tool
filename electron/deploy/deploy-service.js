@@ -395,6 +395,46 @@ function ensureReleaseNotesForPackage(project, ver, gitInfo) {
 }
 
 /**
+ * Windows：定位 Git Bash 的 bin 目录。应用的进程 PATH 通常只有 Git\cmd（不含 bash.exe），
+ * 裸 bash 命令会命中 System32 的 WSL bash——WSL 里跑不了 Windows 的打包工具链
+ * （如 uv/maven，bash 的 exec 也不解析 .exe 后缀）。返回 null 表示未装 Git。
+ */
+let cachedGitBashDir
+function findGitBashDir() {
+  if (process.platform !== 'win32') return null
+  if (cachedGitBashDir !== undefined) return cachedGitBashDir
+  const roots = []
+  for (const raw of String(process.env.PATH || '').split(';')) {
+    const dir = raw.trim().replace(/[\\/]+$/, '')
+    if (/\\cmd$/i.test(dir)) roots.push(dir.slice(0, -4))
+  }
+  for (const key of ['ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA']) {
+    const base = process.env[key]
+    if (base) roots.push(key === 'LOCALAPPDATA' ? path.join(base, 'Programs', 'Git') : path.join(base, 'Git'))
+  }
+  cachedGitBashDir = null
+  for (const root of roots) {
+    if (fs.existsSync(path.join(root, 'bin', 'bash.exe'))) {
+      cachedGitBashDir = path.join(root, 'bin')
+      break
+    }
+  }
+  return cachedGitBashDir
+}
+
+/** 本地 shell 命令（打包脚本等）的子进程环境：把 Git Bash 前置到 PATH，
+ * 与测试入口 run-selftests.cjs 的处理一致；仅影响本次 spawn。 */
+function localShellEnv() {
+  const env = { ...process.env }
+  const bashDir = findGitBashDir()
+  if (bashDir) {
+    const key = Object.keys(env).find((k) => k.toLowerCase() === 'path') || 'Path'
+    env[key] = `${bashDir};${env[key] || ''}`
+  }
+  return env
+}
+
+/**
  * 执行项目打包命令（script 形态产物缺失时自动构建）：
  * 在项目根以 shell 运行 packageCommand，输出按行流到发布日志（[打包] 前缀）；
  * 超时杀整棵进程树；用户取消时同样终止。返回 { ok, problem? }。
@@ -406,7 +446,7 @@ function runPackageCommand(project) {
   return new Promise((resolve) => {
     let child
     try {
-      child = spawn(cmd, { shell: true, cwd: project.localPath, env: process.env, windowsHide: true })
+      child = spawn(cmd, { shell: true, cwd: project.localPath, env: localShellEnv(), windowsHide: true })
     } catch (e) {
       return resolve({ ok: false, problem: `打包命令无法启动: ${(e && e.message) || e}` })
     }
@@ -1365,6 +1405,7 @@ module.exports = {
   listDbBackups, restoreDbBackup, assertDbBackupName,
   setEmitter, STAGES, resolveVersion, buildDeployArgs,
   resolveCompose, resolveArtifact, sha256File, releaseDirNameOf, deployModeOf, runPackageCommand,
+  findGitBashDir, localShellEnv,
   getDataSync, validateDataSync, buildDataSyncCommand,
   getDataImport, renderImportCommand, ensureReleaseNotesForPackage,
 }
