@@ -438,6 +438,42 @@ async function main() {
     assert.deepStrictEqual(bumpVersionFiles(flutterDir, '3.0.0', '3.0.1'), [], '旧版本不含 build number 时不动 pubspec')
     assert.deepStrictEqual(bumpVersionFiles(flutterDir, '3.0.0+5', '3.0.1'), ['pubspec.yaml'])
     assert.ok(fs.readFileSync(path.join(flutterDir, 'pubspec.yaml'), 'utf8').includes('version: 3.0.1'), 'pubspec 应整体替换为发布版本')
+    // Python 场景：SecWatch 形态 = server/pom.xml 与 worker/pyproject.toml 双组件同版联动
+    const pyDir = path.join(tmpRoot, 'py-proj')
+    fs.mkdirSync(path.join(pyDir, 'server'), { recursive: true })
+    fs.mkdirSync(path.join(pyDir, 'worker'), { recursive: true })
+    fs.writeFileSync(path.join(pyDir, 'server', 'pom.xml'), '<project><version>0.1.0</version></project>')
+    fs.writeFileSync(path.join(pyDir, 'worker', 'pyproject.toml'), [
+      '[project]',
+      'name = "secwatch-worker"',
+      'version = "0.1.0"',
+      'dependencies = ["somepkg==0.1.0", "other>=1.0"]',
+      '',
+      '[tool.uv]',
+      'dev-dependencies = []',
+      '',
+    ].join('\n'))
+    const pyDetect = detectVersion(pyDir)
+    assert.strictEqual(pyDetect.version, '0.1.0', 'py 项目 detect 应解析子目录版本')
+    assert.strictEqual(pyDetect.source, 'server/pom.xml', `子目录按字母序先命中 server/pom.xml，实际：${pyDetect.source}`)
+    const pyBumped = bumpVersionFiles(pyDir, '0.1.0', '0.1.1')
+    assert.deepStrictEqual(pyBumped.sort(), ['server/pom.xml', 'worker/pyproject.toml'].sort(), `pom 与 pyproject 应联动同步: ${pyBumped}`)
+    const pyToml = fs.readFileSync(path.join(pyDir, 'worker', 'pyproject.toml'), 'utf8')
+    assert.ok(pyToml.includes('version = "0.1.1"'), 'pyproject [project] 版本应升级')
+    assert.ok(pyToml.includes('"somepkg==0.1.0"'), 'dependencies 数组里的同值字符串不受影响')
+    assert.ok(!pyToml.includes('0.1.1", "other'), '不得把依赖行误当版本声明')
+    // poetry 布局回退 + 根目录 pyproject 检测
+    const poetryDir = path.join(tmpRoot, 'poetry-app')
+    fs.mkdirSync(poetryDir, { recursive: true })
+    fs.writeFileSync(path.join(poetryDir, 'pyproject.toml'), [
+      '[tool.poetry]',
+      'name = "legacy"',
+      'version = "1.0.0"',
+      '',
+    ].join('\n'))
+    assert.deepStrictEqual(detectVersion(poetryDir), { version: '1.0.0', source: 'pyproject.toml' }, '无 [project] 时回退解析 [tool.poetry]')
+    assert.deepStrictEqual(bumpVersionFiles(poetryDir, '1.0.0', '1.0.1'), ['pyproject.toml'])
+    assert.ok(fs.readFileSync(path.join(poetryDir, 'pyproject.toml'), 'utf8').includes('version = "1.0.1"'), 'poetry 版本应升级')
     // syncBackVersion（发布成功后写回源项目）：一致零改动 / 无版本文件 / 联动写回幂等
     assert.deepStrictEqual(syncBackVersion(bumpDir, '2.0.1'), { version: '2.0.1', changed: [] }, '版本已一致时写回零改动')
     assert.deepStrictEqual(syncBackVersion(flutterDir, '3.0.2'), { version: '3.0.1', changed: ['pubspec.yaml'] }, '写回应联动全部版本声明')

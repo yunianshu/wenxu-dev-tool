@@ -1,8 +1,8 @@
 /**
  * 版本号自动识别 —— 按方案 §5.2 的优先级从项目目录读取版本号：
  *   VERSION → 根目录标准版本文件 → 一级子目录标准版本文件 → CHANGELOG → 手动指定（由调用方决定）
- * 支持：VERSION / package.json / pom.xml / build.gradle(.kts) / pubspec.yaml / *.csproj
- *       / CHANGELOG.md（Keep a Changelog）；标准文件均无时才使用历史发布版本。
+ * 支持：VERSION / package.json / pom.xml / build.gradle(.kts) / pubspec.yaml / pyproject.toml
+ *       / *.csproj / CHANGELOG.md（Keep a Changelog）；标准文件均无时才使用历史发布版本。
  * 纯 Node 实现，不依赖 Electron，可独立单测。
  */
 const fs = require('fs')
@@ -58,6 +58,11 @@ function fromGradle(dir) {
 /** pubspec.yaml（Flutter）：version: 1.2.3(+build) */
 function fromPubspec(dir) {
   return fromPubspecFile(path.join(dir, 'pubspec.yaml'))
+}
+
+/** pyproject.toml（PEP 621）：[project] version = "x"，其次 [tool.poetry] version = "x" */
+function fromPyproject(dir) {
+  return fromPyprojectFile(path.join(dir, 'pyproject.toml'))
 }
 
 /** *.csproj（.NET）：<Version> 优先，其次 <VersionPrefix> / <AssemblyVersion> */
@@ -123,6 +128,7 @@ function fromSubdirs(dir) {
       { v: fromPom(subDir), s: `${sub}/pom.xml` },
       { v: fromGradle(subDir), s: `${sub}/build.gradle` },
       { v: fromPubspec(subDir), s: `${sub}/pubspec.yaml` },
+      { v: fromPyproject(subDir), s: `${sub}/pyproject.toml` },
       { v: fromCsproj(subDir), s: `${sub}/*.csproj` },
     ]
     for (const a of attempts) {
@@ -182,6 +188,11 @@ const FILE_REWRITERS = [
     detect: (dir) => fromPubspecFile(path.join(dir, 'pubspec.yaml')),
     rewrite: (text, oldV, nv) => text.replace(new RegExp(`(^version:\\s*['"]?)${escapeRe(oldV)}(['"]?\\s*$)`, 'm'), `$1${nv}$2`),
   },
+  {
+    file: 'pyproject.toml',
+    detect: fromPyproject,
+    rewrite: rewritePyprojectVersion,
+  },
 ]
 
 /** build.gradle(.kts)：version 'x.y.z' / version = "x.y.z"（与 fromGradle 同一定位） */
@@ -199,6 +210,56 @@ function fromPubspecFile(p) {
   if (!fs.existsSync(p)) return ''
   const m = fs.readFileSync(p, 'utf8').match(/^version:\s*(['"]?)([^'"\s]+)\1\s*$/m)
   return m ? m[2].trim() : ''
+}
+
+/**
+ * pyproject.toml 的解析与改写共用同一套「节内定位」：先 [project]（PEP 621），
+ * 再 [tool.poetry]；只在节内匹配行首的 version = "x"，dependencies 等数组里的
+ * 同值字符串不受影响。
+ */
+function pyprojectVersionOf(text) {
+  for (const want of ['project', 'tool.poetry']) {
+    let section = ''
+    for (const line of text.split(/\r?\n/)) {
+      const h = line.match(/^\s*\[([^\]]+)\]/)
+      if (h) { section = h[1].trim(); continue }
+      if (section === want) {
+        const m = line.match(/^version\s*=\s*["']([^"'\s]+)["']/)
+        if (m) return m[1].trim()
+      }
+    }
+  }
+  return ''
+}
+
+function rewritePyprojectVersion(text, oldV, nv) {
+  const o = escapeRe(oldV)
+  const eol = text.includes('\r\n') ? '\r\n' : '\n'
+  for (const want of ['project', 'tool.poetry']) {
+    let section = ''
+    const lines = text.split(/\r?\n/)
+    for (let i = 0; i < lines.length; i++) {
+      const h = lines[i].match(/^\s*\[([^\]]+)\]/)
+      if (h) { section = h[1].trim(); continue }
+      if (section === want) {
+        const re = new RegExp(`^(version\\s*=\\s*["'])${o}(["'])`)
+        if (re.test(lines[i])) {
+          lines[i] = lines[i].replace(re, `$1${nv}$2`)
+          return lines.join(eol)
+        }
+      }
+    }
+  }
+  return text
+}
+
+function fromPyprojectFile(p) {
+  if (!fs.existsSync(p)) return ''
+  try {
+    return pyprojectVersionOf(fs.readFileSync(p, 'utf8'))
+  } catch {
+    return ''
+  }
 }
 
 /** csproj 版本标签（与 fromCsproj 的候选顺序一致），返回改写后文本或原文 */
@@ -301,6 +362,7 @@ function detectVersion(projectDir) {
     { v: fromPom(dir), s: 'pom.xml' },
     { v: fromGradle(dir), s: 'build.gradle' },
     { v: fromPubspec(dir), s: 'pubspec.yaml' },
+    { v: fromPyproject(dir), s: 'pyproject.toml' },
     { v: fromCsproj(dir), s: '*.csproj' },
   ]
   for (const a of attempts) {
