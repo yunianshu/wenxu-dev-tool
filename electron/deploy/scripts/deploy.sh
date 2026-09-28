@@ -348,7 +348,39 @@ backup_code() {
   fi
   mkdir -p "$BACKUPS"
   local out="$BACKUPS/app_${TS}.tar.gz"
-  tar -czf "$out" -C "$OLD_RELEASE" . 2>/dev/null || fail_rollback "代码备份失败: $out"
+  local work
+  work=$(umask 077; mktemp -d "$BACKUPS/.code-backup.XXXXXX") || fail_rollback "无法创建代码备份临时目录"
+  if ! (
+    umask 077
+    trap 'rm -f -- "$work/archive.tar.gz" "$work/error.log" "$work/entries" "$work/rules.raw" "$work/rules"; rmdir -- "$work"' EXIT
+    local -a excludes=()
+    # 首次接管时旧目录还没有规则，从本次校验过的发布包读取项目声明。
+    if ! unzip -Z1 "$UPLOADS/$PACKAGE" > "$work/entries" 2> "$work/error.log"; then
+      err "无法读取发布包中的代码备份规则"
+      tail -n 12 "$work/error.log" | sed 's/^/[ERROR] /'
+      exit 1
+    fi
+    if grep -Fxq '.backupignore' "$work/entries"; then
+      if ! unzip -p "$UPLOADS/$PACKAGE" .backupignore > "$work/rules.raw" 2> "$work/error.log"; then
+        err "读取 .backupignore 失败"
+        tail -n 12 "$work/error.log" | sed 's/^/[ERROR] /'
+        exit 1
+      fi
+      # 使用 tar 排除模式，支持注释、空行与 Windows 换行；不自动猜测数据目录。
+      awk '{ sub(/\r$/, ""); if ($0 !~ /^[[:space:]]*(#|$)/) print }' "$work/rules.raw" > "$work/rules" || exit 1
+      excludes+=(--exclude-from="$work/rules")
+      log "已加载项目代码备份排除规则（数据库备份仍按原配置执行）"
+    fi
+    if ! tar -czf "$work/archive.tar.gz" "${excludes[@]}" -C "$OLD_RELEASE" . 2> "$work/error.log"; then
+      err "代码备份打包失败，旧版本保持运行；错误详情："
+      tail -n 12 "$work/error.log" | sed 's/^/[ERROR] /'
+      exit 1
+    fi
+    gzip -t "$work/archive.tar.gz" || { err "代码备份压缩校验失败"; exit 1; }
+    mv -- "$work/archive.tar.gz" "$out" || { err "保存代码备份失败"; exit 1; }
+  ); then
+    fail_rollback "代码备份失败: $out"
+  fi
   ok "当前版本已备份: $out"
 }
 
