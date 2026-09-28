@@ -33,6 +33,9 @@ export function emptyProject() {
     name: '',
     localPath: '',
     version: { strategy: 'auto', manual: '' },
+    // 配置方式：quick = 极简配置（只填服务器选择/服务器项目地址/是否同步本地数据，
+    // 其余发布时按项目自动生成）；manual = 完整配置
+    configMode: 'quick',
     // 部署形态：docker = Compose 编排；script = 项目自带脚本（发布包 + upgrade.sh）
     deployMode: 'auto',
     productionTargetId: '',

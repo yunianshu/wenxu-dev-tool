@@ -1554,9 +1554,82 @@ function applyPlan(projectId, targetId, plan) {
   return { ok: !!(r && r.ok), id: (r && r.id) || projectId }
 }
 
+/**
+ * 极简配置发布：按项目自动生成部署配置并写回（configMode='quick' 的项目在发布前调用）。
+ * 用户输入只有三项——服务器选择（target.server）、服务器项目地址（target.remotePath）、
+ * 是否同步本地数据（target.dataSync.enabled）；本函数生成其余全部派生配置：
+ * 部署形态 / Compose 文件 / 脚本参数 / 版本策略 / 健康检查 / 数据库备份 / 数据同步明细。
+ * 服务器地址、凭据与用户输入的部署目录不会被改动；导入命令的应用账号密码始终留空（凭据不自动生成）。
+ * @param {{log?: (level: string, text: string) => void}} opts
+ * @returns {Promise<{ok: boolean, error?: string, project?: object, plan?: object}>}
+ */
+async function generateQuickConfig(projectId, targetId, opts = {}) {
+  const log = typeof opts.log === 'function' ? opts.log : () => {}
+  const project = projects.list().find((p) => p.id === projectId)
+  if (!project) return { ok: false, error: '项目配置不存在，请先保存项目' }
+  const target = (project.targets || []).find((t) => t.id === targetId) || (project.targets || [])[0]
+  if (!target) return { ok: false, error: '项目缺少部署目标，请先保存项目' }
+  if (!target.server || !target.server.host) return { ok: false, error: '请先选择部署服务器' }
+  if (!String(target.remotePath || '').trim()) return { ok: false, error: '请先填写服务器项目地址（部署目录）' }
+
+  const diag = await diagnose(projectId, target.id)
+  const plan = diag.plan
+  // 数据同步开关由用户说了算：开启时从体检结论挑一个本地真实存在的目录作为同步源
+  //（upload 项优先，其次 share 项；都没有则保留当前值），关闭时明确不启用
+  const quickPlan = JSON.parse(JSON.stringify(plan))
+  const syncOn = !!(target.dataSync && target.dataSync.enabled)
+  if (syncOn) {
+    const items = Array.isArray(plan.dataSync && plan.dataSync.items) ? plan.dataSync.items : []
+    const pick = items.find((it) => it.kind === 'upload' || it.kind === 'upload?')
+      || items.find((it) => it.kind === 'share')
+      || {
+        localDir: String((target.dataSync && target.dataSync.localDir) || 'data'),
+        remoteDir: String((target.dataSync && target.dataSync.remoteDir) || 'shared/data'),
+      }
+    quickPlan.dataSync = {
+      ...quickPlan.dataSync,
+      needed: true,
+      items: [{ ...pick, kind: 'upload' }],
+    }
+  } else {
+    quickPlan.dataSync = { ...quickPlan.dataSync, needed: false }
+  }
+  // 导入命令依赖应用账号（{user}/{secret} 占位）而用户尚未配置时（极简视图不提供凭据入口，
+  // 凭据也绝不由生成流程写入），本次只同步文件，导入留给完整配置补全凭据后启用
+  const importTpl = String((quickPlan.dataSync && quickPlan.dataSync.importCommand) || '')
+  if (quickPlan.dataSync && quickPlan.dataSync.importMode === 'command'
+    && /\{(user|secret)\}/.test(importTpl) && !(target.dataSync && target.dataSync.importSecretConfigured)) {
+    quickPlan.dataSync.importMode = 'none'
+    log('warn', '同步后的导入命令需要应用账号（未配置）：本次发布只同步文件，可在完整配置中补全账号后启用导入')
+  }
+  // 服务器体检失败时启发式方案可能给出「开启备份但容器名/库名为空」，发布检查会拦截：
+  // 降级为不备份并写日志说明（需要备份的用户可切到完整配置补全）
+  if (quickPlan.db && quickPlan.db.enabled === true
+    && !(String(quickPlan.db.container || '').trim() && String(quickPlan.db.name || '').trim())) {
+    quickPlan.db.enabled = false
+    log('warn', '数据库容器名/库名识别不全，本次发布不自动备份数据库（可在完整配置中补全后开启）')
+  }
+  const applied = applyPlan(projectId, target.id, quickPlan)
+  if (!applied || !applied.ok) return { ok: false, error: (applied && applied.error) || '自动生成部署配置失败' }
+
+  const fresh = projects.list().find((p) => p.id === projectId)
+  const freshTarget = (fresh.targets || []).find((t) => t.id === target.id) || (fresh.targets || [])[0] || {}
+  const lines = [
+    `部署形态：${fresh.deployMode === 'script' ? '脚本部署' : 'Docker Compose'}（${plan.deployModeReason || '按项目文件推断'}）`,
+    fresh.deployMode === 'docker' ? `Compose 文件：${fresh.composeFile}` : `产物目录：${fresh.scriptMode.artifactDir}，升级脚本：${fresh.scriptMode.upgradeScript}`,
+    `健康检查：${freshTarget.health && freshTarget.health.enabled ? freshTarget.health.url : '未启用'}`,
+    `数据库备份：${freshTarget.db && freshTarget.db.enabled ? `${freshTarget.db.type} ${freshTarget.db.container}/${freshTarget.db.name}` : '未启用'}`,
+    `数据同步：${freshTarget.dataSync && freshTarget.dataSync.enabled ? `${freshTarget.dataSync.localDir} → ${freshTarget.dataSync.remoteDir}` : '未启用'}`,
+  ]
+  log('info', `已按项目生成部署配置（来源：${plan.source === 'ai' ? 'AI 增强体检' : '本地体检'}，服务器项目地址保持 ${target.remotePath}）`)
+  for (const line of lines) log('info', line)
+  if (diag.ai.error) log('warn', `AI 增强不可用（${diag.ai.error}），已按体检结论生成`)
+  return { ok: true, project: fresh, plan: quickPlan }
+}
+
 module.exports = {
   redactAiText,
-  scanLocal, scanRemote, diagnose, writeFiles, applyPlan, generateFileContent,
+  scanLocal, scanRemote, diagnose, writeFiles, applyPlan, generateFileContent, generateQuickConfig,
   buildHeuristicPlan, mergePlan, assertWritablePath, parseCompose, parseEnvKeys, extractJson,
   buildPrompt, pickFileContentsForAi, detectExistingDeployment,
 }

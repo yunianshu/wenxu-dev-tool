@@ -7,14 +7,22 @@
     @update:model-value="emit('update:modelValue', $event)"
   >
     <div class="deploy-config-scroll">
-      <el-alert title="数据库备份、健康检查和数据同步只作用于当前项目与环境，切换或编辑共享服务器不会套用其他项目的设置。" type="info" :closable="false" />
+      <el-alert v-if="form.configMode !== 'quick'" title="数据库备份、健康检查和数据同步只作用于当前项目与环境，切换或编辑共享服务器不会套用其他项目的设置。" type="info" :closable="false" />
       <el-card shadow="never" class="card">
         <template #header>
           <div class="card-header">
             <span>基本信息</span>
-            <el-button text size="small" type="primary" @click="openCopyDialog"><el-icon><CopyDocument /></el-icon>从其他项目复制</el-button>
+            <el-button v-if="form.configMode !== 'quick'" text size="small" type="primary" @click="openCopyDialog"><el-icon><CopyDocument /></el-icon>从其他项目复制</el-button>
           </div>
         </template>
+        <div class="f-row">
+          <span class="f-label">配置方式</span>
+          <el-radio-group v-model="form.configMode" size="small">
+            <el-radio-button value="quick">极简配置</el-radio-button>
+            <el-radio-button value="manual">完整配置</el-radio-button>
+          </el-radio-group>
+          <span class="f-mini">{{ form.configMode === 'quick' ? '发布时按本项目自动生成其余部署配置' : '全部部署参数手动维护' }}</span>
+        </div>
         <div class="f-row">
           <span class="f-label">项目名称</span>
           <el-input v-model="form.name" placeholder="如 myapp" style="flex: 1" />
@@ -24,6 +32,27 @@
           <el-input v-model="form.localPath" placeholder="D:\projects\myapp" style="flex: 1" />
           <el-button @click="browseLocal"><el-icon><Folder /></el-icon></el-button>
         </div>
+        <template v-if="form.configMode === 'quick' && activeTarget">
+          <div class="f-row">
+            <span class="f-label">部署服务器</span>
+            <el-select :model-value="activeTarget?.serverId" placeholder="选择服务器" clearable style="flex: 1" @change="selectServer">
+              <el-option v-for="server in servers" :key="server.id" :value="server.id" :label="`${server.name} · ${server.host}`" />
+            </el-select>
+            <el-button @click="emit('manage-servers')">服务器管理</el-button>
+          </div>
+          <p v-if="activeTarget?.server?.host" class="f-mini">{{ activeTarget.server.username }}@{{ activeTarget.server.host }}:{{ activeTarget.server.port }}（登录信息统一在服务器管理维护）</p>
+          <p v-else class="f-mini">请先添加或选择服务器</p>
+          <div class="f-row">
+            <span class="f-label">项目地址</span>
+            <el-input v-model="activeTarget.remotePath" placeholder="/opt/apps/myapp（服务器上的部署目录）" style="flex: 1" />
+          </div>
+          <div class="f-row">
+            <span class="f-label">数据同步</span>
+            <el-switch v-model="activeTarget.dataSync.enabled" />
+            <span class="f-mini">{{ activeTarget.dataSync.enabled ? '发布时把本地数据目录推送到服务器' : '不同步本地数据' }}</span>
+          </div>
+        </template>
+        <template v-else>
         <div class="f-row">
           <span class="f-label">部署形态</span>
           <el-radio-group v-model="form.deployMode" size="small">
@@ -83,10 +112,11 @@
           </el-tag>
           <el-tag v-else type="info" effect="plain" size="small">未识别到版本号</el-tag>
         </div>
-              </el-card>
+              </template>
+      </el-card>
 
-      <!-- 部署目标（多环境） -->
-      <el-card shadow="never" class="card">
+      <!-- 部署目标（多环境）：极简配置按单环境使用，多环境管理属于完整配置 -->
+      <el-card v-if="form.configMode !== 'quick'" shadow="never" class="card">
         <template #header>
           <div class="card-header">
             <span>部署目标（多环境）</span>
@@ -107,7 +137,7 @@
         </div>
               </el-card>
 
-      <el-card shadow="never" class="card">
+      <el-card v-if="form.configMode !== 'quick'" shadow="never" class="card">
         <template #header>
           <div class="card-header"><span>服务器（当前目标）</span></div>
         </template>
@@ -128,7 +158,7 @@
         </template>
               </el-card>
 
-      <el-card shadow="never" class="card">
+      <el-card v-if="form.configMode !== 'quick'" shadow="never" class="card">
         <template #header>
           <div class="card-header"><span>数据库备份 · {{ form.name }} / {{ activeTarget?.name }}</span></div>
         </template>
@@ -160,7 +190,7 @@
         </template>
               </el-card>
 
-      <el-card shadow="never" class="card">
+      <el-card v-if="form.configMode !== 'quick'" shadow="never" class="card">
         <template #header><div class="card-header"><span>部署选项</span></div></template>
         <div class="f-row check-row">
           <el-checkbox v-model="form.deploy.backupCode">发布前备份代码</el-checkbox>
@@ -177,7 +207,7 @@
         </div>
               </el-card>
 
-      <el-card shadow="never" class="card">
+      <el-card v-if="form.configMode !== 'quick'" shadow="never" class="card">
         <template #header>
           <div class="card-header"><span>健康检查 · {{ form.name }} / {{ activeTarget?.name }}</span></div>
         </template>
@@ -213,7 +243,7 @@
         </template>
               </el-card>
 
-      <el-card shadow="never" class="card">
+      <el-card v-if="form.configMode !== 'quick'" shadow="never" class="card">
         <template #header>
           <div class="card-header"><span>数据同步 · {{ form.name }} / {{ activeTarget?.name }}</span></div>
         </template>
@@ -340,7 +370,8 @@ function selectServer(id) {
   t.serverId = id || ''
   t.server = { ...(props.servers.find((s) => s.id === id) || emptyTarget().server) }
   delete t.server.projects
-  if (props.form.deployMode === 'auto') { t.remotePath = ''; delete t.autoSudo; delete t.autoHealth; delete t.autoDb }
+  // 极简配置的部署目录由用户填写，不随服务器切换清空；自动发布模式才收回自动分配
+  if (props.form.deployMode === 'auto' && props.form.configMode !== 'quick') { t.remotePath = ''; delete t.autoSudo; delete t.autoHealth; delete t.autoDb }
   emit('reset-conn')
 }
 

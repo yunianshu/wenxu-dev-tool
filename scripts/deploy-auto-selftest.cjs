@@ -92,6 +92,9 @@ let passed = 0
 async function test(name, fn) { await fn(); passed++; console.log('  ✓ ' + name) }
 function project(name) {
   const p = projects.defaultProject()
+  // 本文件验证「自动发布（auto 模式）」的方案与产物逻辑；新项目默认极简配置（quick，
+  // 发布时按项目生成派生配置），显式切回完整配置以保持既有测试前提
+  p.configMode = 'manual'
   p.name = name
   p.localPath = path.join(root, name)
   fs.mkdirSync(path.join(p.localPath, 'server'), { recursive: true })

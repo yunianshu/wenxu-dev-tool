@@ -190,15 +190,23 @@ function isCurrentSelection(selection) {
     && selection.projectId === props.form.id && selection.targetId === props.activeTargetId
 }
 
+/** 极简配置：用户只填服务器/项目地址/数据同步开关，其余由发布流程自动生成 */
+const quickMode = computed(() => props.form.configMode === 'quick')
+
 const canPublish = computed(() => {
   if (state.deploy.running || !props.form.id || props.dirty || !props.activeTarget) return false
   const t = props.activeTarget
+  if (quickMode.value) return !!(props.form.name && props.form.localPath && t.server.host && t.remotePath && props.publishVersion)
   return !!(props.form.name && props.form.localPath && t.server.host && (props.form.deployMode === 'auto' || (props.publishVersion && t.remotePath)))
 })
 const publishBlockedReason = computed(() => {
   if (props.dirty) return '请先保存部署设置中的修改'
   if (!props.form.localPath) return '请先在部署设置中填写项目目录'
   if (!props.activeTarget?.server?.host) return '请先选择并配置部署服务器'
+  if (quickMode.value) {
+    if (!props.activeTarget?.remotePath) return '请先在部署设置中填写服务器项目地址'
+    if (!props.publishVersion) return '请先识别或设置发布版本'
+  }
   if (props.form.deployMode !== 'auto' && !props.publishVersion) return '请先识别或设置发布版本'
   if (props.form.deployMode !== 'auto' && !props.activeTarget?.remotePath) return '请先配置部署目录'
   return '请先补全部署设置'
@@ -378,7 +386,14 @@ async function publish() {
   const t = props.activeTarget
   const oldV = onlineVersion.value || '（未知）'
   try {
-    if (props.form.deployMode !== 'auto') await ElMessageBox.confirm(
+    // 极简配置首次发布时部署形态还没定型（deployMode 仍为 auto），但发布会自动生成
+    // 派生配置，与纯自动发布不同：同样弹确认框，并说明将按项目生成配置
+    if (quickMode.value) await ElMessageBox.confirm(
+      `即将发布 ${props.form.name} ${v} 到【${t.name}】${t.server.host}:${t.remotePath}（当前线上版本 ${oldV}）。发布时将按本项目自动生成部署配置，是否继续？`,
+      '确认发布',
+      { type: 'warning', confirmButtonText: '🚀 发布', cancelButtonText: '取消' },
+    )
+    else if (props.form.deployMode !== 'auto') await ElMessageBox.confirm(
       `即将发布 ${props.form.name} ${v} 到【${t.name}】${t.server.host}:${t.remotePath}（当前线上版本 ${oldV}）。发布过程中会备份并自动构建重启，是否继续？`,
       '确认发布',
       { type: 'warning', confirmButtonText: '🚀 发布', cancelButtonText: '取消' },

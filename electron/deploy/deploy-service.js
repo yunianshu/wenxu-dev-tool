@@ -16,6 +16,7 @@ const history = require('./history')
 const releaseNotes = require('./release-notes')
 const store = require('../store')
 const automatic = require('./auto-deploy')
+const aiDeploy = require('./ai-deploy')
 const moduleDataSync = require('./data-sync')
 const workspace = require('./build-workspace')
 const { validateArtifact } = require('./artifact-check')
@@ -641,7 +642,7 @@ async function run(projectId, targetId) {
   let dataPack = null
   let prepared = null
   let buildWorkspace = null
-  const autoMode = project.deployMode === 'auto'
+  let autoMode = project.deployMode === 'auto'
   const controller = new AbortController()
   activeRun = { id: runId, conn: null, canceled: false, controller }
   const setC = (c) => { if (activeRun) activeRun.conn = c; conn = c }
@@ -650,6 +651,21 @@ async function run(projectId, targetId) {
     // ── 阶段 1：本地检查 ─────────────────────────────
     tracker.begin('check')
     const t0 = Date.now()
+    // 极简配置：发布前按项目自动生成部署配置。用户输入的三项（服务器选择、服务器项目
+    // 地址、是否同步本地数据）不被动；部署形态/脚本参数/健康检查/数据库备份/同步明细
+    // 每次发布重新生成，保证不同项目、以及同一项目演进后的配置始终贴合实际。
+    if (project.configMode === 'quick') {
+      const gen = await aiDeploy.generateQuickConfig(projectId, target.id, { log })
+      if (!gen.ok) {
+        log('error', gen.error)
+        tracker.end('check', 'failed', t0)
+        return finish('failed', gen.error)
+      }
+      Object.assign(project, gen.project)
+      const freshTarget = (gen.project.targets || []).find((t) => t.id === target.id) || (gen.project.targets || [])[0]
+      if (freshTarget) Object.assign(target, freshTarget)
+      autoMode = project.deployMode === 'auto'
+    }
     let ver = resolveVersion(project)
     if (autoMode) {
       if (!target.server?.host) throw new Error('请先设置正式服务器地址与登录凭据')
@@ -1408,7 +1424,7 @@ async function rollback(projectId, version, targetId) {
 module.exports = {
   run, cancel, isBusy, testConnection, listReleases, rollback,
   listDbBackups, restoreDbBackup, assertDbBackupName,
-  setEmitter, STAGES, resolveVersion, buildDeployArgs,
+  setEmitter, STAGES, resolveVersion, buildDeployArgs, preCheckLocal,
   resolveCompose, resolveArtifact, sha256File, releaseDirNameOf, deployModeOf, runPackageCommand,
   findGitBashDir, localShellEnv,
   getDataSync, validateDataSync, buildDataSyncCommand,

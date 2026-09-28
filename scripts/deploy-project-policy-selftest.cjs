@@ -78,6 +78,9 @@ function assertPrestartSync(events, name) {
 
 function seed(name, serverId, sync) {
   const project = projects.defaultProject()
+  // 本组断言针对「自动发布模式」的手动策略优先级；新项目默认极简配置（quick，发布时生成派生
+  // 配置且不预先分配目录），显式切回完整配置以保持既有测试前提
+  project.configMode = 'manual'
   project.name = name; project.localPath = path.join(root, name)
   fs.mkdirSync(path.join(project.localPath, 'assets'), { recursive: true })
   fs.writeFileSync(path.join(project.localPath, 'VERSION'), '1.0.0')

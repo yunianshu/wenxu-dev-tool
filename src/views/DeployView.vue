@@ -25,9 +25,9 @@
     <!-- 当前部署目标与连接状态 -->
     <section class="deploy-target-bar">
       <div class="bar">
-        <span class="bar-label">{{ form.deployMode === 'auto' ? '自动发布' : '部署环境' }}</span>
+        <span class="bar-label">{{ quickMode ? '极简配置' : (form.deployMode === 'auto' ? '自动发布' : '部署环境') }}</span>
         <el-select
-          v-if="form.deployMode !== 'auto'"
+          v-if="form.deployMode !== 'auto' && !quickMode"
           v-model="activeTargetId"
           placeholder="选择环境"
           class="environment-select"
@@ -37,8 +37,7 @@
         <el-select :model-value="activeTarget?.serverId || ''" placeholder="选择部署服务器" class="server-select" :disabled="state.deploy.running || dirty" @change="selectDeploymentServer">
           <el-option v-for="server in servers" :key="server.id" :value="server.id" :label="`${server.name} · ${server.host}`" />
         </el-select>
-        <span v-if="form.deployMode === 'auto'" class="target-host mono">{{ activeTarget?.remotePath || '安装目录按项目自动分配' }}</span>
-        <span v-else class="target-host mono">{{ activeTarget?.server?.host || '未配置主机' }} → {{ activeTarget?.remotePath || '未配置部署目录' }}</span>
+        <span class="target-host mono">{{ activeTarget?.server?.host || '未配置主机' }} → {{ activeTarget?.remotePath || '未配置部署目录' }}</span>
         <div class="spacer" />
         <el-tag v-if="dirty" type="warning" effect="plain" size="small">有未保存修改</el-tag>
         <el-tag v-else-if="activeTarget?.server?.host" type="info" effect="plain" size="small">发布时自动检查</el-tag>
@@ -58,7 +57,7 @@
       </el-alert>
     </section>
 
-    <el-alert v-if="form.deployMode === 'auto'" class="auto-deploy-hint" title="自动发布将检查服务器环境并构建上线；安装目录、端口和数据按项目隔离。" type="info" :closable="false" />
+    <el-alert v-if="form.deployMode === 'auto' && !quickMode" class="auto-deploy-hint" title="自动发布将检查服务器环境并构建上线；安装目录、端口和数据按项目隔离。" type="info" :closable="false" />
 
     <DeployConfigDrawer
       ref="configDrawerRef"
@@ -136,6 +135,9 @@ const historyRef = ref(null)
 let offDone = null
 let detectTimer = null
 let disposed = false
+
+/** 极简配置：派生配置由发布流程按项目生成 */
+const quickMode = computed(() => form.configMode === 'quick')
 
 /** 当前编辑的部署目标（响应式：切换目标后服务器/健康检查卡随之切换） */
 const activeTarget = computed(() => {
@@ -311,7 +313,7 @@ async function saveProject(successMsg = '配置已保存') {  if (!form.name) { 
   if (!payload.targets.length) payload.targets = [emptyTarget()]
   // 部署目录留空时按目标随名称自动建议，用户仍可随时修改
   for (const t of payload.targets) {
-    if (form.deployMode !== 'auto' && !t.remotePath && form.name) t.remotePath = `/opt/apps/${form.name}-${form.id.slice(-6)}`
+    if ((form.deployMode !== 'auto' || quickMode.value) && !t.remotePath && form.name) t.remotePath = `/opt/apps/${form.name}-${form.id.slice(-6)}`
   }
   const r = await window.gitReport.deployProjectsSave(payload)
   if (r && r.ok) {
@@ -335,10 +337,11 @@ async function selectDeploymentServer(serverId) {
   const server = servers.value.find((s) => s.id === serverId)
   if (!server || !activeTarget.value) return
   const target = activeTarget.value
-  if (target.serverId !== serverId && form.deployMode === 'auto') { target.remotePath = ''; delete target.autoSudo; delete target.autoHealth; delete target.autoDb }
+  // 极简配置的部署目录由用户填写，不随服务器切换清空；自动发布模式才收回自动分配
+  if (target.serverId !== serverId && form.deployMode === 'auto' && !quickMode.value) { target.remotePath = ''; delete target.autoSudo; delete target.autoHealth; delete target.autoDb }
   target.serverId = serverId
   target.server = { ...server }; delete target.server.projects
-  if (form.deployMode === 'auto') { target.name = '正式环境'; form.productionTargetId = target.id }
+  if (form.deployMode === 'auto' && !quickMode.value) { target.name = '正式环境'; form.productionTargetId = target.id }
   connResult.value = null
   state.deploy.currentVersion = ''
   await saveProject('已选择服务器，可以一键发布')
@@ -351,7 +354,7 @@ async function onServersChanged() {
   state.deploy.projects = state.projects.items
   for (const target of form.targets) {
     const server = servers.value.find((s) => s.id === target.serverId)
-    if (server) refreshTargetServer(target, server, form.deployMode === 'auto')
+    if (server) refreshTargetServer(target, server, form.deployMode === 'auto' && !quickMode.value)
   }
   configDrawerRef.value?.refreshServerSnapshot(servers.value)
   connResult.value = null
@@ -413,7 +416,7 @@ onMounted(() => {
     reloadHistory()
     const r = d && d.record
     if (!r) return
-    if (r.projectId === form.id && form.deployMode === 'auto') {
+    if (r.projectId === form.id && (form.deployMode === 'auto' || quickMode.value)) {
       await loadProjects()
     }
     if (disposed) return

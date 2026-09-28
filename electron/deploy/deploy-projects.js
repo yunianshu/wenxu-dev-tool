@@ -105,6 +105,9 @@ function defaultProject() {
     tags: [],
     notes: '',
     version: { strategy: 'auto', manual: '' },
+    // 配置方式：quick = 极简配置（用户只填服务器选择、服务器项目地址、是否同步本地数据，
+    // 其余部署配置在发布时按项目自动生成）；manual = 完整配置（本文件其余字段由界面维护）。
+    configMode: 'quick',
     // 默认自动发布；docker/script 保留显式 Compose 与项目脚本部署。
     deployMode: 'auto',
     productionTargetId: '',
@@ -156,6 +159,8 @@ function normalizeProject(p) {
     user: source.deploy.dbUser,
   })
   for (const k of ['backupDatabase', 'dbType', 'dbContainer', 'dbName', 'dbUser']) delete c.deploy[k]
+  // 配置方式：quick（发布时自动生成派生配置）/ manual（完整配置）。旧数据没有该字段 → manual，行为不变
+  c.configMode = source.configMode === 'quick' ? 'quick' : 'manual'
   // 版本号进入服务器端路径（releases/$VERSION，且会被 rm -rf）：只放行安全字符，
   // 非法值清空由发布前检查报错，杜绝路径注入
   const manual = String(c.version.manual || '').trim()

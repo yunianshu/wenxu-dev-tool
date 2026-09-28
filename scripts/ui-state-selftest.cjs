@@ -233,6 +233,9 @@ async function main() {
     assert.equal(state.deploy.currentVersion, '保持当前版本')
     await done('A', targetId, '3.0.0')
     assert.equal(state.deploy.currentVersion, '3.0.0')
+    // 本段验证「自动发布模式」换服务器清探测：新项目默认极简配置（quick 保留用户填写的
+    // 项目地址），显式切回完整配置 + 自动发布以保持既有语义
+    deployView.setup.form.configMode = 'manual'
     deployView.setup.form.deployMode = 'auto'
     const serverTarget = deployView.setup.form.targets[0]
     Object.assign(serverTarget, { serverId: 'shared', server: { host: 'old.example.invalid', port: 22, username: 'root' }, remotePath: '/old/app', autoSudo: true, autoDb: { enabled: true }, autoHealth: { enabled: true } })
