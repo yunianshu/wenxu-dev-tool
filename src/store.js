@@ -60,6 +60,8 @@ export const state = reactive({
     terminalFontSize: 13,
     /** 单个本机字体名称；空字符串沿用默认等宽字体回退栈。 */
     terminalFontFamily: '',
+    /** 上次选中的项目：启动恢复选中用，切项目时由 useProjects 写回 ui-prefs.json */
+    lastProjectId: '',
     /** 外壳（含顶栏插槽）是否已挂载进文档。初始挂载期间根元素还没进 document，
      *  document.querySelector 找不到顶栏插槽，投递页头的 Teleport 会失败 */
     shellMounted: false,

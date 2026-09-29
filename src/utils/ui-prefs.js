@@ -80,6 +80,7 @@ export function saveUiPrefs() {
     sidebarCollapsed: state.ui.sidebarCollapsed,
     terminalFontSize: state.ui.terminalFontSize,
     terminalFontFamily: state.ui.terminalFontFamily,
+    lastProjectId: state.ui.lastProjectId,
   })
 }
 

@@ -127,6 +127,25 @@ async function main() {
     projectView.unmount()
     console.log('  ✓ 项目加载共享等待并保留最新选择，项目页正常跳转终端工作台')
 
+    // 记住上次选中的项目：偏好里的 ID 还在列表里就按它恢复，已删除才回落第一个
+    const savedSelections = []
+    api.uiPrefsSave = async (payload) => { savedSelections.push(payload); return { ok: true, prefs: payload } }
+    api.uiPrefsLoad = async () => ({ lastProjectId: 'B' })
+    state.projects.currentId = ''
+    state.ui.lastProjectId = ''
+    await projectApi.loadProjects()
+    assert.equal(state.projects.currentId, 'B', '启动时应恢复上次选中的项目')
+    assert.equal(savedSelections.length, 0, '选中未变化不应重复落盘')
+    api.projectsList = async () => [projects[0]]
+    await projectApi.loadProjects()
+    assert.equal(state.projects.currentId, 'A', '记住的项目已删除时回落到第一个项目')
+    assert.equal(savedSelections.at(-1)?.lastProjectId, 'A', '回落结果应写回偏好')
+    api.projectsList = async () => projects
+    projectApi.selectProject('B')
+    assert.equal(savedSelections.at(-1)?.lastProjectId, 'B', '切换项目应立即写回偏好')
+    api.uiPrefsLoad = async () => ({})
+    console.log('  ✓ 项目选中按上次偏好恢复，删除后回落，切换即时落盘')
+
     const releaseCalls = []
     const rollbackCalls = []
     api.deployReleases = (...args) => { const pending = deferred(); releaseCalls.push({ args, ...pending }); return pending.promise }

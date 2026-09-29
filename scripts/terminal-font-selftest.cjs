@@ -11,7 +11,7 @@ async function main() {
   const userData = path.join(root, 'userdata')
   const originalWindow = global.window
   const originalDocument = global.document
-  const defaults = { theme: 'light', sidebarCollapsed: false, terminalFontSize: 13, terminalFontFamily: '' }
+  const defaults = { theme: 'light', sidebarCollapsed: false, terminalFontSize: 13, terminalFontFamily: '', lastProjectId: '' }
   function loadSource(relative, replacements, transform = false) {
     const filename = path.resolve(__dirname, '..', relative)
     const mod = new Module(filename, module)
@@ -36,6 +36,15 @@ async function main() {
     assert.deepEqual(reload().load(), { ...defaults, sidebarCollapsed: true, terminalFontSize: 17 }, '旧偏好补齐浅色主题和空字体，保留原字号和侧栏')
     fs.writeFileSync(prefs.file(), '{ 损坏的 JSON', 'utf8')
     assert.deepEqual(reload().load(), defaults, '损坏配置应回落默认值')
+    // 上次选中的项目：合法 ID 真实落盘并读回，脏值在写入与读取两端都只降级该字段
+    assert.equal(prefs.save({ ...defaults, lastProjectId: 'dp_abc123_zzz999' }).prefs.lastProjectId, 'dp_abc123_zzz999')
+    assert.equal(reload().load().lastProjectId, 'dp_abc123_zzz999', '项目 ID 应通过实际文件持久化')
+    const invalidProjectIds = [undefined, null, 42, {}, [], true, '   ', 'x'.repeat(129), `dp${String.fromCharCode(0)}bad`]
+    for (const projectId of invalidProjectIds) {
+      assert.equal(prefs.save({ ...defaults, lastProjectId: projectId }).prefs.lastProjectId, '', '脏项目 ID 只降级项目字段')
+      fs.writeFileSync(prefs.file(), JSON.stringify({ ...defaults, lastProjectId: projectId }), 'utf8')
+      assert.equal(reload().load().lastProjectId, '', '读取手工修改的配置也应归一化项目 ID')
+    }
     console.log('  ✓ 缺失、旧版和损坏偏好兼容')
 
     for (const family of ['Consolas', 'Cascadia Mono', '等距更纱黑体 SC', 'JetBrains Mono-NL', '字'.repeat(100), '']) {
@@ -60,7 +69,7 @@ async function main() {
     console.log('  ✓ 中英文字体、空格和长度边界可保存，坏输入在读取与保存时降级')
 
     const invalidThemes = [undefined, null, false, true, 0, 1, {}, [], ['dark'], { theme: 'dark' }, '', 'Dark', 'DARK', ' dark ', 'dark\n', 'dark\u0000', 'system', '__proto__', 'constructor', 'dark; color:red', '<script>alert(1)</script>', 'url(example.invalid)']
-    const themePrefs = { sidebarCollapsed: true, terminalFontSize: 18, terminalFontFamily: 'Cascadia Mono' }
+    const themePrefs = { sidebarCollapsed: true, terminalFontSize: 18, terminalFontFamily: 'Cascadia Mono', lastProjectId: '' }
     for (const theme of ['light', 'dark']) {
       const expected = { theme, ...themePrefs }
       assert.deepEqual(prefs.save({ ...expected, unknown: '不应保存' }), { ok: true, prefs: expected })
@@ -76,7 +85,7 @@ async function main() {
     }
     console.log('  ✓ 双主题真实文件持久化，恶意主题在写入和读取时归一化且保留其他偏好')
 
-    const state = { ui: { theme: 'dark', sidebarCollapsed: true, terminalFontSize: 16, terminalFontFamily: 'Cascadia Mono' } }
+    const state = { ui: { theme: 'dark', sidebarCollapsed: true, terminalFontSize: 16, terminalFontFamily: 'Cascadia Mono', lastProjectId: '' } }
     const writes = []
     const cache = new Map()
     const cacheKey = 'personnel-plm-theme'
@@ -103,7 +112,7 @@ async function main() {
     await ui.saveUiPrefs()
     assert.deepEqual(reload().load(), state.ui)
     await ui.stepTerminalFontSize(1)
-    assert.deepEqual(reload().load(), { theme: 'dark', sidebarCollapsed: true, terminalFontSize: 17, terminalFontFamily: 'Cascadia Mono' }, '调字号不得覆盖主题、字体和侧栏')
+    assert.deepEqual(reload().load(), { theme: 'dark', sidebarCollapsed: true, terminalFontSize: 17, terminalFontFamily: 'Cascadia Mono', lastProjectId: '' }, '调字号不得覆盖主题、字体和侧栏')
     await ui.applyTerminalFontFamily('  等距更纱黑体 SC  ')
     assert.deepEqual(reload().load(), state.ui, '换字体不得覆盖字号和侧栏')
     state.ui.sidebarCollapsed = false
@@ -117,15 +126,15 @@ async function main() {
     console.log('  ✓ 真实渲染层保存入口保留主题、字体、字号与侧栏，临时文件重载通过')
 
     ui.restoreTerminalFontPrefs({ terminalFontFamily: '  Cascadia Mono ', terminalFontSize: 18 }, ui.getTerminalFontRevision())
-    assert.deepEqual(state.ui, { theme: 'dark', sidebarCollapsed: false, terminalFontSize: 18, terminalFontFamily: 'Cascadia Mono' }, '未编辑时正常恢复启动字体且保留主题')
+    assert.deepEqual(state.ui, { theme: 'dark', sidebarCollapsed: false, terminalFontSize: 18, terminalFontFamily: 'Cascadia Mono', lastProjectId: '' }, '未编辑时正常恢复启动字体且保留主题')
     const pendingLoadRevision = ui.getTerminalFontRevision()
     await ui.applyTerminalFontFamily('JetBrains Mono')
     ui.restoreTerminalFontPrefs({ terminalFontFamily: '旧字体', terminalFontSize: 11 }, pendingLoadRevision)
-    assert.deepEqual(state.ui, { theme: 'dark', sidebarCollapsed: false, terminalFontSize: 18, terminalFontFamily: 'JetBrains Mono' }, '迟到的初始化读取不得覆盖用户新字体')
+    assert.deepEqual(state.ui, { theme: 'dark', sidebarCollapsed: false, terminalFontSize: 18, terminalFontFamily: 'JetBrains Mono', lastProjectId: '' }, '迟到的初始化读取不得覆盖用户新字体')
     const pendingSizeRevision = ui.getTerminalFontRevision()
     await ui.stepTerminalFontSize(1)
     ui.restoreTerminalFontPrefs({ terminalFontFamily: '旧字体', terminalFontSize: 11 }, pendingSizeRevision)
-    assert.deepEqual(state.ui, { theme: 'dark', sidebarCollapsed: false, terminalFontSize: 19, terminalFontFamily: 'JetBrains Mono' }, '迟到的初始化读取不得覆盖用户新字号')
+    assert.deepEqual(state.ui, { theme: 'dark', sidebarCollapsed: false, terminalFontSize: 19, terminalFontFamily: 'JetBrains Mono', lastProjectId: '' }, '迟到的初始化读取不得覆盖用户新字号')
     await ui.resetTerminalFontPreferences()
     assert.deepEqual(reload().load(), { ...defaults, theme: 'dark' }, '一键恢复应同时恢复字体和字号，不改变主题')
     console.log('  ✓ 启动恢复保留较新的用户选择，恢复默认同时保存字体和字号')

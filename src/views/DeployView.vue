@@ -117,7 +117,7 @@ import ServerManagerDialog from '../components/deploy/ServerManagerDialog.vue'
 import { emptyTarget, emptyProject, fmtDur, refreshTargetServer } from '../components/deploy/deploy-form'
 
 defineEmits(['navigate'])
-const { currentProject, loadProjects: loadSharedProjects } = useProjects()
+const { currentProject, loadProjects: loadSharedProjects, selectProject } = useProjects()
 const topbarReady = useTopbarReady()
 
 const form = reactive(emptyProject())
@@ -320,8 +320,7 @@ async function saveProject(successMsg = '配置已保存') {  if (!form.name) { 
     ElMessage.success(successMsg)
     await loadSharedProjects()
     await loadProjects()
-    state.deploy.currentProjectId = r.id
-    state.projects.currentId = r.id
+    selectProject(r.id) // 保存后切到该项目，并同步写回「上次选中」偏好
     const p = state.deploy.projects.find((x) => x.id === r.id)
     if (p) {
       fillForm(p, activeTargetId.value) // 保存不切换当前选中的部署环境

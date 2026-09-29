@@ -6,7 +6,8 @@
  * 侧栏收起这类随时切换的界面状态混在里面，会被「保存设置」的旧快照覆盖
  * （与 terminal-layout.js 同一个理由）。
  *
- * 存什么：纯外观状态（主题、侧栏是否收起、终端字号与字体）。不含任何业务数据与凭据。
+ * 存什么：纯外观状态（主题、侧栏是否收起、终端字号与字体）与上次选中的项目 ID
+ * （一个指针，不是项目数据）。不含任何业务数据与凭据。
  *
  * 注意：save() 是以整份偏好为单位写入的（normalize 会补齐缺失键），
  * 因此调用方改一个字段时必须把**当前完整的偏好**一起传回，
@@ -32,6 +33,18 @@ function normalizeFontFamily(value) {
   return family.length <= 100 ? family : ''
 }
 
+/** 上次选中的项目 ID 只和项目列表比对后用于恢复选中，控制字符一律丢弃 */
+function normalizeProjectId(value) {
+  if (typeof value !== 'string') return ''
+  const id = value.trim()
+  if (!id || id.length > 128) return ''
+  for (let i = 0; i < id.length; i += 1) {
+    const code = id.charCodeAt(i)
+    if (code < 32 || code === 127) return ''
+  }
+  return id
+}
+
 /** 只认已知键：脏值一律回落默认，不把不可信内容带回渲染层 */
 function normalize(raw) {
   const size = Number(raw?.terminalFontSize)
@@ -42,6 +55,7 @@ function normalize(raw) {
       ? Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, Math.round(size)))
       : FONT_SIZE_DEFAULT,
     terminalFontFamily: normalizeFontFamily(raw?.terminalFontFamily),
+    lastProjectId: normalizeProjectId(raw?.lastProjectId),
   }
 }
 
