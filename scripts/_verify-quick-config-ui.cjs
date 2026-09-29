@@ -87,6 +87,7 @@ async function main() {
       return null
     }
     const out = {}
+    out.version = await evaluate("(() => { const t = document.body.innerText; const i = t.indexOf('v1.4.'); return i >= 0 ? t.slice(i, i + 8) : '' })()")
     out.deployReady = await wait(async () => await evaluate("(() => { const m = [...document.querySelectorAll('.app-menu .el-menu-item')].find(el => el.textContent.includes('部署')); if (m) { m.click(); return true } return false })()"))
     await wait(async () => await evaluate("!!document.querySelector('.deploy-page .bar')"))
     out.hasProject = await evaluate("!!document.querySelector('.deploy-page .deploy-run-workspace')")
@@ -118,6 +119,7 @@ async function main() {
   const hashAfter = fileHash()
 
   const assert = (name, cond, detail) => { if (cond) console.log(`  PASS  ${name}`); else { console.log(`  FAIL  ${name}  ${detail || ''}`); checks.push(name) } }
+  assert('运行的是目标版本（本机安装版）', String(r1.version || '').includes('1.4.108'), `实际显示: ${r1.version}`)
   assert('部署页与项目就绪', r1.deployReady && r1.hasProject)
   assert('部署设置抽屉可打开', r1.drawerOpened && r1.drawerVisible)
   assert('配置方式提供 极简配置/完整配置 两个选项', (r1.modeOptions || []).includes('极简配置') && (r1.modeOptions || []).includes('完整配置'), JSON.stringify(r1.modeOptions))

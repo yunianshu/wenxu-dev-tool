@@ -350,7 +350,62 @@ volumes:
   const rawA2 = raw2.projects.find((p) => p.id === savedA.id)
   assert.strictEqual(rawA2.targets[0].dataSync.importSecret.plain, 'import-secret', '落盘凭据原样保留')
 
-  // ── ⑨ 发布入口编排：deploy:run 对极简项目先自动生成再走发布链路 ──
+  // ── ⑨ 已有手工配置的项目切极简：生成不得回退用户已明确配置的项 ──  // 场景：源项目 VERSION 停在 1.0.0，但线上已经发布到 2.0.0（发布卡手动指定）；
+  // 健康检查是手工确认过的业务地址；数据库manual 指定实例；docker 形态可用但推断会判脚本且缺 start.sh
+  const projKeep = path.join(tmpRoot, 'proj-keep')
+  writeFixture(projKeep, {
+    'VERSION': '1.0.0\n',
+    'compose.yaml': 'services:\n  app:\n    image: demo/app\n    ports:\n      - "8600:80"\n',
+    'package.sh': '#!/usr/bin/env bash\necho pack\n',
+    'upgrade.sh': '#!/usr/bin/env bash\nINSTALL_ROOT="${INSTALL_ROOT:-}"\necho upgrade\n',
+    // 没有 start.sh：脚本形态会缺文件，但现有 docker 形态可用 → 必须保留 docker
+  })
+  const rKeep = projects.save({
+    name: 'keepcfg', localPath: projKeep, configMode: 'quick',
+    deployMode: 'docker', composeFile: 'compose.yaml',
+    version: { strategy: 'manual', manual: '2.0.0' },
+    targets: [{
+      name: '生产',
+      server: { host: '10.0.0.9', port: 22, username: 'root', authType: 'password' },
+      remotePath: '/srv/keep',
+      health: { strategy: 'manual', enabled: true, url: 'http://127.0.0.1:8600/healthz', timeout: 120, interval: 4 },
+      db: { strategy: 'manual', enabled: true, type: 'postgres', container: 'keep-postgres-1', name: 'keep_db', user: 'keep' },
+      dataSync: { enabled: false },
+    }],
+  })
+  const savedKeep = projects.list().find((p) => p.id === rKeep.id)
+  logs.length = 0
+  const genKeep = await aiDeploy.generateQuickConfig(savedKeep.id, savedKeep.targets[0].id, { log })
+  assert.strictEqual(genKeep.ok, true, `生成应成功: ${JSON.stringify(genKeep)}`)
+  const afterKeep = projects.list().find((p) => p.id === savedKeep.id)
+  assert.strictEqual(afterKeep.version.strategy, 'manual', `手动版本不得被生成重置为本地识别值: ${JSON.stringify(afterKeep.version)}`)
+  assert.strictEqual(afterKeep.version.manual, '2.0.0', '线上版本不得回退到源项目文件里的 1.0.0')
+  assert.strictEqual(afterKeep.deployMode, 'docker', '推断形态缺文件时必须保留现有可用的 docker 形态')
+  assert.strictEqual(afterKeep.composeFile, 'compose.yaml')
+  assert.strictEqual(afterKeep.targets[0].health.url, 'http://127.0.0.1:8600/healthz', '手动健康地址不得被生成值覆盖')
+  assert.strictEqual(afterKeep.targets[0].db.enabled, true, '手动数据库备份不得被降级关闭')
+  assert.strictEqual(afterKeep.targets[0].db.container, 'keep-postgres-1', '手动数据库实例不得被覆盖')
+  assert.ok(logs.some(([, t]) => /沿用已有配置/.test(t)), `应写日志说明沿用了哪些配置: ${JSON.stringify(logs)}`)
+
+  // 健康检查端口必须取业务服务：Compose 里同时有数据库与业务服务时不得取到数据库端口
+  const projPort = path.join(tmpRoot, 'proj-port')
+  writeFixture(projPort, {
+    'VERSION': '1.0.0\n',
+    'compose.yaml': 'services:\n  db:\n    image: postgres:16-alpine\n    ports:\n      - "5434:5432"\n  app:\n    image: demo/app\n    ports:\n      - "8600:8080"\n',
+  })
+  const planOfPort = (dir) => aiDeploy.buildHeuristicPlan(
+    { id: 'px', name: 'portcase', localPath: dir, composeFile: 'compose.yaml', scriptMode: {}, targets: [] },
+    { id: 'tx', name: '默认', remotePath: '/srv/x', server: { host: '10.0.0.9' }, health: {}, db: {} },
+    aiDeploy.scanLocal({ id: 'px', name: 'portcase', localPath: dir, composeFile: 'compose.yaml', scriptMode: {}, targets: [] }),
+    { ok: false, error: 'offline' },
+  )
+  const planPorts = planOfPort(projPort)
+  assert.strictEqual(planPorts.health.url, 'http://127.0.0.1:8600/', `健康检查必须取业务端口而非数据库端口: ${planPorts.health.url}`)
+  writeFixture(projPort, { 'compose.yaml': 'services:\n  db:\n    image: postgres:16-alpine\n    ports:\n      - "5434:5432"\n' })
+  const planDbOnly = planOfPort(projPort)
+  assert.strictEqual(planDbOnly.health.enabled, false, '只有数据库端口时不得把数据库端口当作应用地址')
+
+  // ── ⑩ 发布入口编排：deploy:run 对极简项目先自动生成再走发布链路 ──
   const runLogs = []
   deployService.setEmitter((channel, payload) => {
     if (channel === 'deploy:log') runLogs.push(payload.text)

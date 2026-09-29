@@ -30,8 +30,10 @@ const AI_FILE_PAYLOAD_BYTES = 48 * 1024
 /** 单个生成文件的内容上限（防御 AI 输出异常） */
 const MAX_GENERATED_BYTES = 400 * 1024
 
-/** 技术栈标记文件（存在即认为项目使用该技术栈） */
-const STACK_MARKERS = [
+/** 基础设施镜像（数据库/中间件）：其宿主端口不是应用地址，健康检查必须排除 */
+const INFRA_IMAGE_RE = /postgres|mysql|mariadb|redis|mongo|clickhouse|rabbitmq|kafka|minio|etcd|nacos|zookeeper|elasticsearch|influx|memcached|pgbouncer/i
+
+/** 技术栈标记文件（存在即认为项目使用该技术栈） */const STACK_MARKERS = [
   ['package.json', 'node', 'Node.js'],
   ['pom.xml', 'java', 'Java / Maven'],
   ['build.gradle', 'java', 'Java / Gradle'],
@@ -199,25 +201,40 @@ function parseCompose(text) {
   const bindMounts = []
   const secretFiles = []
   const requiredEnv = new Set()
-  if (!text) return { services, images, ports, bindMounts, secretFiles, requiredEnv: [] }
+  // 服务级端口/镜像（健康检查要挑业务端口，不能把 postgres 的 5432/5434 当成应用地址）
+  const servicePorts = {}
+  const serviceImages = {}
+  if (!text) return { services, images, ports, bindMounts, secretFiles, requiredEnv: [], servicePorts, serviceImages }
   let section = ''
+  let curService = ''
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.replace(/\s+#.*$/, '')
     const secM = line.match(/^([a-zA-Z_][\w-]*):\s*$/)
     if (secM) {
       section = secM[1]
+      curService = ''
       continue
     }
     // services 下的二级键即服务名
     if (section === 'services') {
       const svc = line.match(/^ {2}([a-zA-Z_][\w.-]*):\s*$/)
-      if (svc) services.push(svc[1])
-    }
+      if (svc) {
+        services.push(svc[1])
+        curService = svc[1]
+        if (!servicePorts[curService]) servicePorts[curService] = []
+      }
+    } else curService = ''
     const img = line.match(/^\s+image:\s*["']?([^"'\s]+)/)
-    if (img) images.push(img[1])
+    if (img) {
+      images.push(img[1])
+      if (curService) serviceImages[curService] = img[1]
+    }
     // 端口映射：- "127.0.0.1:8080:80" / - 8080:80
     const port = line.match(/^\s+-\s*["']?((?:[^"'\s:]+:)?\d+:\d+)["']?/)
-    if (port) ports.push(port[1])
+    if (port) {
+      ports.push(port[1])
+      if (curService) servicePorts[curService].push(port[1])
+    }
     // 绑定挂载：- ./runtime/x:/app/x  /  - ${VAR:-./x}:/app/x
     const bind = line.match(/^\s+-\s*["']?(\.[^"':\s]+):(\/[^"'\s:]+)/)
     if (bind) bindMounts.push({ host: bind[1], container: bind[2] })
@@ -234,6 +251,8 @@ function parseCompose(text) {
     bindMounts,
     secretFiles: [...new Set(secretFiles)],
     requiredEnv: [...requiredEnv],
+    servicePorts,
+    serviceImages,
   }
 }
 
@@ -646,6 +665,28 @@ function hostPortOf(mapping) {
 }
 
 /**
+ * 选业务服务的宿主端口（健康检查用）。数据库/中间件服务的端口不是应用地址——
+ * 取到 postgres 的 5434 会让健康检查必然失败并触发回滚，因此这类服务必须排除；
+ * 服务级信息解析不到时（非标准写法）才回落到全部端口。
+ */
+function businessHostPort(compose) {
+  const svcPorts = compose.servicePorts || {}
+  const svcImages = compose.serviceImages || {}
+  const names = Object.keys(svcPorts)
+  if (names.length) {
+    const biz = names.filter((n) => !INFRA_IMAGE_RE.test(svcImages[n] || '')
+      && !/^(db|database|postgres|mysql|mariadb|redis|mongo)/i.test(n))
+    for (const n of biz) {
+      const p = (svcPorts[n] || []).map(hostPortOf).find(Boolean)
+      if (p) return p
+    }
+    // 有服务级信息但业务服务没有宿主端口：不启用 HTTP 检查（绝不退回数据库端口）
+    return ''
+  }
+  return (compose.ports || []).map(hostPortOf).find(Boolean) || ''
+}
+
+/**
  * 启发式方案（AI 不可用时的保底结论，也作为 AI 输出的校验基线）。
  */
 function buildHeuristicPlan(project, target, local, remote) {
@@ -677,8 +718,8 @@ function buildHeuristicPlan(project, target, local, remote) {
     reasons.push('项目缺少 Compose 编排与发布脚本：需要生成部署文件后才可部署')
   }
 
-  // 健康检查：取 Compose 第一个宿主端口，探测 127.0.0.1
-  const port = composeMain ? (composeMain.ports.map(hostPortOf).find(Boolean) || '') : ''
+  // 健康检查：取 Compose 里业务服务的宿主端口，探测 127.0.0.1
+  const port = composeMain ? businessHostPort(composeMain) : ''
   const health = port
     ? { enabled: true, url: `http://127.0.0.1:${port}/`, timeout: 180, interval: 5 }
     : { enabled: false, url: '', timeout: 90, interval: 3 }
@@ -1574,9 +1615,11 @@ async function generateQuickConfig(projectId, targetId, opts = {}) {
 
   const diag = await diagnose(projectId, target.id)
   const plan = diag.plan
+  // ── 生成不得回退用户已经明确配置、且体检推断不优于现有值的项 ──
+  const { plan: quickPlan, kept } = applyQuickKeepPlan(project, target, plan, diag.local)
+  if (kept.length) log('info', `沿用已有配置：${kept.join('；')}`)
   // 数据同步开关由用户说了算：开启时从体检结论挑一个本地真实存在的目录作为同步源
   //（upload 项优先，其次 share 项；都没有则保留当前值），关闭时明确不启用
-  const quickPlan = JSON.parse(JSON.stringify(plan))
   const syncOn = !!(target.dataSync && target.dataSync.enabled)
   if (syncOn) {
     const items = Array.isArray(plan.dataSync && plan.dataSync.items) ? plan.dataSync.items : []
@@ -1603,9 +1646,11 @@ async function generateQuickConfig(projectId, targetId, opts = {}) {
     log('warn', '同步后的导入命令需要应用账号（未配置）：本次发布只同步文件，可在完整配置中补全账号后启用导入')
   }
   // 服务器体检失败时启发式方案可能给出「开启备份但容器名/库名为空」，发布检查会拦截：
-  // 降级为不备份并写日志说明（需要备份的用户可切到完整配置补全）
+  // 降级为不备份并写日志说明（需要备份的用户可切到完整配置补全）。
+  // 手动指定的数据库不在此列——那是用户自己填的，保持原样由发布检查给出明确报错。
   if (quickPlan.db && quickPlan.db.enabled === true
-    && !(String(quickPlan.db.container || '').trim() && String(quickPlan.db.name || '').trim())) {
+    && !(String(quickPlan.db.container || '').trim() && String(quickPlan.db.name || '').trim())
+    && !(target.db && target.db.strategy === 'manual')) {
     quickPlan.db.enabled = false
     log('warn', '数据库容器名/库名识别不全，本次发布不自动备份数据库（可在完整配置中补全后开启）')
   }
@@ -1627,9 +1672,75 @@ async function generateQuickConfig(projectId, targetId, opts = {}) {
   return { ok: true, project: fresh, plan: quickPlan }
 }
 
+/**
+ * 现有配置的部署形态是否具备发布条件（用于「推断形态缺文件时保留现有形态」）。
+ * 只认用户明确选择过的 docker / script：auto 是「未配置」的默认值，应让位于更具体的推断结果。
+ * local 为 scanLocal 结果——docker 看是否探测到 Compose；script 看升级脚本或打包命令是否具备。
+ */
+function existingFormUsable(project, local) {
+  if (!local || !local.exists) return false
+  if (project.deployMode === 'docker') return local.compose.files.length > 0
+  if (project.deployMode === 'script') {
+    return !!(local.releaseScripts.upgrade || (project.scriptMode && String(project.scriptMode.packageCommand || '').trim()))
+  }
+  return false
+}
+
+/**
+ * 极简生成的保守规则（纯函数，不落盘）：已有项目切到极简后，生成不得回退用户已经明确
+ * 配置、且体检推断不优于现有值的项——这些值往往刻意设定（线上版本、手动健康地址、
+ * 指定数据库实例），让位于推断值（本地文件里的旧版本、按端口猜的地址、按镜像猜的容器）
+ * 会造成发布事故。返回调整后的 plan 与被沿用项说明（供日志与预演）。
+ */
+function applyQuickKeepPlan(project, target, plan, local) {
+  const out = JSON.parse(JSON.stringify(plan))
+  const kept = []
+  // 版本：极简视图没有版本输入项，版本由发布卡「新版本」管理；生成值来自本地文件，
+  // 可能低于线上（源项目 VERSION 停在旧版本、发布版本由手动指定）——一律不动已有手动版本
+  if (project.version && project.version.strategy === 'manual' && String(project.version.manual || '').trim()) {
+    out.version = { strategy: 'manual', manual: String(project.version.manual).trim() }
+    kept.push(`版本保持手动 ${out.version.manual}`)
+  }
+  // 健康检查：手动地址是用户确认过的业务接口，生成值只按 Compose 端口推断（可能命中数据库端口）
+  if (target.health && target.health.strategy === 'manual') {
+    out.health = { ...target.health }
+    kept.push('健康检查保持现有地址')
+  }
+  // 数据库：手动指定或明确关闭都保持——生成值在服务器体检失败时拿不到容器名，会退化成「不备份」
+  if (target.db && (target.db.strategy === 'manual' || target.db.strategy === 'off')) {
+    out.db = { ...target.db }
+    kept.push(target.db.strategy === 'off'
+      ? '数据库保持不备份'
+      : `数据库保持指定实例 ${target.db.container || ''}/${target.db.name || ''}`.trim())
+  }
+  // 部署形态：推断出的形态缺少必需部署文件（如被判成脚本部署但项目没有 upgrade.sh）时，
+  // 保留现有可用形态，避免把原本能发布的项目改成发布即失败
+  if (Array.isArray(out.missingFiles) && out.missingFiles.length && existingFormUsable(project, local)) {
+    out.deployMode = project.deployMode
+    out.composeFile = project.composeFile
+    out.scriptMode = project.scriptMode
+    kept.push(`部署形态保持现有 ${project.deployMode === 'script' ? '脚本部署' : 'Docker Compose'}（推断形态缺 ${out.missingFiles.map((m) => m.path).join('、')}）`)
+  }
+  return { plan: out, kept }
+}
+
+/**
+ * 现有配置的部署形态是否具备发布条件（用于「推断形态缺文件时保留现有形态」）。
+ * 只认用户明确选择过的 docker / script：auto 是「未配置」的默认值，应让位于更具体的推断结果。
+ * local 为 scanLocal 结果——docker 看是否探测到 Compose；script 看升级脚本或打包命令是否具备。
+ */
+function existingFormUsable(project, local) {
+  if (!local || !local.exists) return false
+  if (project.deployMode === 'docker') return local.compose.files.length > 0
+  if (project.deployMode === 'script') {
+    return !!(local.releaseScripts.upgrade || (project.scriptMode && String(project.scriptMode.packageCommand || '').trim()))
+  }
+  return false
+}
+
 module.exports = {
   redactAiText,
-  scanLocal, scanRemote, diagnose, writeFiles, applyPlan, generateFileContent, generateQuickConfig,
+  scanLocal, scanRemote, diagnose, writeFiles, applyPlan, generateFileContent, generateQuickConfig, applyQuickKeepPlan,
   buildHeuristicPlan, mergePlan, assertWritablePath, parseCompose, parseEnvKeys, extractJson,
   buildPrompt, pickFileContentsForAi, detectExistingDeployment,
 }
