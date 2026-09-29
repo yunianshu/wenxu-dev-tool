@@ -14,9 +14,9 @@
       <section class="fill-toolbar">
         <div class="fill-group">
           <el-date-picker v-model="fillDate" type="date" value-format="YYYY-MM-DD" :clearable="false" :disabled="state.fillReport.submitting" :disabled-date="(d) => d.getTime() > Date.now()" :shortcuts="dateShortcuts" aria-label="填报日期" class="fill-date" />
-          <el-time-select v-model="startTime" start="06:00" end="21:00" step="00:15" :clearable="false" :disabled="state.fillReport.submitting" placeholder="上班时间" aria-label="上班时间" class="fill-start" />
+          <el-time-select v-model="startTime" start="06:00" end="21:00" step="00:30" :clearable="false" :disabled="state.fillReport.submitting" placeholder="上班时间" aria-label="上班时间" class="fill-start" />
           <span class="time-separator">至</span>
-          <el-time-select v-model="endTime" start="00:00" end="23:45" step="00:15" clearable :disabled="state.fillReport.submitting" class="fill-end" :placeholder="endPlaceholder" aria-label="下班时间，留空使用当前时间" />
+          <el-time-select v-model="endTime" start="00:00" end="23:30" step="00:30" clearable :disabled="state.fillReport.submitting" class="fill-end" :placeholder="endPlaceholder" aria-label="下班时间，留空使用当前时间" />
         </div>
         <span class="fill-range-tip">午休 {{ state.config.zentao?.lunchStart || '12:00' }}–{{ state.config.zentao?.lunchEnd || '13:00' }} · {{ rangePreview }}</span>
       </section>

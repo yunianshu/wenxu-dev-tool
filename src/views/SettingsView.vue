@@ -321,7 +321,7 @@
         <div class="ai-form">
           <div class="ai-row">
             <span class="ai-label">上班时间</span>
-            <el-time-select v-model="state.config.zentao.workStart" start="06:00" end="21:00" step="00:15" style="width: 120px" />
+            <el-time-select v-model="state.config.zentao.workStart" start="06:00" end="21:00" step="00:30" style="width: 120px" />
           </div>
           <div class="ai-row">
             <span class="ai-label">午休时间</span>
