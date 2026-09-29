@@ -95,6 +95,8 @@ async function main() {
     out.drawerOpened = await wait(async () => await evaluate("(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent.includes('部署设置')); if (b) { b.click(); return true } return false })()"))
     out.drawerVisible = await wait(async () => await evaluate("!!document.querySelector('.deploy-config-drawer .deploy-config-scroll')"))
     out.modeOptions = await evaluate("[...document.querySelectorAll('.deploy-config-drawer .el-radio-button')].map(el => el.textContent.trim())")
+    // 默认配置方式：选中的是哪个（用户打开部署设置时不点任何东西看到的模式）
+    out.defaultMode = await evaluate("(() => { const el = document.querySelector('.deploy-config-drawer .el-radio-button.is-active'); return el ? el.textContent.trim() : '' })()")
     return out
   })
   const hashBaseline = fileHash()
@@ -119,10 +121,11 @@ async function main() {
   const hashAfter = fileHash()
 
   const assert = (name, cond, detail) => { if (cond) console.log(`  PASS  ${name}`); else { console.log(`  FAIL  ${name}  ${detail || ''}`); checks.push(name) } }
-  assert('运行的是目标版本（本机安装版）', String(r1.version || '').includes('1.4.108'), `实际显示: ${r1.version}`)
+  assert('运行的是目标版本（本机安装版）', String(r1.version || '').includes('1.4.109'), `实际显示: ${r1.version}`)
   assert('部署页与项目就绪', r1.deployReady && r1.hasProject)
   assert('部署设置抽屉可打开', r1.drawerOpened && r1.drawerVisible)
   assert('配置方式提供 极简配置/完整配置 两个选项', (r1.modeOptions || []).includes('极简配置') && (r1.modeOptions || []).includes('完整配置'), JSON.stringify(r1.modeOptions))
+  assert('配置方式默认选中极简配置', r1.defaultMode === '极简配置', `实际选中: ${r1.defaultMode || '（无）'}`)
   assert('可切换到极简配置', r2.quickSwitched)
   assert('极简视图只含 部署服务器/项目地址/数据同步 三项', r2.quickView && r2.quickView.hasServer && r2.quickView.hasPath && r2.quickView.hasSync, JSON.stringify(r2.quickView && r2.quickView.labels))
   assert('极简视图隐藏部署形态/版本号/数据库/健康检查等高级配置', r2.quickView && r2.quickView.noAdvanced && r2.quickView.noAdvancedCards, JSON.stringify(r2.quickView && r2.quickView.labels))

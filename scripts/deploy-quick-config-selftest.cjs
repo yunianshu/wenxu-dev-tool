@@ -24,13 +24,15 @@ const path = require('path')
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'quick-deploy-test-'))
 const userData = path.join(tmpRoot, 'userdata')
 fs.mkdirSync(userData, { recursive: true })
+// 旧文件迁移用例需要一份独立的配置目录，避免污染主夹具
+let userDataOverride = ''
 
 // ── electron 打桩（selftest 在纯 node 下运行）──
 const electronPath = require.resolve('electron')
 require.cache[electronPath] = {
   id: electronPath, filename: electronPath, loaded: true,
   exports: {
-    app: { getPath: () => userData },
+    app: { getPath: () => userDataOverride || userData },
     safeStorage: { isEncryptionAvailable: () => false },
   },
 }
@@ -190,13 +192,41 @@ const logs = []
 const log = (level, text) => logs.push([level, text])
 
 async function main() {
-  // ── ① 新项目默认极简 + 旧数据不受影响（configMode 兼容） ──
+  // ── ① 配置方式默认极简（configMode 缺省即 quick） ──
   assert.strictEqual(projects.list().length, 0, '夹具环境应为空')
   const savedA = saveQuickProject('quickscript', projScript, true, '/srv/quick-a')
   assert.strictEqual(savedA.configMode, 'quick', '极简模式应原样落盘')
+  // 未声明 configMode（新建项目 / 旧表单）→ 默认极简，不再是完整配置
   const legacy = projects.save({ name: 'legacy', localPath: projNew, targets: [] })
   const legacyP = projects.list().find((p) => p.id === legacy.id)
-  assert.strictEqual(legacyP.configMode, 'manual', '未声明 configMode 的旧项目必须保持完整配置模式')
+  assert.strictEqual(legacyP.configMode, 'quick', '未声明 configMode 的项目按默认值走极简配置')
+  // 用户显式选「完整配置」→ 保存后仍是 manual，重新加载不被默认值改判
+  const manualProj = projects.save({ name: 'manual', localPath: projNew, configMode: 'manual', targets: [] })
+  assert.strictEqual(projects.list().find((p) => p.id === manualProj.id).configMode, 'manual', '用户显式选择的完整配置必须保留')
+
+  // ── ①-② 旧文件迁移：v2 里的 manual 是旧版缺省值（非用户选择），一次性改判为极简 ──
+  const legacyDir = path.join(tmpRoot, 'userdata-legacy')
+  fs.mkdirSync(legacyDir, { recursive: true })
+  const legacyProjectsPath = path.join(legacyDir, 'deploy-projects.json')
+  fs.writeFileSync(legacyProjectsPath, JSON.stringify({
+    schemaVersion: 2,
+    servers: [],
+    projects: [
+      { id: 'p_v2_manual', name: '旧项目A', targets: [{ id: 't_v2_manual', dataSync: { enabled: false } }], configMode: 'manual' },
+      { id: 'p_v2_missing', name: '旧项目B', targets: [{ id: 't_v2_missing', dataSync: { enabled: false } }] },
+    ],
+  }, null, 2))
+  userDataOverride = legacyDir
+  try {
+    assert.deepStrictEqual(projects.list().map((p) => p.configMode), ['quick', 'quick'], 'v2 旧配置（含旧默认值 manual）应迁移为极简')
+    const migratedDoc = JSON.parse(fs.readFileSync(legacyProjectsPath, 'utf8'))
+    assert.strictEqual(migratedDoc.schemaVersion, 3, '迁移后落盘 schemaVersion=3')
+    assert.deepStrictEqual(migratedDoc.projects.map((p) => p.configMode), ['quick', 'quick'], '迁移结果一次落盘')
+    // 迁移后用户改选完整配置 → 再次加载不再被迁移覆盖（迁移只按 schemaVersion 触发一次）
+    migratedDoc.projects[0].configMode = 'manual'
+    fs.writeFileSync(legacyProjectsPath, JSON.stringify(migratedDoc, null, 2))
+    assert.strictEqual(projects.list().find((p) => p.id === 'p_v2_manual').configMode, 'manual', '迁移后用户选择的完整配置不再被覆盖')
+  } finally { userDataOverride = '' }
 
   // ── ② AI 不可用 → 启发式保底：生成成功且不同项目配置不同 ──
   const genA = await aiDeploy.generateQuickConfig(savedA.id, savedA.targets[0].id, { log })

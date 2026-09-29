@@ -159,8 +159,9 @@ function normalizeProject(p) {
     user: source.deploy.dbUser,
   })
   for (const k of ['backupDatabase', 'dbType', 'dbContainer', 'dbName', 'dbUser']) delete c.deploy[k]
-  // 配置方式：quick（发布时自动生成派生配置）/ manual（完整配置）。旧数据没有该字段 → manual，行为不变
-  c.configMode = source.configMode === 'quick' ? 'quick' : 'manual'
+  // 配置方式：quick（默认，发布时自动生成派生配置）/ manual（用户显式选择完整配置）。
+  // 缺字段视为默认值 → quick；旧版归一化写下的 manual 由 loadDocument 的 v3 迁移统一改判。
+  c.configMode = source.configMode === 'manual' ? 'manual' : 'quick'
   // 版本号进入服务器端路径（releases/$VERSION，且会被 rm -rf）：只放行安全字符，
   // 非法值清空由发布前检查报错，杜绝路径注入
   const manual = String(c.version.manual || '').trim()
@@ -276,6 +277,11 @@ function registerServer(doc, raw) {
   return server.id
 }
 
+/**
+ * 存储版本：3 = 「极简配置」成为默认配置方式（2 及更早的 manual 是历史默认值而非用户选择）。
+ */
+const SCHEMA_VERSION = 3
+
 /** 项目和服务器一起替换落盘，迁移不会留下半份引用。 */
 function writeDocument(doc) {
   const projects = doc.projects.map((p) => ({ ...p, targets: p.targets.map((t) => {
@@ -286,7 +292,7 @@ function writeDocument(doc) {
   fs.mkdirSync(path.dirname(file()), { recursive: true })
   const temp = `${file()}.${process.pid}.tmp`
   try {
-    fs.writeFileSync(temp, JSON.stringify({ schemaVersion: 2, servers: doc.servers, projects }, null, 2), { encoding: 'utf8', mode: 0o600 })
+    fs.writeFileSync(temp, JSON.stringify({ schemaVersion: SCHEMA_VERSION, servers: doc.servers, projects }, null, 2), { encoding: 'utf8', mode: 0o600 })
     fs.renameSync(temp, file())
   } finally { if (fs.existsSync(temp)) fs.unlinkSync(temp) }
 }
@@ -310,7 +316,10 @@ function loadDocument() {
   if (fs.existsSync(file())) raw = JSON.parse(fs.readFileSync(file(), 'utf8'))
   const doc = { servers: (raw.servers || []).map(normalizeServer), projects: (raw.projects || []).map(normalizeProject) }
   // 旧项目即使尚未配置连接，也要固定归一化生成的目标 ID，不能每次读取都换 ID。
-  let migrated = raw.schemaVersion !== 2 && doc.projects.length > 0
+  let migrated = raw.schemaVersion !== SCHEMA_VERSION && doc.projects.length > 0
+  // 配置方式默认极简：v3 之前的 manual 全部是旧版缺失字段时归一化出来的默认值（不是用户选择），
+  // 一次性改判为 quick 并落盘；此后用户在界面上选的「完整配置」会原样保留，不再被迁移覆盖。
+  if (Number(raw.schemaVersion || 0) < SCHEMA_VERSION) for (const p of doc.projects) p.configMode = 'quick'
   for (const p of doc.projects) for (const t of p.targets) {
     if (!t.serverId && t.server.host) { t.serverId = registerServer(doc, t.server); migrated = true }
     if (t.serverId) {
