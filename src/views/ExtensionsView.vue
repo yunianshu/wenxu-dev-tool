@@ -22,7 +22,7 @@
     <el-alert v-else-if="currentPlatform && !currentPlatform.installed" :title="'未检测到 ' + currentPlatform.name + ' 的配置目录：' + currentPlatform.dir" type="warning" :closable="false" show-icon />
     <el-alert v-else-if="selected?.type === 'plugins' && currentPlatform && !currentPlatform.pluginsSupported" :title="currentPlatform.pluginNote || '该平台暂不支持插件'" type="info" :closable="false" show-icon />
     <div class="ext-table-wrap" v-loading="loading">
-      <el-table ref="tableRef" :data="pagedRows" height="100%" highlight-current-row :row-key="row => row.id || row.name" @current-change="currentRow = $event" @row-dblclick="inspectRow" @row-contextmenu="openContext" @sort-change="changeSort">
+      <el-table :data="pagedRows" height="100%" :row-key="row => row.id || row.name" @sort-change="changeSort">
         <template #empty><div class="ext-empty"><el-icon><Grid /></el-icon><strong>{{ search || statusFilter !== 'all' ? '没有匹配的扩展' : '暂无' + (selected?.type === 'plugins' ? '插件' : '技能') }}</strong><span>{{ search || statusFilter !== 'all' ? '调整搜索关键词或筛选条件' : '在对应平台安装后，点击刷新重新读取' }}</span></div></template>
         <el-table-column :label="selected?.type === 'plugins' ? '插件名称' : '技能名称'" prop="name" sortable="custom" min-width="200" show-overflow-tooltip />
         <el-table-column label="用途" min-width="320" show-overflow-tooltip><template #default="{row}">{{ row.description || (row.version ? '版本 ' + row.version : '—') }}</template></el-table-column>
@@ -31,18 +31,13 @@
         <el-table-column label="操作" width="112" fixed="right"><template #default="{row}"><el-dropdown trigger="click" @command="command => runCommand(command, row)"><el-button text size="small" :aria-label="'操作 ' + row.name"><el-icon><MoreFilled /></el-icon></el-button><template #dropdown><el-dropdown-menu><el-dropdown-item v-if="selected?.type === 'skills'" command="inspect" :disabled="!row.hasSkillMd">查看 SKILL.md</el-dropdown-item><el-dropdown-item command="open">打开目录</el-dropdown-item><el-dropdown-item command="toggle" :disabled="row.busy || !canToggle(row)">{{ row.enabled ? '停用' : '启用' }}</el-dropdown-item></el-dropdown-menu></template></el-dropdown></template></el-table-column>
       </el-table>
     </div>
-    <div v-if="currentRow" class="ext-selection-bar">
-      <strong>{{ currentRow.name }}</strong><span v-if="currentRow.linkTarget" :title="currentRow.linkTarget">链接到 {{ currentRow.linkTarget }}</span>
-      <div class="ext-selection-actions"><el-button v-if="selected?.type === 'skills'" :disabled="!currentRow.hasSkillMd" @click="showSkillDoc(currentRow)"><el-icon><Document /></el-icon>查看 SKILL.md</el-button><el-button :loading="currentRow.busy" :disabled="!canToggle(currentRow)" @click="runCommand('toggle', currentRow)">{{ currentRow.enabled ? '停用' : '启用' }}</el-button></div>
-    </div>
     <div class="ext-footer"><span>共 {{ filteredRows.length }} 项 · 已启用 {{ enabledCount }} 项</span><el-pagination v-model:current-page="page" :page-size="pageSize" :total="filteredRows.length" layout="prev, pager, next" :hide-on-single-page="true" small /></div>
-    <Teleport to="body"><div v-if="contextMenu" class="ext-context-menu" role="menu" :style="{left: contextMenu.x + 'px', top: contextMenu.y + 'px'}" @click.stop><button v-if="selected?.type === 'skills'" role="menuitem" :disabled="!contextMenu.row.hasSkillMd" @click="contextCommand('inspect')">查看 SKILL.md</button><button role="menuitem" @click="contextCommand('open')">打开目录</button><button role="menuitem" :disabled="contextMenu.row.busy || !canToggle(contextMenu.row)" @click="contextCommand('toggle')">{{ contextMenu.row.enabled ? '停用' : '启用' }}</button></div></Teleport>
     <el-drawer v-model="docVisible" :title="docTitle" size="560px"><pre class="skill-doc">{{ docContent }}</pre></el-drawer>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useTopbarReady } from '../composables/useTopbarReady'
 
@@ -65,10 +60,7 @@ const statusFilter = ref('all')
 const sortOrder = ref('ascending')
 const page = ref(1)
 const pageSize = 25
-const currentRow = ref(null)
-const tableRef = ref(null)
 const loadError = ref('')
-const contextMenu = ref(null)
 const filteredRows = computed(() => {
   const query = search.value.trim().toLocaleLowerCase()
   return rows.value.filter(row => {
@@ -78,8 +70,8 @@ const filteredRows = computed(() => {
   }).sort((a,b) => sortOrder.value ? String(a.name).localeCompare(String(b.name), 'zh-CN') * (sortOrder.value === 'descending' ? -1 : 1) : 0)
 })
 const pagedRows = computed(() => filteredRows.value.slice((page.value - 1) * pageSize, page.value * pageSize))
-watch([search, statusFilter, () => selected.value?.platformId, () => selected.value?.type], () => { page.value = 1; currentRow.value = null; contextMenu.value = null })
-watch(filteredRows, value => { page.value = Math.min(page.value, Math.max(1, Math.ceil(value.length / pageSize))); currentRow.value = value.find(row => (row.id || row.name) === (currentRow.value?.id || currentRow.value?.name)) || null })
+watch([search, statusFilter, () => selected.value?.platformId, () => selected.value?.type], () => { page.value = 1 })
+watch(filteredRows, value => { page.value = Math.min(page.value, Math.max(1, Math.ceil(value.length / pageSize))) })
 function selectPlatform(id) { selected.value = { platformId: id, type: selected.value?.type || 'skills' } }
 function selectType(type) { if (selected.value) selected.value = { ...selected.value, type } }
 function changeSort({order}) { sortOrder.value = order; page.value = 1 }
@@ -91,9 +83,6 @@ function runCommand(command, row) {
   if (command === 'open') openPath(row.dir || row.installPath)
   if (command === 'toggle' && canToggle(row)) selected.value?.type === 'skills' ? toggleSkill(row, !row.enabled) : togglePlugin(row, !row.enabled)
 }
-function openContext(row, column, event) { event.preventDefault(); tableRef.value?.setCurrentRow(row); contextMenu.value = { row, x: Math.min(event.clientX, window.innerWidth - 180), y: Math.min(event.clientY, window.innerHeight - 120) } }
-function contextCommand(command) { const row = contextMenu.value?.row; contextMenu.value = null; if (row) runCommand(command, row) }
-function closeContext(event) { if (event.type !== 'keydown' || event.key === 'Escape') contextMenu.value = null }
 
 async function loadExtensions() {
   loading.value = true
@@ -174,8 +163,7 @@ function formatTime(value) {
   return Number.isNaN(d.getTime()) ? value : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-onMounted(() => { loadExtensions(); window.addEventListener('click', closeContext); window.addEventListener('keydown', closeContext) })
-onBeforeUnmount(() => { window.removeEventListener('click', closeContext); window.removeEventListener('keydown', closeContext) })
+onMounted(loadExtensions)
 </script>
 
 <style scoped>
@@ -194,18 +182,10 @@ onBeforeUnmount(() => { window.removeEventListener('click', closeContext); windo
 .extensions-toolbar > .el-button { margin-left: auto; }
 .ext-table-wrap { min-height: 200px; flex: 1; }
 .ext-row-error { color: var(--danger); }
-.ext-selection-bar { min-height: 56px; display: flex; align-items: center; gap: 16px; border-top: 1px solid var(--line); font-size: 13px; }
-.ext-selection-bar > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; color: var(--text-muted); font-size: 12px; }
-.ext-selection-actions { margin-left: auto; display: flex; gap: 8px; flex-shrink: 0; }
-.ext-selection-actions .el-button + .el-button { margin: 0; }
 .ext-footer { min-height: 40px; display: flex; justify-content: space-between; align-items: center; color: var(--text-muted); font-size: 11px; }
 .ext-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 64px 16px; line-height: 1.5; }
 .ext-empty .el-icon { font-size: 24px; }
 .ext-empty strong { font-size: 14px; font-weight: 500; }
 .ext-empty span { font-size: 12px; }
 .skill-doc { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.8 var(--el-font-family); color: var(--ink-soft); }
-.ext-context-menu { position: fixed; z-index: 3000; padding: 4px; width: 172px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; box-shadow: var(--shadow-float); }
-.ext-context-menu button { display: block; width: 100%; height: 32px; padding: 0 12px; text-align: left; background: transparent; border: 0; border-radius: 4px; color: var(--ink-soft); font-size: 13px; cursor: pointer; }
-.ext-context-menu button:hover:not(:disabled) { background: var(--surface-subtle); }
-.ext-context-menu button:disabled { color: var(--text-disabled); cursor: default; }
 </style>

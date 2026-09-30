@@ -22,9 +22,7 @@
       </section>
 
       <div class="fill-notices">
-        <el-alert v-if="!zentaoConfigured" type="warning" :closable="false" show-icon title="禅道未配置：绑定项目与提交工时需要禅道地址与账号。">
-          <el-button text @click="emit('navigate', 'fill-settings')">去设置</el-button>
-        </el-alert>
+        <el-alert v-if="!zentaoConfigured" type="warning" :closable="false" show-icon title="禅道未配置：请在「设置 → 一键填报」填写禅道地址与账号。" />
         <el-alert v-else-if="plan?.ztError" type="error" :closable="false" show-icon :title="`禅道任务获取失败：${plan.ztError}`" />
         <el-alert v-if="!hanprintConfigured" type="info" :closable="false" title="汉印平台未配置，本次只填报禅道工时。" />
         <el-alert v-else-if="plan?.hpError" type="error" :closable="false" :title="`汉印任务获取失败：${plan.hpError}`" />

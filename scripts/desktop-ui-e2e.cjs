@@ -235,6 +235,8 @@ async function main() {
     interactions.push('发布运行态加载动画与完成后阶段明细')
     await navigate('AI 工作台')
     await page.locator('.knowledge-tabs').getByRole('button', { name: '想法地球', exact: true }).click()
+    assert.equal(await page.getByRole('button', { name: '新建想法', exact: true }).count(), 0, '想法只从地球输入框创建');
+    assert.equal(await page.getByRole('button', { name: /查看全部记录/ }).count(), 0, '全部记录只通过页签进入');
     const ideaCount = await page.locator('.idea-globe-heading span').textContent()
     await page.getByRole('textbox', { name: '快速记录', exact: true }).fill('快速记录的验证想法')
     await page.getByRole('button', { name: '保存快速记录', exact: true }).click()
@@ -248,6 +250,7 @@ async function main() {
     assert.equal(await page.getByRole('textbox', { name: '记录标题', exact: true }).inputValue(), '快速记录的验证想法', '点击地球节点打开原有记录详情')
     await page.getByRole('button', { name: '关闭记录详情', exact: true }).click()
     await page.locator('.knowledge-tabs').getByRole('button', { name: '全部记录', exact: true }).click()
+    assert.equal(await page.getByRole('button', { name: '新建第一条记录', exact: true }).count(), 0, '列表不增加第二个创建入口');
     await page.locator('.knowledge-record-title').filter({ hasText: '快速记录的验证想法' }).click()
     await page.locator('.knowledge-editor').waitFor()
     await page.getByRole('textbox', { name: '记录标题', exact: true }).fill('测试 · 自动保存知识记录')
@@ -293,7 +296,11 @@ async function main() {
 
     await navigate('项目')
     await page.getByRole('option', { name: /Personnel PLM/ }).click()
+    assert.equal(await page.locator('.project-capabilities').count(), 0, '项目页签与侧栏不再重复成能力卡片');
+    assert.equal(await page.getByRole('button', { name: '新建项目', exact: true }).count(), 1, '项目创建只保留页头入口');
+    assert.equal(await page.getByRole('button', { name: '编辑', exact: true }).count(), 1, '项目编辑只保留详情页头入口');
     await page.getByRole('tab', { name: '知识记录', exact: true }).click()
+    assert.equal(await page.getByRole('button', { name: /记录项目经验|在 AI 工作台查看/ }).count(), 0, '项目知识页不再重复创建或跳转列表');
     await page.getByText('保持知识记录与项目解耦', { exact: true }).click()
     await page.locator('.knowledge-workbench').waitFor()
     assert.equal(await page.getByRole('textbox', { name: '记录标题', exact: true }).inputValue(), '保持知识记录与项目解耦', '项目记录入口打开同一共享知识记录')
@@ -329,9 +336,11 @@ async function main() {
     await page.screenshot({ path: path.join(OUTPUT, 'dark-fill-bind-drawer.png') })
     await page.keyboard.press('Escape')
     await navigate('扩展管理')
+    assert.equal(await page.locator('.ext-selection-bar, .ext-context-menu').count(), 0, '扩展统一使用行操作菜单');
     await page.getByRole('textbox', { name: '搜索扩展' }).fill('git-commit')
     assert.equal(await page.locator('.ext-table-wrap .el-table__body tr').count(), 1, '扩展搜索必须真正过滤')
-    await page.locator('.ext-table-wrap .el-table__body tr').dblclick()
+    await page.getByRole('button', { name: '操作 git-commit', exact: true }).click()
+    await page.getByRole('menuitem', { name: '查看 SKILL.md', exact: true }).click()
     await page.locator('.skill-doc').waitFor()
     assert((await page.locator('.skill-doc').innerText()).includes('git-commit'))
     await page.keyboard.press('Escape')

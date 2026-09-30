@@ -19,7 +19,7 @@
       </div>
       <div class="idea-globe-hint">拖动旋转　·　滚轮缩放　·　点击想法查看</div>
     </div>
-    <footer class="idea-globe-footer"><span>每个光点对应一条本地想法记录</span><button type="button" @click="$emit('browse')">查看全部记录 <span aria-hidden="true">→</span></button></footer>
+    <footer class="idea-globe-footer"><span>每个光点对应一条本地想法记录</span></footer>
   </section>
 </template>
 
@@ -32,7 +32,7 @@ const props = defineProps({
   highlightId: { type: String, default: '' },
   loading: { type: Boolean, default: false },
 })
-const emit = defineEmits(['select', 'browse'])
+const emit = defineEmits(['select'])
 const stage = ref(null)
 const canvas = ref(null)
 const autoRotate = ref(!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
@@ -301,6 +301,5 @@ onBeforeUnmount(() => { cancelAnimationFrame(frameId); resizeObserver?.disconnec
 .idea-globe-tooltip span { color: var(--text-muted); font-size: 11px; }
 .idea-globe-hint { position: absolute; left: 24px; bottom: 16px; color: var(--text-muted); font-size: 11px; pointer-events: none; }
 .idea-globe-footer { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 12px; min-height: 40px; padding: 0 16px 0 24px; border-top: 1px solid var(--line); color: var(--text-muted); font-size: 11px; }
-.idea-globe-footer button { color: var(--accent-strong); font-size: 12px; }
 @media (max-width: 900px) { .idea-globe-toolbar { padding: 0 16px; }.idea-globe-hint { left: 16px; }.idea-globe-footer { padding-left: 16px; } }
 </style>

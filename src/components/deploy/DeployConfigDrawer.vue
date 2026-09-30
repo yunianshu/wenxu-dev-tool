@@ -38,7 +38,6 @@
             <el-select :model-value="activeTarget?.serverId" placeholder="选择服务器" clearable style="flex: 1" @change="selectServer">
               <el-option v-for="server in servers" :key="server.id" :value="server.id" :label="`${server.name} · ${server.host}`" />
             </el-select>
-            <el-button @click="emit('manage-servers')">服务器管理</el-button>
           </div>
           <p v-if="activeTarget?.server?.host" class="f-mini">{{ activeTarget.server.username }}@{{ activeTarget.server.host }}:{{ activeTarget.server.port }}（登录信息统一在服务器管理维护）</p>
           <p v-else class="f-mini">请先添加或选择服务器</p>
@@ -147,7 +146,6 @@
             <el-select :model-value="activeTarget.serverId" placeholder="选择服务器" clearable style="flex: 1" @change="selectServer">
               <el-option v-for="server in servers" :key="server.id" :value="server.id" :label="`${server.name} · ${server.host}`" />
             </el-select>
-            <el-button @click="emit('manage-servers')">服务器管理</el-button>
           </div>
           <p class="f-mini selected-server" :data-host="activeTarget.server.host">{{ activeTarget.server.host ? `${activeTarget.server.username}@${activeTarget.server.host}:${activeTarget.server.port}（登录信息统一在服务器管理维护）` : '请先添加或选择服务器' }}</p>
           <p v-if="activeTarget.server.secretNeedsReentry || activeTarget.server.passphraseNeedsReentry" class="f-mini">旧版服务器凭据需在「服务器管理」中重新输入；项目配置仍已保留。</p>
@@ -356,7 +354,7 @@ const props = defineProps({
   projects: { type: Array, default: () => [] },
   servers: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['update:modelValue', 'update:activeTargetId', 'save', 'reset-conn', 'copy-config', 'manage-servers'])
+const emit = defineEmits(['update:modelValue', 'update:activeTargetId', 'save', 'reset-conn', 'copy-config'])
 
 /** 当前编辑的部署目标（响应式：切换目标后服务器/健康检查卡随之切换） */
 const activeTarget = computed(() => {

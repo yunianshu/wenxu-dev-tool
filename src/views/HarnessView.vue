@@ -111,13 +111,6 @@
           <div class="harness-version-row">
             <span class="harness-version">dsh {{ updateCurrent || '未知' }}</span>
             <el-button size="small" :loading="updateChecking" @click="checkUpdate">检查更新</el-button>
-            <el-button
-              v-if="updateAvailable && updateCanUpdate"
-              size="small"
-              type="primary"
-              :loading="updating"
-              @click="promptUpdate"
-            >更新到 {{ updateLatest }}</el-button>
           </div>
           <div v-if="updating" class="harness-hint">{{ updateProgressText }}</div>
           <div v-else-if="updateReason" class="harness-hint">{{ updateReason }}</div>

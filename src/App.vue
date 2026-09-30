@@ -35,7 +35,7 @@
           <FillReportView v-else-if="view === 'fillreport'" key="fillreport" @navigate="navigate" />
           <DeployView v-else-if="view === 'deploy'" key="deploy" @navigate="navigate" />
           <ExtensionsView v-else-if="view === 'extensions'" key="extensions" />
-          <SettingsView v-else key="settings" :initial-section="settingsSection" @show-changelog="changelogVisible = true" />
+          <SettingsView v-else key="settings" :initial-section="settingsSection" />
         </transition>
       </main>
       <!-- 后台不可用：所有数据操作都无法执行，必须给出可读原因与重试/退出入口，

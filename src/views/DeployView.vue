@@ -18,7 +18,6 @@
     <EmptyState
       v-if="!currentProject" icon="Promotion" title="先选择一个项目"
       description="部署始终作用于明确的项目。请到「项目」页选中一个项目，或先创建项目。"
-      action="前往项目" @action="$emit('navigate', 'projects')"
     />
 
     <template v-else>
@@ -67,7 +66,6 @@
       :detected="detected"
       :projects="state.deploy.projects"
       :servers="servers"
-      @manage-servers="serverManagerOpen = true"
       @save="saveProject"
       @copy-config="onCopyConfig"
       @reset-conn="connResult = null"

@@ -39,9 +39,6 @@
             :tabindex="project.id === selected?.id || (!filteredProjects.some(item => item.id === selected?.id) && project.id === filteredProjects[0]?.id) ? 0 : -1"
             :class="['project-list-item', { active: project.id === selected?.id }]"
             @click="selectProject(project.id)"
-            @dblclick="$emit('edit-project', project)"
-            @contextmenu.prevent="openContextMenu($event, project)"
-            @keydown.shift.f10.prevent="openContextMenu($event, project)"
           >
             <el-icon class="project-folder"><Folder /></el-icon>
             <span class="project-list-main"><strong>{{ project.name }}</strong><small>{{ project.description || '暂无项目说明' }}</small></span>
@@ -64,12 +61,7 @@
           </div>
           <div class="detail-actions">
             <el-button @click="$emit('edit-project', selected)"><el-icon><Edit /></el-icon>编辑</el-button>
-            <el-dropdown trigger="click">
-              <el-button text aria-label="更多项目操作"><el-icon><More /></el-icon>更多</el-button>
-              <template #dropdown>
-                <el-dropdown-menu><el-dropdown-item class="danger-item" @click="confirmRemove">删除项目</el-dropdown-item></el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <el-button text type="danger" @click="confirmRemove">删除项目</el-button>
           </div>
         </div>
 
@@ -96,20 +88,13 @@
         <div class="project-section">
           <div class="section-heading"><div><h3>项目备注</h3></div></div>
           <div v-if="selected.notes" class="project-notes">{{ selected.notes }}</div>
-          <button v-else class="inline-empty" type="button" @click="$emit('edit-project', selected)"><span>补充目标、约束与下一步</span><span class="add-note"><el-icon><Plus /></el-icon>添加备注</span></button>
+          <div v-else class="inline-empty">暂无备注，可通过右上角「编辑」补充。</div>
         </div>
 
-        <div class="project-section">
-          <div class="section-heading"><div><h3>项目能力</h3></div></div>
-          <div class="project-capabilities">
-            <button type="button" @click="detailTab = 'knowledge'"><el-icon><Collection /></el-icon><span><strong>知识与复盘</strong><small>积累想法、问题、决策和项目经验</small></span><el-icon><ArrowRight /></el-icon></button>
-            <button type="button" @click="$emit('navigate', 'deploy')"><el-icon><Promotion /></el-icon><span><strong>部署</strong><small>{{ deploymentConfigured(selected) ? `进入 ${selected.name} 发布工作区` : '需要时再配置部署' }}</small></span><el-icon><TopRight /></el-icon></button>
-          </div>
-        </div>
           </el-tab-pane>
           <el-tab-pane label="知识记录" name="knowledge"><ProjectKnowledge v-if="detailTab === 'knowledge'" :project="selected" @navigate="$emit('navigate', $event)" /></el-tab-pane>
           <el-tab-pane :label="`Git 活动源 (${matchedRepos.length})`" name="sources">
-            <div class="project-sources-heading"><span>关联本地目录发现的仓库</span><el-button text @click="$emit('navigate', 'activity-sources')">管理活动源<el-icon><TopRight /></el-icon></el-button></div>
+            <div class="project-sources-heading"><span>关联本地目录发现的仓库</span><span>扫描范围在「设置 → Git 活动」管理</span></div>
             <el-table :data="matchedRepos" empty-text="未发现关联仓库，可到设置中检查扫描根目录" class="project-source-table">
               <el-table-column label="活动源" min-width="160" show-overflow-tooltip><template #default="{ row }">{{ row.shortName || row.path }}</template></el-table-column>
               <el-table-column prop="path" label="本地路径" min-width="200" show-overflow-tooltip />
@@ -121,20 +106,12 @@
       </section>
     </div>
 
-    <EmptyState v-else icon="FolderAdd" title="还没有项目" description="创建一个项目，把资料、AI、活动与部署放在同一个上下文中。" action="新建项目" @action="$emit('create-project')" />
-    <Teleport to="body">
-      <div v-if="contextMenu.visible" ref="contextMenuElement" class="project-context-menu" role="menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @keydown.esc.stop="closeContextMenu" @keydown="onContextKeydown">
-        <button role="menuitem" @click="runContextAction('edit')"><el-icon><Edit /></el-icon>编辑项目</button>
-        <button role="menuitem" :disabled="!canOpenTerminal" @click="runContextAction('terminal')"><el-icon><Monitor /></el-icon>打开终端</button>
-        <button role="menuitem" :disabled="!canOpenTerminal" @click="runContextAction('directory')"><el-icon><FolderOpened /></el-icon>打开目录</button>
-        <button class="context-danger" role="menuitem" @click="runContextAction('remove')"><el-icon><Delete /></el-icon>删除项目</button>
-      </div>
-    </Teleport>
+    <EmptyState v-else icon="FolderAdd" title="还没有项目" description="点击右上角「新建项目」，把资料、AI、活动与部署放在同一个上下文中。" />
   </div>
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -150,8 +127,6 @@ const status = ref('')
 const sortBy = ref('default')
 const detailTab = ref('overview')
 const projectList = ref(null)
-const contextMenuElement = ref(null)
-const contextMenu = reactive({ visible: false, x: 0, y: 0 })
 const { currentProject, selectProject, removeProject, saveProject } = useProjects()
 /** 顶栏是否在位（沉浸全屏时整个顶栏被卸载，此时不投递页头） */
 const topbarReady = useTopbarReady()
@@ -186,39 +161,6 @@ async function openProjectPath(path) {
     if (!result?.ok) ElMessage.error('目录不存在或无法打开')
   } catch (error) { ElMessage.error(error?.message || '打开目录失败') }
 }
-
-function openContextMenu(event, project) {
-  selectProject(project.id)
-  const bounds = event.currentTarget.getBoundingClientRect()
-  contextMenu.x = Math.max(8, Math.min(event.clientX || bounds.left + 24, window.innerWidth - 192))
-  contextMenu.y = Math.max(8, Math.min(event.clientY || bounds.bottom, window.innerHeight - 160))
-  contextMenu.visible = true
-  nextTick(() => contextMenuElement.value?.querySelector('button')?.focus())
-}
-function closeContextMenu(event) {
-  contextMenu.visible = false
-  if (event?.key === 'Escape') nextTick(() => projectList.value?.querySelector('[aria-selected="true"]')?.focus())
-}
-function dismissContextMenu(event) {
-  if (!contextMenuElement.value?.contains(event.target)) closeContextMenu()
-}
-function onContextKeydown(event) {
-  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
-  event.preventDefault()
-  const buttons = [...contextMenuElement.value.querySelectorAll('button:not(:disabled)')]
-  const index = buttons.indexOf(document.activeElement)
-  const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length
-  buttons[next]?.focus()
-}
-function runContextAction(action) {
-  closeContextMenu()
-  if (action === 'edit') emit('edit-project', selected.value)
-  if (action === 'terminal') openInWorkbench()
-  if (action === 'directory') openProjectPath()
-  if (action === 'remove') confirmRemove()
-}
-onMounted(() => { if (typeof document !== 'undefined') document.addEventListener('pointerdown', dismissContextMenu) })
-onBeforeUnmount(() => { if (typeof document !== 'undefined') document.removeEventListener('pointerdown', dismissContextMenu) })
 
 /** 在终端工作台的分屏窗格中打开该项目（切到工作台视图并聚焦对应窗格） */
 function openInWorkbench() {
@@ -394,23 +336,8 @@ async function confirmRemove() {
 .project-section .section-heading h3 { font-size: 14px; line-height: 20px; color: var(--brand-text); }
 .project-notes { min-height: 56px; padding: 12px 16px; color: var(--brand-text); font-size: 13px; background: var(--surface-subtle); border-radius: 6px; line-height: 1.7; overflow-wrap: anywhere; }
 .inline-empty { min-height: 56px; padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border: 0; border-radius: 6px; background: var(--brand-bg); color: var(--text-muted); font: inherit; font-size: 12px; text-align: left; }
-.inline-empty:hover { background: var(--surface-subtle); }
-.add-note { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; color: var(--brand-text); }
-.project-capabilities { display: flex; flex-direction: column; gap: 0; }
-.project-capabilities button { min-height: 40px; padding: 8px 0; display: flex; align-items: center; gap: 8px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; color: var(--brand-text); background: transparent; font: inherit; }
-.project-capabilities button:hover { background: var(--surface-subtle); border-color: var(--line); }
-.project-capabilities button > .el-icon { font-size: 16px; color: var(--text-muted); }
-.project-capabilities button > .el-icon:last-child { margin-left: auto; }
-.project-capabilities span { flex: 1; display: flex; flex-direction: row; align-items: center; gap: 8px; }
-.project-capabilities strong { font-size: 13px; font-weight: 500; white-space: nowrap; }
-.project-capabilities small { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-sources-heading { min-height: 56px; display: flex; align-items: center; justify-content: space-between; color: var(--text-muted); font-size: 12px; }
 .project-source-table :deep(.el-table__row) { height: 40px; }
-.project-context-menu { position: fixed; z-index: 2100; width: 184px; padding: 4px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); }
-.project-context-menu button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 4px 8px; border: 0; border-radius: 4px; background: transparent; color: var(--brand-text); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
-.project-context-menu button:hover, .project-context-menu button:focus-visible { outline: 0; background: var(--surface-subtle); }
-.project-context-menu button:disabled { opacity: .45; cursor: not-allowed; }
-.project-context-menu .context-danger { margin-top: 4px; border-top: 1px solid var(--line); border-radius: 0; color: var(--danger); }
 @media (max-width: 1280px) {
   .projects-layout { grid-template-columns: 256px minmax(0, 1fr); }
   .project-list-item { height: 44px; min-height: 44px; padding-block: 4px; }

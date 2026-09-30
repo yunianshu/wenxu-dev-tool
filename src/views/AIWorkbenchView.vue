@@ -4,7 +4,6 @@
       <div class="topbar-page knowledge-topbar">
         <h1 class="topbar-page-title">AI 工作台</h1><span class="topbar-context">先把想法记下来</span>
         <div class="knowledge-topbar-actions">
-          <el-button type="primary" @click="createRecord()"><el-icon><Plus /></el-icon>新建想法</el-button>
           <el-dropdown trigger="click" @command="handleCommand"><el-button text aria-label="知识库更多操作"><el-icon><MoreFilled /></el-icon></el-button><template #dropdown><el-dropdown-menu>
             <el-dropdown-item command="import">导入 Markdown</el-dropdown-item>
             <el-dropdown-item command="folder" :disabled="!data.directory">打开知识库目录</el-dropdown-item>
@@ -25,7 +24,7 @@
         <form class="knowledge-capture idea-capture" @submit.prevent="quickCapture">
           <el-icon><EditPen /></el-icon><input v-model="capture" maxlength="2000" aria-label="快速记录" placeholder="写下一个想法，按 Enter 放进地球…" /><button type="submit" :disabled="!capture.trim() || creating" title="Enter 保存想法" aria-label="保存快速记录"><el-icon><TopRight /></el-icon></button>
         </form>
-        <IdeaGlobe :records="ideaRecords" :selected-id="current?.type === 'idea' ? current.id : ''" :highlight-id="highlightIdeaId" :loading="data.loading" @select="selectRow" @browse="setView('all')" />
+        <IdeaGlobe :records="ideaRecords" :selected-id="current?.type === 'idea' ? current.id : ''" :highlight-id="highlightIdeaId" :loading="data.loading" @select="selectRow" />
       </section>
       <section v-else class="knowledge-records" aria-label="知识记录">
         <div class="knowledge-filters">
@@ -36,12 +35,12 @@
           <span>{{ filtered.length }} 条记录</span>
           <el-select v-model="sort" aria-label="记录排序" class="knowledge-sort"><el-option value="updated" label="最近更新"/><el-option value="created" label="最近创建"/><el-option value="title" label="标题排序"/></el-select>
         </div>
-        <el-table v-loading="data.loading" :data="paged" row-key="id" height="100%" class="knowledge-table" :row-class-name="({ row }) => row.id === workspace.selectedId ? 'is-current-record' : ''" @row-click="selectRow" @row-dblclick="focusEditor" @row-contextmenu="openMenu">
+        <el-table v-loading="data.loading" :data="paged" row-key="id" height="100%" class="knowledge-table" :row-class-name="({ row }) => row.id === workspace.selectedId ? 'is-current-record' : ''" @row-click="selectRow">
           <el-table-column label="记录" min-width="200"><template #default="{ row }"><button class="knowledge-record-title" :title="row.title" @click.stop="selectRow(row)"><el-icon><Document /></el-icon><span>{{ row.title }}</span></button></template></el-table-column>
           <el-table-column v-if="!current" label="项目" min-width="132" show-overflow-tooltip><template #default="{ row }">{{ projectLabel(row) }}</template></el-table-column>
           <el-table-column v-if="!current" label="标签" min-width="128" show-overflow-tooltip><template #default="{ row }"><span class="knowledge-muted">{{ row.tags?.join(' · ') || '—' }}</span></template></el-table-column>
           <el-table-column label="更新" :width="current ? 108 : 132"><template #default="{ row }"><span class="knowledge-date">{{ knowledgeTime(row.updatedAt) }}</span></template></el-table-column>
-          <template #empty><div class="knowledge-empty"><el-icon><Collection /></el-icon><strong>{{ workspace.query || workspace.type || workspace.projectId ? '没有符合条件的记录' : workspace.view === 'trash' ? '回收站是空的' : '从一个想法开始积累' }}</strong><p>先记录，再慢慢完善；内容会自动保存。</p><el-button v-if="workspace.query || workspace.type || workspace.projectId" text @click="clearFilters">清除筛选</el-button><el-button v-else-if="workspace.view !== 'trash'" @click="createRecord()">新建第一条记录</el-button></div></template>
+          <template #empty><div class="knowledge-empty"><el-icon><Collection /></el-icon><strong>{{ workspace.query || workspace.type || workspace.projectId ? '没有符合条件的记录' : workspace.view === 'trash' ? '回收站是空的' : '从一个想法开始积累' }}</strong><p>在「想法地球」输入想法，点击光点补充内容。</p><el-button v-if="workspace.query || workspace.type || workspace.projectId" text @click="clearFilters">清除筛选</el-button></div></template>
         </el-table>
         <footer class="knowledge-list-footer"><span>本地 Markdown</span><el-pagination v-model:current-page="page" small layout="prev, pager, next" :pager-count="5" :page-size="30" :total="filtered.length" hide-on-single-page /></footer>
       </section>
@@ -50,9 +49,6 @@
         <KnowledgeEditor :inert="!!data.mutating[current.id]" :record="current" :projects="state.projects.items" :saving="!!data.saving[current.id] || !!data.mutating[current.id]" :save-error="data.errors[current.id] || ''" :sources="sourceRecords" @change="knowledge.change" @save="saveCurrent" @trash="lifecycle('trash')" @restore="lifecycle('restore')" @open-source="openSource" @export="exportRecord" />
       </section>
     </div>
-    <Teleport to="body"><div v-if="contextMenu" ref="menuRef" class="knowledge-context" role="menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @keydown.esc="contextMenu = null" @keydown="menuKeydown">
-      <button role="menuitem" @click="selectRow(contextMenu.row); contextMenu = null">打开记录</button><button role="menuitem" @click="exportRecord(contextMenu.row.id); contextMenu = null">导出 Markdown</button><button role="menuitem" @click="lifecycleMenu">{{ contextMenu.row.deletedAt ? '恢复记录' : '移到回收站' }}</button>
-    </div></Teleport>
   </div>
 </template>
 
@@ -72,7 +68,7 @@ const topbarReady = useTopbarReady()
 const knowledge = useKnowledge()
 const { data, workspace } = knowledge
 const capture = ref(''), creating = ref(false), page = ref(1), sort = ref('updated')
-const fileInput = ref(null), searchInput = ref(null), menuRef = ref(null), contextMenu = ref(null), showWarnings = ref(false)
+const fileInput = ref(null), searchInput = ref(null), showWarnings = ref(false)
 const highlightIdeaId = ref('')
 const views = [{ id: 'globe', label: '想法地球', icon: Connection }, { id: 'all', label: '全部记录', icon: Collection }, { id: 'trash', label: '回收站', icon: Delete }]
 const current = computed(() => knowledge.record(workspace.selectedId))
@@ -94,7 +90,6 @@ function projectLabel(row) { return state.projects.items.find(project => project
 function clearFilters() { workspace.query = ''; workspace.type = ''; workspace.projectId = '' }
 function selectRow(row) { workspace.selectedId = row.id }
 function setView(view) { workspace.view = view; if (view === 'globe' && current.value?.type !== 'idea') workspace.selectedId = '' }
-async function focusEditor(row) { selectRow(row); await nextTick(); document.querySelector('.knowledge-detail input')?.focus() }
 function projectFields() { const project = state.projects.items.find(row => row.id === workspace.projectId); return project ? { projectId: project.id, projectName: project.name } : {} }
 async function createRecord(fields = {}) {
   if (creating.value) return
@@ -144,13 +139,9 @@ async function importFiles(files) {
 }
 function onDrop(event) { if (event.dataTransfer?.files?.length) importFiles(event.dataTransfer.files) }
 async function handleCommand(command) { if (command === 'import') fileInput.value?.click(); else if (command === 'refresh') await refresh(); else try { const result = await window.gitReport.openPath(data.directory); if (result?.error) throw new Error(result.error) } catch (error) { ElMessage.error(error.message) } }
-async function openMenu(row, _column, event) { event.preventDefault(); contextMenu.value = { row, x: Math.min(event.clientX, innerWidth - 180), y: Math.min(event.clientY, innerHeight - 164) }; await nextTick(); menuRef.value?.querySelector('button')?.focus() }
-function lifecycleMenu() { const row = contextMenu.value.row; contextMenu.value = null; lifecycle(row.deletedAt ? 'restore' : 'trash', row.id) }
-function menuKeydown(event) { if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); const buttons = [...menuRef.value.querySelectorAll('button')]; const index = buttons.indexOf(document.activeElement); buttons[event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length]?.focus() }
-function closeMenu(event) { if (!menuRef.value?.contains(event.target)) contextMenu.value = null }
 async function shortcut(event) { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); if (workspace.view === 'globe') { setView('all'); await nextTick() } searchInput.value?.focus() } }
-onMounted(() => { knowledge.load(); document.addEventListener('pointerdown', closeMenu); document.addEventListener('keydown', shortcut) })
-onBeforeUnmount(() => { document.removeEventListener('pointerdown', closeMenu); document.removeEventListener('keydown', shortcut); for (const id of Object.keys(data.drafts)) void knowledge.flush(id) })
+onMounted(() => { knowledge.load(); document.addEventListener('keydown', shortcut) })
+onBeforeUnmount(() => { document.removeEventListener('keydown', shortcut); for (const id of Object.keys(data.drafts)) void knowledge.flush(id) })
 </script>
 
 <style scoped>
@@ -198,6 +189,5 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closeMenu); 
 .knowledge-list-footer { display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; height: 40px; padding: 0 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--text-muted); }
 .knowledge-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 40px 24px; line-height: 1.6; }.knowledge-empty > .el-icon { font-size: 24px; color: var(--text-muted); }.knowledge-empty strong { font-size: 14px; color: var(--brand-text); }.knowledge-empty p { font-size: 13px; margin: 0; max-width: 320px; }
 .knowledge-error { padding: 8px 16px; color: var(--danger); font-size: 13px; background: var(--danger-soft); }.knowledge-error pre { white-space: pre-wrap; max-height: 100px; overflow: auto; }
-.knowledge-context { position: fixed; z-index: 2300; width: 172px; padding: 4px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 6px; box-shadow: 0 4px 16px #0002; }.knowledge-context button { width: 100%; display: block; border: 0; text-align: left; padding: 8px 12px; font-size: 13px; background: transparent; color: var(--brand-text); border-radius: 4px; cursor: pointer; }.knowledge-context button:hover,.knowledge-context button:focus-visible { background: var(--surface-subtle); outline: none; }
 @media (max-width: 1366px) { .knowledge-tabs { gap: 20px; padding: 0 16px; }.has-panel .knowledge-records, .has-panel .knowledge-idea-surface { flex-basis: 42%; }.knowledge-capture { margin-top: 16px; } }
 </style>

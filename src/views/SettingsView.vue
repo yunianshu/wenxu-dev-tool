@@ -386,7 +386,7 @@
       <h2>Personnel PLM</h2>
       <p>项目资料、报告记录和部署配置默认保存在本机。Git、AI 与部署都是按需启用的项目能力。</p>
       <dl class="project-facts">
-        <div><dt>版本</dt><dd>{{ appVersion }} <el-button link type="primary" @click="$emit('show-changelog')">查看更新日志</el-button></dd></div>
+        <div><dt>版本</dt><dd>{{ appVersion }}</dd></div>
         <div><dt>平台</dt><dd>Windows / macOS / Linux</dd></div>
         <div><dt>数据方式</dt><dd>本地优先</dd></div>
       </dl>
@@ -404,7 +404,6 @@ import { toPlain } from '../utils/ipc'
 import { shortPath, pathKey } from '../utils/path'
 import TerminalFontSettings from '../components/TerminalFontSettings.vue'
 import { applyTheme } from '../utils/ui-prefs'
-defineEmits(['show-changelog'])
 
 const topbarReady = useTopbarReady()
 const themeSaveError = ref('')
