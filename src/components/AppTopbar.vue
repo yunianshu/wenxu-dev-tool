@@ -23,6 +23,7 @@
     <!-- 工具页（终端工作台 / Harness）把自己的标题栏 Teleport 到这里：
          这两页与「当前项目」无关，顶栏原本闲置，正好改成它们的标题栏 -->
     <div id="app-topbar-slot" class="topbar-slot" />
+    <el-button v-if="showProjectReturn && currentProject" text class="project-return" :title="`返回项目：${currentProject.name}`" @click="$emit('return-project')">返回项目</el-button>
   </header>
 </template>
 
@@ -36,8 +37,12 @@ const props = defineProps({
   // 一键填报等与「当前项目」无关的页面隐藏全局项目切换器（窗口控制与拖拽区保留）
   hideProjectSwitcher: { type: Boolean, default: false },
   terminal: { type: Boolean, default: false },
+  showProjectReturn: { type: Boolean, default: false },
 })
-defineEmits(['select-project'])
+defineEmits(['select-project', 'return-project'])
 const currentProject = computed(() => props.projects.find((project) => project.id === props.currentId) || null)
 
 </script>
+<style scoped>
+.project-return { flex-shrink: 0; margin-left: 12px; }
+</style>

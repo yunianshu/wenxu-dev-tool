@@ -91,7 +91,7 @@ function installFixture({ projects, reports, deployments, knowledgeRecords }) {
     appUiReady: () => {}, harnessUpdateStatus: () => ({}), reposSnapshot: () => repos, warmup: () => repos,
     collectCommits: () => projects.slice(0, 3).flatMap((p, index) => Array.from({ length: 4 - index }, (_, n) => ({ hash: `b${index}d${n}9ea`, subject: ['优化项目工作区布局', '完善界面主题与交互状态', '修复报告范围显示', '更新开发文档'][n], message: '改进桌面工作区', author: '开发者', email: 'developer@example.invalid', date: new Date().toISOString(), repo: p.localPath, shortName: p.name }))),
     listHistory: () => reports, readHistory: id => ({ ...reports.find(row => row.id === id), content: '# 活动报告\n\n完成项目列表、主题和桌面工作区的调整。' }),
-    deployHistoryList: () => deployments, deployServersList: () => [{ id: 'server-test', name: '测试服务器', host: '192.0.2.10', port: 22, username: 'deploy', authType: 'password', secretConfigured: true }],
+    deployHistoryList: () => { if (window.__overviewFailHistory) throw new Error("隔离读取失败"); return deployments }, deployServersList: () => [{ id: 'server-test', name: '测试服务器', host: '192.0.2.10', port: 22, username: 'deploy', authType: 'password', secretConfigured: true }],
     deployDetectVersion: () => ({ version: '1.4.98', source: 'package.json' }), deployReleases: () => ({ ok: true, current: '1.4.97', releases: ['1.4.97', '1.4.96'] }),
     debugStatus: () => ({ hasStartBat: true, running: false }), fillBindings: () => ({ [projects[0].id]: { taskId: 1042, taskName: '工作区界面优化' } }), fillLog: () => ({ ok: true, entries: [] }),
     fillPlan: payload => {
@@ -168,7 +168,7 @@ async function main() {
     page.on('console', message => { if ((message.type() === 'error' && !message.text().includes('favicon')) || /Failed to resolve component|Unhandled error/.test(message.text())) errors.push(message.text()) })
     await page.addInitScript(installFixture, { projects, reports, deployments, knowledgeRecords })
     await page.goto(`http://127.0.0.1:${PORT}`, { waitUntil: 'domcontentloaded', timeout: 30000 })
-    await page.locator('.knowledge-workbench').waitFor()
+    await page.locator('.work-overview').waitFor()
     const navigate = async name => { await page.locator('.app-menu .el-menu-item').filter({ has: page.locator('span', { hasText: new RegExp('^' + name + '$') }) }).click(); await page.waitForTimeout(250) }
     const capture = async (name, theme, width, height) => {
       await page.waitForTimeout(150)
@@ -194,9 +194,40 @@ async function main() {
       checks.push({ name, theme, width, height, layout })
       await page.screenshot({ path: path.join(OUTPUT, `${theme}-${width}-${name}.png`), fullPage: false })
     }
+    await page.getByRole('button', { name: '记录与复盘', exact: true }).click()
+    await page.locator('.knowledge-context').waitFor()
+    assert.equal(await page.locator('.knowledge-context').getByRole('button', { name: '记录项目想法' }).count(), 1, '项目记录保留快捷创建入口')
+    await page.locator('.knowledge-context').getByRole('button', { name: '记录项目想法' }).click()
+    await page.getByRole('textbox', { name: '快速记录', exact: true }).fill('项目上下文验证想法')
+    await page.getByRole('button', { name: '保存快速记录', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem('desktop-ui-test-knowledge')).some(row => row.title === '项目上下文验证想法' && row.projectId === 'project-0'))
+    await page.getByRole('button', { name: '返回项目', exact: true }).click()
+    await page.locator('.project-detail-panel').waitFor()
+    assert.equal(await page.locator('.project-detail-panel .work-status').count(), 1, '项目概览展示工作状态')
+    await navigate('工作台')
+    await page.getByRole('button', { name: '查看发布', exact: true }).click()
+    await page.locator('.deploy-page').waitFor()
+    assert.equal(await page.evaluate(async () => (await import('/src/store.js')).state.projects.currentId), 'project-0', '发布沿用当前项目')
+    await navigate('工作台')
+    await page.getByRole('button', { name: '继续终端工作', exact: true }).click()
+    await page.locator('.terminal-page').waitFor()
+    await page.waitForFunction(async () => (await window.gitReport.terminalList()).some(row => row.projectId === 'project-0'))
+    await page.getByRole('button', { name: '返回项目', exact: true }).click()
+    await navigate('工作台')
+    await page.evaluate(() => { window.__overviewFailHistory = true })
+    await navigate('项目')
+    await navigate('工作台')
+    await page.getByText('发布历史读取失败', { exact: true }).waitFor()
+    await page.evaluate(() => { window.__overviewFailHistory = false })
+    await page.locator('.work-overview .el-alert').getByRole('button', { name: '重试' }).click()
+    await page.waitForFunction(() => !document.querySelector('.work-overview .el-alert'))
+    await page.evaluate(async () => { const { state } = await import('/src/store.js'); window.__overviewProjects = [...state.projects.items]; state.projects.items = []; state.projects.currentId = '' })
+    await page.getByRole('button', { name: '创建第一个项目', exact: true }).waitFor()
+    await page.evaluate(async () => { const { state } = await import('/src/store.js'); state.projects.items = window.__overviewProjects; state.projects.currentId = 'project-0' })
+    if (process.argv.includes('--overview-only')) { console.log('通过：项目工作台默认首页、项目记录归属、发布与终端上下文、返回项目、读取失败重试和空态'); return }
     const deployFlowOnly = process.argv.includes('--deploy-flow-only')
     if (!deployFlowOnly) {
-    const pages = [['AI 工作台', 'knowledge'], ['项目', 'projects'], ['DeepSeek Harness', 'harness'], ['终端工作台', 'terminal'], ['一键填报', 'fillreport'], ['部署', 'deploy'], ['扩展管理', 'extensions'], ['设置', 'settings']]
+    const pages = [['工作台', 'overview'], ['知识库', 'knowledge'], ['项目', 'projects'], ['DeepSeek Harness', 'harness'], ['终端工作台', 'terminal'], ['一键填报', 'fillreport'], ['部署', 'deploy'], ['扩展管理', 'extensions'], ['设置', 'settings']]
     for (const theme of ['light', 'dark']) {
       await navigate('设置')
       await page.getByRole('tab', { name: '界面', exact: true }).click()
@@ -230,7 +261,7 @@ async function main() {
     }
     for (const [width, height] of [[1920, 1080], [2560, 1440]]) {
       await page.setViewportSize({ width, height })
-      for (const [label, name] of [['AI 工作台', 'knowledge'], ['项目', 'projects'], ['终端工作台', 'terminal'], ['部署', 'deploy']]) { await navigate(label); await capture(name, 'dark', width, height) }
+      for (const [label, name] of [['知识库', 'knowledge'], ['项目', 'projects'], ['终端工作台', 'terminal'], ['部署', 'deploy']]) { await navigate(label); await capture(name, 'dark', width, height) }
     }
     }
     await page.setViewportSize({ width: 1440, height: 900 })
@@ -302,7 +333,7 @@ async function main() {
       console.log('通过：真实界面部署草稿、运行期保护、完成刷新、保存和失败回滚提示')
       return
     }
-    await navigate('AI 工作台')
+    await navigate('知识库')
     await page.locator('.knowledge-tabs').getByRole('button', { name: '想法地球', exact: true }).click()
     assert.equal(await page.getByRole('button', { name: '新建想法', exact: true }).count(), 0, '想法只从地球输入框创建');
     assert.equal(await page.getByRole('button', { name: /查看全部记录/ }).count(), 0, '全部记录只通过页签进入');
@@ -327,13 +358,13 @@ async function main() {
     await page.waitForFunction(() => JSON.parse(localStorage.getItem('desktop-ui-test-knowledge')).some(row => row.title === '测试 · 自动保存知识记录' && row.body.includes('切页与重载后仍保留最新输入。') && row.revision > 1))
     const savedId = await page.evaluate(() => JSON.parse(localStorage.getItem('desktop-ui-test-knowledge')).find(row => row.title === '测试 · 自动保存知识记录').id)
     await navigate('项目')
-    await navigate('AI 工作台')
+    await navigate('知识库')
     assert((await page.getByRole('textbox', { name: '记录正文', exact: true }).inputValue()).includes('切页与重载后仍保留最新输入。'), '切页保留同一共享记录')
     unknown.push(...await page.evaluate(() => window.__uiUnknown))
     await page.reload()
-    await page.locator('.knowledge-workbench').waitFor()
+    await page.locator('.work-overview').waitFor()
     assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark', '主题在重载后恢复')
-    await navigate('AI 工作台')
+    await navigate('知识库')
     await page.locator('.knowledge-tabs').getByRole('button', { name: '全部记录', exact: true }).click()
     await page.locator('.knowledge-record-title').filter({ hasText: '测试 · 自动保存知识记录' }).click()
     assert((await page.getByRole('textbox', { name: '记录正文', exact: true }).inputValue()).includes('切页与重载后仍保留最新输入。'), '重载后从持久夹具读取已保存正文')
@@ -437,7 +468,7 @@ async function main() {
     await page.keyboard.press('Escape')
     unknown.push(...await page.evaluate(() => window.__uiUnknown))
     await page.reload()
-    await page.locator('.knowledge-workbench').waitFor()
+    await page.locator('.work-overview').waitFor()
     assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark', '主题在重载后恢复')
     unknown.push(...await page.evaluate(() => window.__uiUnknown))
     assert.deepEqual(unknown, [], '所有测试 IPC 都应明确建模')

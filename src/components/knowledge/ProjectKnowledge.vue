@@ -1,6 +1,6 @@
 <template>
   <section class="project-knowledge" aria-label="项目知识记录">
-    <header><span>{{ records.length }} 条关联记录</span><span>在「AI 工作台 → 想法地球」记录想法后，可关联项目。</span></header>
+    <header><span>{{ records.length }} 条关联记录</span><span>在「知识库 → 想法地球」记录想法后，可关联项目。</span></header>
     <div v-if="data.error" class="project-knowledge-error">{{ data.error }}<el-button text @click="knowledge.load(true)">重试</el-button></div>
     <el-table v-loading="data.loading" :data="records" empty-text="还没有项目记录。想法、问题、决策与复盘都可以从这里开始。" @row-click="open">
       <el-table-column label="记录" min-width="180" show-overflow-tooltip><template #default="{ row }"><button class="record-link" @click.stop="open(row)">{{ row.title }}</button></template></el-table-column>
@@ -19,7 +19,7 @@ const emit = defineEmits(['navigate'])
 const knowledge = useKnowledge()
 const { data } = knowledge
 const records = computed(() => data.records.filter(row => row.projectId === props.project.id && !row.deletedAt).sort((a, b) => b.updatedAt - a.updatedAt))
-function open(row) { knowledge.openRecord(row, props.project.id); emit('navigate', 'dashboard') }
+function open(row) { knowledge.openRecord(row, props.project.id); emit('navigate', 'knowledge') }
 onMounted(() => knowledge.load())
 </script>
 <style scoped>

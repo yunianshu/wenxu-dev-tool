@@ -2,7 +2,7 @@
   <div class="knowledge-workbench" @keydown.ctrl.s.prevent="saveCurrent" @keydown.meta.s.prevent="saveCurrent">
     <Teleport v-if="topbarReady" to="#app-topbar-slot">
       <div class="topbar-page knowledge-topbar">
-        <h1 class="topbar-page-title">AI 工作台</h1><span class="topbar-context">先把想法记下来</span>
+        <h1 class="topbar-page-title">知识库</h1><span class="topbar-context">先把想法记下来</span>
         <div class="knowledge-topbar-actions">
           <el-dropdown trigger="click" @command="handleCommand"><el-button text aria-label="知识库更多操作"><el-icon><MoreFilled /></el-icon></el-button><template #dropdown><el-dropdown-menu>
             <el-dropdown-item command="import">导入 Markdown</el-dropdown-item>
@@ -16,6 +16,7 @@
     <nav class="knowledge-tabs" aria-label="知识视图">
       <button v-for="item in views" :key="item.id" :class="{ active: workspace.view === item.id }" @click="setView(item.id)"><el-icon><component :is="item.icon" /></el-icon>{{ item.label }}</button>
     </nav>
+    <div v-if="projectFields().projectId" class="knowledge-context" role="status">当前项目：{{ projectFields().projectName }} · 新想法会自动关联此项目 <el-button text @click="clearFilters">查看全部项目</el-button><el-button v-if="workspace.view !== 'globe'" text @click="setView('globe')">记录项目想法</el-button></div>
     <div v-if="data.error" class="knowledge-error" role="alert">{{ data.error }}<el-button text @click="refresh">重试</el-button></div>
     <div v-if="data.backupError" class="knowledge-error" role="alert">{{ data.backupError }}</div>
     <div v-if="data.warnings.length" class="knowledge-error" role="alert">{{ data.warnings.length }} 个文件未能读取，原文件已保留。<el-button text @click="showWarnings = !showWarnings">{{ showWarnings ? '收起' : '查看详情' }}</el-button><pre v-if="showWarnings">{{ data.warnings.map(item => typeof item === 'string' ? item : JSON.stringify(item)).join('\n') }}</pre></div>
@@ -156,6 +157,9 @@ async function shortcut(event) { if ((event.ctrlKey || event.metaKey) && event.k
 onMounted(() => { knowledge.load(); document.addEventListener('keydown', shortcut) })
 onBeforeUnmount(() => { document.removeEventListener('keydown', shortcut); for (const id of Object.keys(data.drafts)) void knowledge.flush(id) })
 </script>
+<style scoped>
+.knowledge-context { color: var(--text-muted); padding: 0 20px 8px; font-size: 13px; }
+</style>
 
 <style scoped>
 .knowledge-workbench { height: 100%; min-height: 0; display: flex; flex-direction: column; background: var(--surface); }

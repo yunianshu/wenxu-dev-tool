@@ -78,6 +78,12 @@
 
         <el-tabs v-model="detailTab" class="project-detail-tabs">
           <el-tab-pane label="概览" name="overview">
+        <el-alert v-if="workError" :title="workError" type="warning" :closable="false"><el-button text @click="refreshWork">重试</el-button></el-alert>
+        <ProjectWorkStatus :project="selected" :sessions="sessions" :history="history" :loading="workLoading" :error="workError" />
+        <div class="project-quick-actions">
+          <el-button @click="emit('navigate', { target: 'deploy', projectId: selected.id })">查看发布与日志</el-button>
+          <el-button @click="emit('navigate', { target: 'knowledge', projectId: selected.id })">项目记录与复盘</el-button>
+        </div>
         <dl class="project-facts">
           <div><dt>本地目录</dt><dd :title="selected.localPath">{{ selected.localPath || '未关联目录' }}</dd><el-icon><FolderOpened /></el-icon></div>
           <div><dt>Git 活动源</dt><dd>{{ matchedRepos.length ? `${matchedRepos.length} 个仓库` : '未发现' }}</dd><el-icon><Connection /></el-icon></div>
@@ -116,12 +122,15 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import EmptyState from '../components/EmptyState.vue'
 import ProjectKnowledge from '../components/knowledge/ProjectKnowledge.vue'
+import ProjectWorkStatus from '../components/ProjectWorkStatus.vue'
+import { useWorkOverview } from '../composables/useWorkOverview'
 import { state } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
 import { useProjects } from '../composables/useProjects'
 import { deploymentConfigured, projectStatusLabel, reposForProject } from '../utils/project-context'
 
 const emit = defineEmits(['navigate', 'create-project', 'edit-project'])
+const { sessions, history, error: workError, loading: workLoading, refresh: refreshWork } = useWorkOverview()
 const query = ref('')
 const status = ref('')
 const sortBy = ref('default')

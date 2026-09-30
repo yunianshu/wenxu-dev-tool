@@ -66,8 +66,9 @@ const appVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''
 const harnessUpdateAvailable = computed(() => state.harnessUpdate?.updateAvailable === true)
 const groups = [
   { id: 'workspace', label: '', items: [
-    { id: 'dashboard', label: 'AI 工作台', icon: 'House' },
+    { id: 'dashboard', label: '工作台', icon: 'House' },
     { id: 'projects', label: '项目', icon: 'FolderOpened' },
+    { id: 'knowledge', label: '知识库', icon: 'Collection' },
   ] },
   { id: 'capabilities', label: '项目能力', items: [
     { id: 'harness', label: 'DeepSeek Harness', icon: 'Cpu' },

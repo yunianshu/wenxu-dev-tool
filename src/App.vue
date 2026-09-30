@@ -24,11 +24,14 @@
         :projects="state.projects.items"
         :current-id="state.projects.currentId"
         hide-project-switcher
+        :show-project-return="['deploy', 'terminal', 'knowledge'].includes(view)"
+        @return-project="returnToProject"
         @select-project="selectProject"
       />
       <main class="content-area" :class="{ 'content-area--flush': view === 'harness' || view === 'terminal', 'content-area--terminal': view === 'terminal' }">
         <transition name="view-fade" mode="out-in">
-          <AIWorkbenchView v-if="view === 'dashboard'" key="dashboard" @navigate="navigate" />
+          <WorkOverviewView v-if="view === 'dashboard'" key="dashboard" @navigate="navigate" @create-project="openProjectEditor()" @edit-project="openProjectEditor" />
+          <AIWorkbenchView v-else-if="view === 'knowledge'" key="knowledge" @navigate="navigate" />
           <ProjectsView v-else-if="view === 'projects'" key="projects" @navigate="navigate" @create-project="openProjectEditor()" @edit-project="openProjectEditor" />
           <TerminalWorkbenchView v-else-if="view === 'terminal'" key="terminal" />
           <HarnessView v-else-if="view === 'harness'" key="harness" />
@@ -74,6 +77,8 @@ import AppTopbar from './components/AppTopbar.vue'
 import AppTitlebar from './components/AppTitlebar.vue'
 import ProjectEditor from './components/ProjectEditor.vue'
 import AIWorkbenchView from './views/AIWorkbenchView.vue'
+import WorkOverviewView from './views/WorkOverviewView.vue'
+import { useKnowledge } from './composables/useKnowledge'
 import ProjectsView from './views/ProjectsView.vue'
 import TerminalWorkbenchView from './views/TerminalWorkbenchView.vue'
 import HarnessView from './views/HarnessView.vue'
@@ -176,6 +181,24 @@ function toggleSidebar() {
 
 /** 将页面导航意图集中映射；活动源列表复用设置页的 Git 活动分区。 */
 function navigate(target) {
+  if (target && typeof target === 'object') {
+    const project = state.projects.items.find(row => row.id === target.projectId)
+    if (!project) return
+    selectProject(project.id)
+    if (target.target === 'terminal') {
+      if (!project.localPath) return
+      state.terminal.pendingFocusProjectId = project.id
+    }
+    if (target.target === 'knowledge') {
+      const knowledge = useKnowledge()
+      knowledge.workspace.projectId = project.id
+      knowledge.workspace.view = 'all'
+      knowledge.workspace.selectedId = ''
+      knowledge.workspace.query = ''
+      knowledge.workspace.type = ''
+    }
+    target = target.target
+  }
   if (target === 'settings') settingsSection.value = 'ai'
   if (target === 'activity-sources') {
     settingsSection.value = 'git'
@@ -188,6 +211,14 @@ function navigate(target) {
     return
   }
   view.value = target
+}
+
+function returnToProject() {
+  const projectId = view.value === 'terminal'
+    ? state.terminal.focusedProjectId
+    : view.value === 'knowledge' ? useKnowledge().workspace.projectId : state.projects.currentId
+  if (state.projects.items.some(project => project.id === projectId)) selectProject(projectId)
+  navigate('projects')
 }
 
 function openProjectEditor(project = null) {
