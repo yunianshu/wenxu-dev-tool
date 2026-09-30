@@ -9,6 +9,7 @@
  *   - fake 项目发布包（tar.gz + upgrade.sh/start.sh/stop.sh）模拟 Vantage 形态契约
  * 覆盖：首次发布成功 / 升级停旧切指针 / 同版本重复发布快速失败（客户端+deploy.sh 双层守卫）/
  *   升级脚本失败尽力恢复 / 手动回滚 / 版本列表 / 本地产物保留
+ *   健康检查地址发布前后均不可达（配置错误）：不回滚，新版本保持上线
  */
 const assert = require('assert')
 const fs = require('fs')
@@ -400,6 +401,32 @@ async function main() {
     assert.strictEqual(fs.readFileSync(path.join(srv2, 'CURRENT'), 'utf8').trim(), 'app-v1.0.0-002')
     passed += 1
     console.log('  ✓ deploy.sh 同版本守卫：改动任何服务器状态前直接失败、运行目录零改动')
+
+    // ── 10.5 deploy.sh 健康地址从未可达：复查失败只告警不回滚（地址配置错误不得否定升级脚本的成功） ──
+    const srv4 = path.join(tmpRoot, 'server4')
+    fs.mkdirSync(path.join(srv4, 'releases', 'app-v1.0.0-003'), { recursive: true })
+    fs.writeFileSync(path.join(srv4, 'CURRENT'), 'app-v1.0.0-003\n')
+    fs.mkdirSync(path.join(srv4, 'uploads'), { recursive: true })
+    const healthPkg = makeFakeArtifact(path.join(tmpRoot, 'proj-health'), 'app-v1.1.0-004', 'success')
+    fs.copyFileSync(healthPkg, path.join(srv4, 'uploads', 'app-v1.1.0-004.tar.gz'))
+    const shHealth = path.join(tmpRoot, 'deploy-health.sh')
+    fs.writeFileSync(shHealth,
+      fs.readFileSync(path.join(__dirname, '..', 'electron', 'deploy', 'scripts', 'deploy.sh'), 'utf8').replace(/\r\n/g, '\n'))
+    const rHealth = spawnSync('bash', [msysPath(shHealth), 'deploy', '--mode', 'script',
+      '--app', '健康测试', '--home', msysPath(srv4), '--package', 'app-v1.1.0-004.tar.gz',
+      '--version', '1.1.0', '--upgrade-script', 'upgrade.sh',
+      '--no-bootstrap-java', '--no-bootstrap-pgdump',
+      '--no-backup-code', '--no-backup-db', '--auto-rollback',
+      '--health-url', 'http://127.0.0.1:1/actuator/health', '--health-timeout', '6', '--health-interval', '2',
+      '--keep-releases', '10', '--keep-backups', '10', '--keep-upload'], { encoding: 'utf8' })
+    const healthOut = `${rHealth.stdout || ''}${rHealth.stderr || ''}`
+    assert.strictEqual(rHealth.status, 0, `地址从未可达时发布应成功: ${healthOut}`)
+    assert.ok(healthOut.includes('发布前健康探测不可达'), `应有发布前探测记录: ${healthOut}`)
+    assert.ok(healthOut.includes('不回滚'), `应说明不回滚原因: ${healthOut}`)
+    assert.ok(!healthOut.includes('健康检查失败: http'), '不得把从未有效的地址当作回滚依据')
+    assert.strictEqual(fs.readFileSync(path.join(srv4, 'CURRENT'), 'utf8').trim(), 'app-v1.1.0-004', '新版本应保持上线')
+    passed += 1
+    console.log('  ✓ deploy.sh 健康地址发布前后均不可达：不回滚、新版本保持上线')
 
     // ── 11. 版本同步 bumpVersionFiles：各版本文件类型 + 不误伤其他版本号 ──
     const { detectVersion, bumpVersionFiles, syncBackVersion } = require('../electron/deploy/version-detector')

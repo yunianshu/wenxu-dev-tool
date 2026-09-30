@@ -672,6 +672,18 @@ do_deploy_script() {
   # 环境引导：调项目升级脚本前就绪 java/pg_dump（升级脚本与失败兜底都依赖）
   bootstrap_env_script
 
+  # 发布前先探测一次 HTTP 健康地址：升级前就不可达的地址（端口未监听/配置错误）
+  # 从未有效过，升级后复查失败时不能作为回滚依据
+  PRE_HEALTH_OK=1
+  if [ -n "$HEALTH_URL" ]; then
+    if curl -fsS --max-time 5 "$HEALTH_URL" >/dev/null 2>&1; then
+      log "发布前健康探测可达: $HEALTH_URL"
+    else
+      PRE_HEALTH_OK=0
+      warn "发布前健康探测不可达: $HEALTH_URL（若升级后复查仍失败，将按地址配置问题处理，不回滚）"
+    fi
+  fi
+
   # 备份/停旧/切指针/启动/健康检查/失败回滚 均由项目升级脚本负责
   stage start
   log "执行升级脚本 $UPGRADE_SCRIPT（INSTALL_ROOT=$APP_HOME）…"
@@ -691,10 +703,14 @@ do_deploy_script() {
   fi
   ok "升级脚本执行完成: releases/$entries"
 
-  # 可选 HTTP 健康复查（升级脚本内部已有健康检查；配置了地址时再确认一次）
+  # 可选 HTTP 健康复查（升级脚本内部已有健康检查；配置了地址时再确认一次）。
+  # 发布前就不可达的地址复查仍失败时只提示不回滚——回滚会用一条从未有效的信号
+  # 否定升级脚本已确认成功的发布，把健康的新版本退回去
   if [ -n "$HEALTH_URL" ]; then
     stage health
     if health_http; then ok "健康检查通过: $HEALTH_URL"
+    elif [ "${PRE_HEALTH_OK:-1}" = 0 ]; then
+      warn "HTTP 健康检查地址发布前后均不可达: $HEALTH_URL（升级脚本自身校验已通过，不回滚；请在部署设置中核对健康检查地址的端口与路径）"
     else do_rollback_script "健康检查失败: $HEALTH_URL"; fi
   fi
 

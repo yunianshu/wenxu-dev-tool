@@ -509,6 +509,19 @@ async function main() {
   assert.strictEqual(after.targets[0].server.secretConfigured, true, '凭据必须保留')
   assert.strictEqual(after.targets[0].dataSync.importSecretConfigured, true, '数据同步凭据必须保留')
 
+  // ── ⑬ 完整配置（manual）下已有健康地址不被方案猜测地址替换；极简（quick）保留 AI 增强契约 ──
+  const manualSaved = projects.list().find((p) => p.id === saved.id)
+  projects.save({ ...manualSaved, configMode: 'manual' })
+  const reapply = aiDeploy.applyPlan(saved.id, target.id, { ...merged, health: { ...merged.health, url: 'http://127.0.0.1:1234/guessed' } })
+  assert.strictEqual(reapply.ok, true, JSON.stringify(reapply))
+  const keptHealth = projects.list().find((p) => p.id === saved.id)
+  assert.strictEqual(keptHealth.targets[0].health.url, 'http://127.0.0.1:9000/', 'manual 模式已有健康地址不得被方案地址悄悄替换')
+  projects.save({ ...keptHealth, configMode: 'quick' })
+  const enhanced = aiDeploy.applyPlan(saved.id, target.id, { ...merged, health: { ...merged.health, url: 'http://127.0.0.1:1234/guessed' } })
+  assert.strictEqual(enhanced.ok, true, JSON.stringify(enhanced))
+  const quickHealth = projects.list().find((p) => p.id === saved.id)
+  assert.strictEqual(quickHealth.targets[0].health.url, 'http://127.0.0.1:1234/guessed', 'quick 模式方案地址应生效')
+
   // ── 审核回归：链接越界、凭据外发、部署闸门、混合同步目录 ──
   const auditDir = path.join(tmpRoot, 'audit-project')
   const outside = path.join(tmpRoot, 'outside')

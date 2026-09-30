@@ -1572,7 +1572,14 @@ function applyPlan(projectId, targetId, plan) {
   const target = targetId ? (payload.targets || []).find((t) => t.id === targetId) : payload.targets[0]
   if (!target) return { ok: false, error: '部署环境已不存在，请重新体检' }
   if (target) {
-    if (plan.health && typeof plan.health === 'object') target.health = { ...target.health, ...plan.health }
+    if (plan.health && typeof plan.health === 'object') {
+      const existingUrl = String((target.health && target.health.url) || '').trim()
+      const planUrl = String(plan.health.url || '').trim()
+      // 完整配置（manual）项目的健康地址属用户领地：已有可用地址不被方案推断/AI 猜测悄悄替换
+      // （推断可能命中数据库端口，AI 只能按常见端口猜）；极简配置（quick）保留「AI 增强应生效」的契约
+      const guarded = payload.configMode !== 'quick' && /^https?:\/\//i.test(existingUrl) && planUrl !== existingUrl
+      target.health = guarded ? { ...target.health } : { ...target.health, ...plan.health }
+    }
     if (plan.db && typeof plan.db === 'object') target.db = { ...target.db, ...plan.db }
     if (plan.dataSync && typeof plan.dataSync === 'object') {
       const items = Array.isArray(plan.dataSync.items) ? plan.dataSync.items : []
