@@ -149,6 +149,7 @@ contextBridge.exposeInMainWorld('gitReport', {
   knowledgeSave: (record) => ipcRenderer.invoke('knowledge:save', toPlain(record)),
   knowledgeTrash: (id, revision) => ipcRenderer.invoke('knowledge:trash', { id, revision }),
   knowledgeRestore: (id, revision) => ipcRenderer.invoke('knowledge:restore', { id, revision }),
+  knowledgeDelete: (id, revision, contentHash) => ipcRenderer.invoke('knowledge:delete', { id, revision, contentHash }),
   knowledgeImport: (payload) => ipcRenderer.invoke('knowledge:import', toPlain(payload)),
   knowledgeExport: (id) => ipcRenderer.invoke('knowledge:export', id),
   // 扩展管理（四平台技能与插件）

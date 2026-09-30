@@ -46,7 +46,7 @@
       </section>
       <section v-if="current" class="knowledge-detail" aria-label="记录详情">
         <div class="knowledge-detail-status"><span :class="{ 'has-error': data.errors[current.id] }">{{ data.errors[current.id] ? '保存失败，草稿保留在当前应用中' : data.saving[current.id] ? '正在保存…' : knowledge.dirty(current.id) ? '等待保存…' : '已保存到本机' }}</span><el-button v-if="data.errors[current.id]" text @click="saveCopy">另存为新记录</el-button><el-button text aria-label="关闭记录详情" @click="workspace.selectedId = ''"><el-icon><Close /></el-icon></el-button></div>
-        <KnowledgeEditor :inert="!!data.mutating[current.id]" :record="current" :projects="state.projects.items" :saving="!!data.saving[current.id] || !!data.mutating[current.id]" :save-error="data.errors[current.id] || ''" :sources="sourceRecords" @change="knowledge.change" @save="saveCurrent" @trash="lifecycle('trash')" @restore="lifecycle('restore')" @open-source="openSource" @export="exportRecord" />
+        <KnowledgeEditor :inert="!!data.mutating[current.id]" :record="current" :projects="state.projects.items" :saving="!!data.saving[current.id] || !!data.mutating[current.id]" :save-error="data.errors[current.id] || ''" :sources="sourceRecords" @change="knowledge.change" @save="saveCurrent" @trash="lifecycle('trash')" @restore="lifecycle('restore')" @delete="permanentlyDelete" @open-source="openSource" @export="exportRecord" />
       </section>
     </div>
   </div>
@@ -54,7 +54,7 @@
 
 <script setup>
 import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Connection, Collection, Delete } from '@element-plus/icons-vue'
 import { state } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
@@ -122,6 +122,19 @@ async function refresh() {
   const results = await Promise.all(Object.keys(data.drafts).map(id => knowledge.flush(id)))
   if (results.some(result => !result)) { ElMessage.error('请先处理未保存的记录，避免刷新覆盖草稿'); return }
   await knowledge.load(true)
+}
+
+async function permanentlyDelete() {
+  const row = current.value
+  if (!row?.deletedAt || data.mutating[row.id]) return
+  const expected = { revision: row.revision, contentHash: row.contentHash }
+  try {
+    await ElMessageBox.confirm(`将永久删除「${row.title}」及其本地记录文件，删除后无法恢复。是否继续？`, '永久删除记录', {
+      type: 'warning', confirmButtonText: '永久删除', cancelButtonText: '取消',
+    })
+  } catch { return }
+  try { await knowledge.lifecycle(row.id, 'delete', expected); ElMessage.success('记录已永久删除') }
+  catch (error) { ElMessage.error(error.message) }
 }
 function openSource(id) { const row = data.records.find(item => item.id === id); if (row) knowledge.openRecord(row); else ElMessage.warning('来源记录暂时不可用') }
 async function exportRecord(id = current.value?.id) {

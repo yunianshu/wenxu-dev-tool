@@ -11,6 +11,7 @@ export function createKnowledgeStore(api, delay = 600, storage = null) {
   const edits = new Map()
   const saved = new Map()
   const epochs = new Map()
+  const removed = new Set()
   const draftKey = 'plm-knowledge-pending-v1'
   let restored = false
   if (storage) {
@@ -49,7 +50,7 @@ export function createKnowledgeStore(api, delay = 600, storage = null) {
         if (!result?.ok) throw new Error(result?.error || '知识库读取失败')
         const changed = data.records.filter(row => (epochs.get(row.id) || 0) !== (before.get(row.id) || 0))
         const changedIds = new Set(changed.map(row => row.id))
-        data.records = [...changed, ...result.records.filter(row => !changedIds.has(row.id))]
+        data.records = [...changed, ...result.records.filter(row => !changedIds.has(row.id) && !removed.has(row.id))]
         // 原文件被外部移走或损坏时，恢复草稿仍须在列表中可达，便于另存。
         for (const draft of Object.values(data.drafts)) {
           if (!data.records.some(row => row.id === draft.id)) {
@@ -74,7 +75,7 @@ export function createKnowledgeStore(api, delay = 600, storage = null) {
   function record(id) { return data.drafts[id] || data.records.find(row => row.id === id) }
   function change(value) {
     const id = value.id
-    if (data.mutating[id]) return false
+    if (data.mutating[id] || removed.has(id)) return false
     data.drafts[id] = clone(value)
     edits.set(id, (edits.get(id) || 0) + 1)
     backupDrafts()
@@ -115,10 +116,26 @@ export function createKnowledgeStore(api, delay = 600, storage = null) {
     upsert(result.record)
     return result.record
   }
-  async function lifecycle(id, action) {
+  async function lifecycle(id, action, expected) {
     if (data.mutating[id]) throw new Error('记录正在更新，请稍候')
     data.mutating[id] = true
     try {
+      if (action === 'delete') {
+        if (flights.has(id)) await flights.get(id)
+        const current = data.records.find(row => row.id === id)
+        if (!current?.deletedAt) throw new Error('只能永久删除回收站中的记录')
+        const version = expected || current
+        const result = await api.knowledgeDelete(id, version.revision, version.contentHash)
+        if (!result?.ok) throw new Error(result?.error || '永久删除失败')
+        removed.add(id)
+        clearTimeout(timers.get(id)); timers.delete(id)
+        data.records = data.records.filter(row => row.id !== id)
+        delete data.drafts[id]; delete data.errors[id]
+        edits.delete(id); saved.delete(id); epochs.delete(id)
+        if (workspace.selectedId === id) workspace.selectedId = ''
+        backupDrafts()
+        return result
+      }
       if (!(await flush(id))) throw new Error(data.errors[id])
       const current = data.records.find(row => row.id === id)
       const result = await api[action === 'restore' ? 'knowledgeRestore' : 'knowledgeTrash'](id, current?.revision)

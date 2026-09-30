@@ -9,8 +9,8 @@ const { spawn } = require('node:child_process')
 const { transformSync } = require('esbuild')
 
 const projectRoot = path.resolve(__dirname, '..')
-const methods = ['knowledgeList', 'knowledgeSave', 'knowledgeTrash', 'knowledgeRestore', 'knowledgeImport', 'knowledgeExport']
-const channels = ['knowledge:list', 'knowledge:save', 'knowledge:trash', 'knowledge:restore', 'knowledge:import', 'knowledge:export']
+const methods = ['knowledgeList', 'knowledgeSave', 'knowledgeTrash', 'knowledgeRestore', 'knowledgeImport', 'knowledgeExport', 'knowledgeDelete']
+const channels = ['knowledge:list', 'knowledge:save', 'knowledge:trash', 'knowledge:restore', 'knowledge:import', 'knowledge:export', 'knowledge:delete']
 
 async function startBackend(userData) {
   // 当前主进程读 PROJECT_MANAGER_USER_DATA；同时设置 PLM 名称以兼容宿主后续统一。
@@ -130,6 +130,14 @@ async function exercise(api, label, userData) {
   assert.equal(imported.record.body, restored.record.body)
   assert.equal(imported.record.revision, 1)
   assert.equal((await api.knowledgeExport('../escape')).code, 'INVALID_ID')
+  const purgeInput = (await api.knowledgeSave({ title: `${label} 永久删除`, body: '隔离目录' })).record
+  assert.equal((await api.knowledgeDelete(purgeInput.id, purgeInput.revision, purgeInput.contentHash)).code, 'RECORD_NOT_TRASHED')
+  const purgeRecord = (await api.knowledgeTrash(purgeInput.id, purgeInput.revision)).record
+  assert.equal((await api.knowledgeDelete(purgeRecord.id, purgeInput.revision, purgeRecord.contentHash)).code, 'REVISION_CONFLICT')
+  assert.equal((await api.knowledgeDelete(purgeRecord.id, purgeRecord.revision, purgeRecord.contentHash)).ok, true)
+  assert.equal(fs.existsSync(path.join(userData, 'knowledge', `${purgeRecord.id}.md`)), false)
+  assert.equal((await api.knowledgeSave(purgeRecord)).code, 'NOT_FOUND')
+  assert.equal((await api.knowledgeList()).records.some(row => row.id === purgeRecord.id), false)
   console.log(`  ✓ ${label} 实际 API → 主进程 RPC → 文件增改、版本冲突、回收站、恢复、导入导出`)
   return { record: restored.record, imported: imported.record }
 }

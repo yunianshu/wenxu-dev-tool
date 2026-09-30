@@ -120,11 +120,37 @@ async function main() {
     current = service.list().records[0]
     passed('回收站持久化、旧保存不能复活、恢复及可选版本契约')
 
+    const purgeInput = service.save({ title: '永久删除测试', body: '仅隔离测试目录中的记录' }).record
+    assert.equal(service.remove(purgeInput.id, purgeInput.revision, purgeInput.contentHash).code, 'RECORD_NOT_TRASHED')
+    const purgeRecord = service.trash(purgeInput.id, purgeInput.revision).record
+    const purgePath = path.join(dir, `${purgeRecord.id}.md`)
+    assert.equal(service.remove(purgeRecord.id, purgeInput.revision, purgeRecord.contentHash).code, 'REVISION_CONFLICT')
+    assert.equal(service.remove(purgeRecord.id, undefined, purgeRecord.contentHash).code, 'REVISION_CONFLICT')
+    assert.equal(service.remove(purgeRecord.id, purgeRecord.revision, '旧摘要').code, 'REVISION_CONFLICT')
+    assert.equal(service.remove(purgeRecord.id, purgeRecord.revision).code, 'REVISION_CONFLICT')
+    fs.appendFileSync(purgePath, '\n外部修改')
+    assert.equal(service.remove(purgeRecord.id, purgeRecord.revision, purgeRecord.contentHash).code, 'REVISION_CONFLICT')
+    const latestPurge = service.list().records.find(row => row.id === purgeRecord.id)
+    const brokenFs = Object.create(fs)
+    brokenFs.unlinkSync = target => {
+      if (target === purgePath) throw Object.assign(new Error('模拟文件占用'), { code: 'EACCES' })
+      return fs.unlinkSync(target)
+    }
+    assert.equal(loadService(userData, brokenFs).remove(latestPurge.id, latestPurge.revision, latestPurge.contentHash).code, 'EACCES')
+    assert(fs.existsSync(purgePath), '删除失败保留文件')
+    assert.deepEqual(service.remove(latestPurge.id, latestPurge.revision, latestPurge.contentHash), { ok: true, id: latestPurge.id })
+    assert.equal(fs.existsSync(purgePath), false)
+    assert.equal(loadService(userData).list().records.some(row => row.id === latestPurge.id), false)
+    assert.equal(service.save({ ...purgeInput, body: '迟到编辑' }).code, 'NOT_FOUND')
+    assert.equal(service.restore(latestPurge.id, latestPurge.revision).code, 'NOT_FOUND')
+    assert.equal(service.remove(randomUUID(), 1, latestPurge.contentHash).code, 'NOT_FOUND')
+    passed('永久删除仅限回收站、版本摘要保护、失败保留及迟到保存不能重建文件')
+
     const outside = path.join(root, 'outside.md')
     fs.writeFileSync(outside, '不得改写', 'utf8')
     const unsafeIds = ['../outside', '..\\outside', outside, 'C:\\outside', '/outside', 'CON', '', null, {}, [], `${current.id}/../x`, `${current.id}\u0000`]
     for (const id of unsafeIds) {
-      for (const operation of ['trash', 'restore', 'exportMarkdown']) assert.equal(service[operation](id).code, 'INVALID_ID')
+      for (const operation of ['trash', 'restore', 'remove', 'exportMarkdown']) assert.equal(service[operation](id).code, 'INVALID_ID')
       if (id !== '' && id !== null) assert.equal(service.save({ ...input, id, revision: 1 }).code, 'INVALID_ID')
     }
     assert.equal(service.save({ ...input, id: randomUUID(), revision: 1 }).code, 'NOT_FOUND', '指定不存在的 ID 不得偷偷新建')
@@ -135,6 +161,7 @@ async function main() {
     fs.mkdirSync(externalDir)
     fs.symlinkSync(externalDir, path.join(linkedUserData, 'knowledge'), process.platform === 'win32' ? 'junction' : 'dir')
     assert.equal(loadService(linkedUserData).save(input).code, 'UNSAFE_PATH')
+    assert.equal(loadService(linkedUserData).remove(current.id, current.revision, current.contentHash).code, 'UNSAFE_PATH')
     assert.equal(fs.readdirSync(externalDir).length, 0)
     passed('路径穿越、非法 ID、目录链接与未知记录隔离')
 

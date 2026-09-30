@@ -561,6 +561,7 @@ function registerIpc() {
   ipcMain.handle('knowledge:save', (_e, record) => knowledgeService.save(record))
   ipcMain.handle('knowledge:trash', (_e, { id, revision } = {}) => knowledgeService.trash(id, revision))
   ipcMain.handle('knowledge:restore', (_e, { id, revision } = {}) => knowledgeService.restore(id, revision))
+  ipcMain.handle('knowledge:delete', (_e, { id, revision, contentHash } = {}) => knowledgeService.remove(id, revision, contentHash))
   ipcMain.handle('knowledge:import', (_e, payload) => knowledgeService.importMarkdown(payload))
   ipcMain.handle('knowledge:export', (_e, id) => knowledgeService.exportMarkdown(id))
 

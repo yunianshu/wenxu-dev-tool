@@ -63,6 +63,13 @@ function installFixture({ projects, reports, deployments, knowledgeRecords }) {
     knowledgeSave: saveKnowledge,
     knowledgeTrash: (id, revision) => lifecycleKnowledge(id, revision, false),
     knowledgeRestore: (id, revision) => lifecycleKnowledge(id, revision, true),
+    knowledgeDelete: (id, revision, contentHash) => {
+      const records = readKnowledge()
+      const record = records.find(row => row.id === id)
+      if (!record?.deletedAt || record.revision !== revision || record.contentHash !== contentHash) return { ok: false, error: '记录状态或版本已改变' }
+      writeKnowledge(records.filter(row => row.id !== id))
+      return { ok: true, id }
+    },
     knowledgeImport: payload => saveKnowledge({ title: payload.fileName.replace(/\.(md|markdown)$/i, ''), body: payload.content, type: 'idea', status: 'inbox' }),
     knowledgeExport: id => { const record = readKnowledge().find(row => row.id === id); return record ? { ok: true, fileName: record.title + '.md', content: '# ' + record.title + '\n\n' + record.body } : { ok: false, error: '记录不存在' } },
     aiChat: (messages, options) => {
@@ -283,6 +290,28 @@ async function main() {
     await page.locator('.knowledge-tabs').getByRole('button', { name: '全部记录', exact: true }).click()
     assert.equal(await page.locator('.knowledge-record-title').filter({ hasText: '测试 · 自动保存知识记录' }).count(), 1, '恢复后记录重新进入正常列表')
     interactions.push('知识软删除、回收站只读与恢复')
+
+    await page.locator('.knowledge-record-title').filter({ hasText: '测试 · 自动保存知识记录' }).click()
+    await page.getByRole('button', { name: '记录更多操作', exact: true }).click()
+    assert.equal(await page.getByRole('menuitem', { name: '永久删除', exact: true }).count(), 0, '正常记录没有永久删除入口')
+    await page.getByRole('menuitem', { name: '移至回收站', exact: true }).click()
+    await page.waitForFunction(id => !!JSON.parse(localStorage.getItem('desktop-ui-test-knowledge')).find(row => row.id === id)?.deletedAt, savedId)
+    await page.locator('.knowledge-tabs').getByRole('button', { name: '回收站', exact: true }).click()
+    await page.locator('.knowledge-record-title').filter({ hasText: '测试 · 自动保存知识记录' }).click()
+    await page.getByRole('button', { name: '记录更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '永久删除', exact: true }).click()
+    const purgeDialog = page.getByRole('dialog', { name: '永久删除记录' })
+    assert((await purgeDialog.innerText()).includes('无法恢复'))
+    await purgeDialog.getByRole('button', { name: '取消', exact: true }).click()
+    assert(await page.evaluate(id => JSON.parse(localStorage.getItem('desktop-ui-test-knowledge')).some(row => row.id === id), savedId), '取消删除保留原记录')
+    await page.getByRole('button', { name: '记录更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '永久删除', exact: true }).click()
+    await purgeDialog.getByRole('button', { name: '永久删除', exact: true }).click()
+    await page.waitForFunction(id => !JSON.parse(localStorage.getItem('desktop-ui-test-knowledge')).some(row => row.id === id), savedId)
+    assert.equal(await page.locator('.knowledge-editor').count(), 0)
+    await page.locator('.knowledge-tabs').getByRole('button', { name: '全部记录', exact: true }).click()
+    assert.equal(await page.locator('.knowledge-record-title').filter({ hasText: '测试 · 自动保存知识记录' }).count(), 0)
+    interactions.push('回收站永久删除确认、取消与成功清理')
 
     await page.getByRole('textbox', { name: '搜索知识记录', exact: true }).fill('旧响应')
     assert.equal(await page.locator('.knowledge-table .el-table__body tr').count(), 1, '搜索知识标题、正文与标签产生真实筛选')

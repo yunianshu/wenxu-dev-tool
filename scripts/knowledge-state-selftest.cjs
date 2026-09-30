@@ -21,9 +21,9 @@ function harness(storage = null) {
     clearTimeout: id => timers.delete(id),
   }
   vm.runInNewContext(bundle, context)
-  const calls = { list: [], save: [], trash: [], restore: [], import: [] }
+  const calls = { list: [], save: [], trash: [], restore: [], delete: [], import: [] }
   const api = {}
-  for (const [method, kind] of [['knowledgeList', 'list'], ['knowledgeSave', 'save'], ['knowledgeTrash', 'trash'], ['knowledgeRestore', 'restore'], ['knowledgeImport', 'import']]) {
+  for (const [method, kind] of [['knowledgeList', 'list'], ['knowledgeSave', 'save'], ['knowledgeTrash', 'trash'], ['knowledgeRestore', 'restore'], ['knowledgeDelete', 'delete'], ['knowledgeImport', 'import']]) {
     api[method] = (...args) => { const call = pending(args); calls[kind].push(call); return call.promise }
   }
   const store = context.module.exports.createKnowledgeStore(api, 600, storage)
@@ -230,6 +230,53 @@ const cases = [
     const saving = h.store.flush('A'); h.saved(0); assert.equal(await saving, true)
     assert.equal(h.store.record('A').body, '备用存储故障时的正文')
     assert.equal(h.store.dirty('A'), false)
+  }],
+  ['永久删除清理草稿备份、屏蔽迟到列表与编辑事件', async () => {
+    const storage = memoryStorage()
+    const h = harness(storage)
+    const trashed = { ...row('A'), deletedAt: 10 }
+    await h.load([trashed, row('B')])
+    h.store.workspace.selectedId = 'A'
+    h.store.change({ ...trashed, body: '本机旧草稿' })
+    const staleList = h.store.load(true)
+    const deleting = h.store.lifecycle('A', 'delete', trashed)
+    assert.equal(h.store.change(trashed), false)
+    assert.equal(h.calls.save.length, 0, '不能为了删除强制写回已在回收站的草稿')
+    assert.deepEqual(h.calls.delete[0].input, ['A', 1, 'A-hash-1'])
+    h.calls.delete[0].resolve({ ok: true, id: 'A' })
+    await deleting
+    h.calls.list.at(-1).resolve({ ok: true, records: [trashed, row('B')], warnings: [] })
+    await staleList
+    assert.equal(h.store.record('A'), undefined)
+    assert.equal(h.store.record('B').id, 'B')
+    assert.equal(h.store.workspace.selectedId, '')
+    assert.equal(h.store.dirty('A'), false)
+    assert.equal(JSON.parse(storage.getItem('plm-knowledge-pending-v1')).A, undefined)
+    assert.equal(h.store.change(trashed), false, '删除后的迟到编辑不得重建草稿')
+    await h.fireTimers()
+    assert.equal(h.calls.save.length, 0)
+  }],
+  ['永久删除等待既有保存、失败保留记录并允许重试', async () => {
+    const h = harness()
+    await h.load([row('A')])
+    await assert.rejects(h.store.lifecycle('A', 'delete'), /回收站/)
+    assert.equal(h.calls.delete.length, 0)
+    const trashed = { ...row('A', 2), deletedAt: 10 }
+    await h.load([trashed])
+    h.store.change({ ...trashed, body: '旧草稿' })
+    const saving = h.store.flush('A')
+    const deleting = h.store.lifecycle('A', 'delete')
+    assert.equal(h.calls.delete.length, 0)
+    h.calls.save[0].resolve({ ok: false, error: '记录已移入回收站' })
+    await saving; await ticks()
+    h.calls.delete[0].resolve({ ok: false, error: '文件被占用' })
+    await assert.rejects(deleting, /文件被占用/)
+    assert.equal(h.store.record('A').body, '旧草稿')
+    assert.equal(h.store.data.mutating.A, false)
+    const retry = h.store.lifecycle('A', 'delete')
+    h.calls.delete[1].resolve({ ok: true, id: 'A' })
+    await retry
+    assert.equal(h.store.record('A'), undefined)
   }],
   ['真实共享筛选覆盖标题正文标签、项目、类型及回收站边界', async () => {
     const source = buildSync({ entryPoints: [path.join(__dirname, '../src/utils/knowledge.js')], bundle: true, write: false, platform: 'node', format: 'cjs' }).outputFiles[0].text

@@ -17,6 +17,7 @@
           <template #dropdown><el-dropdown-menu>
             <el-dropdown-item command="export">导出 Markdown</el-dropdown-item>
             <el-dropdown-item v-if="!deleted" command="trash" divided :disabled="saving">移至回收站</el-dropdown-item>
+            <el-dropdown-item v-else command="delete" divided :disabled="saving">永久删除</el-dropdown-item>
           </el-dropdown-menu></template>
         </el-dropdown>
       </div>
@@ -78,7 +79,7 @@ const props = defineProps({
   saveError: { type: String, default: '' },
   sources: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['change', 'save', 'trash', 'restore', 'open-source', 'export'])
+const emit = defineEmits(['change', 'save', 'trash', 'restore', 'delete', 'open-source', 'export'])
 
 const editableFields = ['title', 'body', 'type', 'status', 'tags', 'projectId', 'projectName']
 const clone = (value) => JSON.parse(JSON.stringify(value))
@@ -162,6 +163,7 @@ function onEditorKeydown(event) {
 function onMoreAction(command) {
   if (command === 'export') emit('export')
   else if (command === 'trash' && !deleted.value && !props.saving) emit('trash')
+  else if (command === 'delete' && deleted.value && !props.saving) emit('delete')
 }
 function formatTime(value) {
   const date = new Date(value)

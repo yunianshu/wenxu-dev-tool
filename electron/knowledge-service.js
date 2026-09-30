@@ -276,6 +276,20 @@ function importMarkdown({ fileName = '', content } = {}) {
   } catch (error) { return failure(error) }
 }
 
+function remove(id, revision, hash) {
+  try {
+    validId(id)
+    return withLock(id, () => {
+      const previous = readRecord(id)
+      checkRevision(revision, previous)
+      if (previous.deletedAt === null) fail('RECORD_NOT_TRASHED', '只能永久删除回收站中的记录')
+      if (hash !== previous.contentHash) fail('REVISION_CONFLICT', '记录文件已在外部修改或缺少文件摘要，请刷新后核对')
+      fs.unlinkSync(recordPath(id))
+      return { ok: true, id }
+    })
+  } catch (error) { return failure(error) }
+}
+
 function exportMarkdown(id) {
   try {
     const record = readRecord(id)
@@ -285,4 +299,4 @@ function exportMarkdown(id) {
   } catch (error) { return failure(error) }
 }
 
-module.exports = { list, save, trash: (id, revision) => setDeleted(id, revision, true), restore: (id, revision) => setDeleted(id, revision, false), importMarkdown, exportMarkdown }
+module.exports = { list, save, trash: (id, revision) => setDeleted(id, revision, true), restore: (id, revision) => setDeleted(id, revision, false), remove, importMarkdown, exportMarkdown }
