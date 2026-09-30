@@ -105,7 +105,7 @@ function installFixture({ projects, reports, deployments, knowledgeRecords }) {
     harnessStatus: () => ({ status: 'stopped', installed: false }),
     terminalShellOptions: () => ({ options: [{ id: 'powershell', name: 'PowerShell', label: 'PowerShell' }] }),
     terminalLayoutGet: () => ({ layout: { gridMode: '2x2', columnWidths: [0.5, 0.5], rowHeights: [0.5, 0.5], panes: projects.slice(0, 2).map((p, index) => ({ paneId: 'test-pane-' + index, projectId: p.id, shellId: 'powershell' })) } }),
-    terminalLayoutSave: () => ({ ok: true }), terminalList: () => [...terminalSessions.values()],
+    terminalLayoutSave: () => ({ ok: true }), terminalList: () => window.__overviewFailTerminal ? { ok: false, error: '隔离终端读取失败', sessions: [] } : { ok: true, sessions: [...terminalSessions.values()] },
     terminalCreate: payload => { const session = { ...payload, id: payload.paneId || 'test-session', cwd: payload.cwd, shell: 'PowerShell', shellName: 'PowerShell' }; terminalSessions.set(session.id, session); setTimeout(() => { for (const fn of events.get('onTerminalData') || []) fn({ id: session.id, sessionId: session.id, data: '\x1b[32m✓\x1b[0m 项目工作区已就绪\r\nPS ' + payload.cwd + '> ' }) }, 100); return { ok: true, session, replay: '' } },
     terminalAttach: id => ({ ok: true, session: terminalSessions.get(id), replay: 'PS D:/Projects> ' }), terminalResize: () => ({ ok: true }),
     aiModels: () => ({ ok: true, models: ['team-model'] }),
@@ -211,9 +211,18 @@ async function main() {
     await navigate('工作台')
     await page.getByRole('button', { name: '继续终端工作', exact: true }).click()
     await page.locator('.terminal-page').waitFor()
-    await page.waitForFunction(async () => (await window.gitReport.terminalList()).some(row => row.projectId === 'project-0'))
+    await page.waitForFunction(async () => (await window.gitReport.terminalList()).sessions.some(row => row.projectId === 'project-0'))
     await page.getByRole('button', { name: '返回项目', exact: true }).click()
     await navigate('工作台')
+    await page.waitForFunction(() => !document.querySelector('.work-overview .el-alert'))
+    assert((await page.locator('.work-status').innerText()).includes('1 个运行中'), '真实终端返回结构正确展示运行会话')
+    await page.evaluate(() => { window.__overviewFailTerminal = true })
+    await navigate('项目')
+    await navigate('工作台')
+    await page.getByText('终端状态读取失败', { exact: true }).waitFor()
+    await page.evaluate(() => { window.__overviewFailTerminal = false })
+    await page.locator('.work-overview .el-alert').getByRole('button', { name: '重试' }).click()
+    await page.waitForFunction(() => !document.querySelector('.work-overview .el-alert'))
     await page.evaluate(() => { window.__overviewFailHistory = true })
     await navigate('项目')
     await navigate('工作台')

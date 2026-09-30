@@ -20,7 +20,9 @@ export function useWorkOverview() {
       const messages = []
       results.forEach((result, index) => {
         const target = index === 0 ? sessions : history
-        if (result.status === 'fulfilled' && Array.isArray(result.value)) target.value = result.value
+        const value = result.status === 'fulfilled' ? result.value : null
+        const rows = index === 0 ? (value?.ok === true ? value.sessions : null) : value
+        if (Array.isArray(rows)) target.value = rows
         else { target.value = []; messages.push(index === 0 ? '终端状态读取失败' : '发布历史读取失败') }
       })
       error.value = messages.join('；')
