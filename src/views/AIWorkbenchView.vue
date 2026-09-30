@@ -5,13 +5,12 @@
         <h1 class="topbar-page-title">AI 工作台</h1><span class="topbar-context">个人知识与方法</span>
         <div class="knowledge-topbar-actions">
           <el-button @click="startAnalysis('idea')"><el-icon><MagicStick /></el-icon>分析想法</el-button>
-          <el-button @click="createRecord()"><el-icon><Plus /></el-icon>新建记录</el-button>
+          <el-button type="primary" @click="createRecord()"><el-icon><Plus /></el-icon>新建记录</el-button>
           <el-dropdown trigger="click" @command="handleCommand"><el-button text aria-label="知识库更多操作"><el-icon><MoreFilled /></el-icon></el-button><template #dropdown><el-dropdown-menu>
             <el-dropdown-item command="import">导入 Markdown</el-dropdown-item>
             <el-dropdown-item command="folder" :disabled="!data.directory">打开知识库目录</el-dropdown-item>
             <el-dropdown-item command="refresh">刷新记录</el-dropdown-item>
           </el-dropdown-menu></template></el-dropdown>
-          <el-button type="primary" @click="focusIdeaInput"><el-icon><EditPen /></el-icon>记录想法</el-button>
         </div>
       </div>
     </Teleport>
@@ -25,14 +24,11 @@
     <div class="knowledge-layout" :class="{ 'has-panel': !!current || analysisOpen }" @dragover.prevent @drop.prevent="onDrop">
       <section v-if="workspace.view === 'globe'" class="knowledge-idea-surface" aria-label="想法地球工作区">
         <form class="knowledge-capture idea-capture" @submit.prevent="quickCapture">
-          <el-icon><EditPen /></el-icon><input ref="ideaInput" v-model="capture" maxlength="2000" aria-label="快速记录" placeholder="写下一个想法，按 Enter 放进地球…" /><button type="submit" :disabled="!capture.trim() || creating" title="Enter 保存想法" aria-label="保存快速记录"><el-icon><TopRight /></el-icon></button>
+          <el-icon><EditPen /></el-icon><input v-model="capture" maxlength="2000" aria-label="快速记录" placeholder="写下一个想法，按 Enter 放进地球…" /><button type="submit" :disabled="!capture.trim() || creating" title="Enter 保存想法" aria-label="保存快速记录"><el-icon><TopRight /></el-icon></button>
         </form>
         <IdeaGlobe :records="ideaRecords" :selected-id="current?.type === 'idea' ? current.id : ''" :highlight-id="highlightIdeaId" :loading="data.loading" @select="selectRow" @browse="setView('all')" />
       </section>
       <section v-else class="knowledge-records" aria-label="知识记录">
-        <form v-if="workspace.view !== 'trash'" class="knowledge-capture" @submit.prevent="quickCapture">
-          <el-icon><EditPen /></el-icon><input v-model="capture" maxlength="2000" aria-label="快速记录" placeholder="一句话记下想法、问题或经验…" /><button type="submit" :disabled="!capture.trim() || creating" title="Enter 保存到收件箱" aria-label="保存快速记录"><el-icon><TopRight /></el-icon></button>
-        </form>
         <div class="knowledge-filters">
           <el-input ref="searchInput" v-model="workspace.query" clearable :prefix-icon="Search" placeholder="搜索标题、正文或标签" aria-label="搜索知识记录" />
           <el-select v-model="workspace.projectId" aria-label="筛选关联项目" :empty-values="[null, undefined]" class="knowledge-project-filter" filterable><el-option value="" label="全部项目"/><el-option value="__none__" label="未关联项目"/><el-option v-for="project in projectOptions" :key="project.id" :value="project.id" :label="project.name" /></el-select>
@@ -52,7 +48,7 @@
           <el-table-column v-if="!current && !analysisOpen" label="标签" min-width="128" show-overflow-tooltip><template #default="{ row }"><span class="knowledge-muted">{{ row.tags?.join(' · ') || '—' }}</span></template></el-table-column>
           <el-table-column v-if="!current && !analysisOpen" label="状态" width="88"><template #default="{ row }">{{ KNOWLEDGE_STATUSES[row.status] }}</template></el-table-column>
           <el-table-column label="更新" :width="current || analysisOpen ? 108 : 132"><template #default="{ row }"><span class="knowledge-date">{{ knowledgeTime(row.updatedAt) }}</span></template></el-table-column>
-          <template #empty><div class="knowledge-empty"><el-icon><Collection /></el-icon><strong>{{ workspace.query || workspace.type || workspace.projectId ? '没有符合条件的记录' : workspace.view === 'trash' ? '回收站是空的' : '从一个想法开始积累' }}</strong><p>{{ workspace.view === 'inbox' ? '先记下来，再整理。项目、类型和标签都可以稍后补充。' : '记录可随时编辑、归档，并与项目关联。' }}</p><el-button v-if="workspace.query || workspace.type || workspace.projectId" text @click="clearFilters">清除筛选</el-button><el-button v-else-if="workspace.view !== 'trash'" @click="createRecord()">新建第一条记录</el-button></div></template>
+          <template #empty><div class="knowledge-empty"><el-icon><Collection /></el-icon><strong>{{ workspace.query || workspace.type || workspace.projectId ? '没有符合条件的记录' : workspace.view === 'trash' ? '回收站是空的' : '从一个想法开始积累' }}</strong><p>记录可随时编辑、归档，并与项目关联。</p><el-button v-if="workspace.query || workspace.type || workspace.projectId" text @click="clearFilters">清除筛选</el-button><el-button v-else-if="workspace.view !== 'trash'" @click="createRecord()">新建第一条记录</el-button></div></template>
         </el-table>
         <footer class="knowledge-list-footer"><span>本地 Markdown</span><el-pagination v-model:current-page="page" small layout="prev, pager, next" :pager-count="5" :page-size="30" :total="filtered.length" hide-on-single-page /></footer>
       </section>
@@ -87,7 +83,7 @@ const topbarReady = useTopbarReady()
 const knowledge = useKnowledge()
 const { data, workspace } = knowledge
 const capture = ref(''), creating = ref(false), page = ref(1), sort = ref('updated'), checked = ref([])
-const fileInput = ref(null), tableRef = ref(null), searchInput = ref(null), ideaInput = ref(null), menuRef = ref(null), contextMenu = ref(null), showWarnings = ref(false)
+const fileInput = ref(null), tableRef = ref(null), searchInput = ref(null), menuRef = ref(null), contextMenu = ref(null), showWarnings = ref(false)
 const analysisOpen = ref(false), analysisMode = ref('organize'), analysisRecords = ref([]), analysisKey = ref(0)
 const highlightIdeaId = ref('')
 const views = [{ id: 'globe', label: '想法地球', icon: Connection }, { id: 'inbox', label: '收件箱', icon: MessageBox }, { id: 'all', label: '全部记录', icon: Collection }, { id: 'methods', label: '方法与流程', icon: Guide }, { id: 'reviews', label: '决策与复盘', icon: Tickets }, { id: 'principles', label: '个人原则', icon: Flag }, { id: 'trash', label: '回收站', icon: Delete }]
@@ -113,7 +109,6 @@ function projectLabel(row) { return state.projects.items.find(project => project
 function clearFilters() { workspace.query = ''; workspace.type = ''; workspace.projectId = '' }
 function selectRow(row) { workspace.selectedId = row.id; analysisOpen.value = false }
 function setView(view) { workspace.view = view; if (view === 'globe') { analysisOpen.value = false; if (current.value?.type !== 'idea') workspace.selectedId = '' } }
-async function focusIdeaInput() { setView('globe'); workspace.selectedId = ''; await nextTick(); ideaInput.value?.focus() }
 async function focusEditor(row) { selectRow(row); await nextTick(); document.querySelector('.knowledge-detail input')?.focus() }
 function projectFields() { const project = state.projects.items.find(row => row.id === workspace.projectId); return project ? { projectId: project.id, projectName: project.name } : {} }
 async function createRecord(fields = {}) {
@@ -135,7 +130,6 @@ async function quickCapture() {
     if (capture.value.trim() === text) capture.value = ''
     workspace.selectedId = ''
     analysisOpen.value = false
-    workspace.view = 'globe'
     highlightIdeaId.value = row.id
     ElMessage.success('想法已加入地球')
   } catch (error) { ElMessage.error(error.message) } finally { creating.value = false }
