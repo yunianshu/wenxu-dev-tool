@@ -97,8 +97,8 @@ function cancel() {
   return { ok: true }
 }
 
-function isBusy() {
-  return !!activeRun
+function isBusy(projectId) {
+  return !!activeRun && (!projectId || activeRun.projectId === projectId)
 }
 
 /** 解析脚本输出的控制标记，返回应显示的行或 null */
@@ -644,7 +644,7 @@ async function run(projectId, targetId) {
   let buildWorkspace = null
   let autoMode = project.deployMode === 'auto'
   const controller = new AbortController()
-  activeRun = { id: runId, conn: null, canceled: false, controller }
+  activeRun = { id: runId, projectId, conn: null, canceled: false, controller }
   const setC = (c) => { if (activeRun) activeRun.conn = c; conn = c }
 
   try {
@@ -1245,7 +1245,7 @@ async function restoreDbBackup(projectId, targetId, fileName) {
   if (activeRun) throw new Error('已有发布任务进行中，请等待完成或取消')
   assertDbBackupName(fileName)
   const runId = crypto.randomBytes(6).toString('hex')
-  activeRun = { id: runId, conn: null, canceled: false }
+  activeRun = { id: runId, projectId, conn: null, canceled: false }
   let project, target, conn, db
   try {
     ;({ project, target, conn } = await connectTarget(projectId, targetId))
@@ -1352,18 +1352,26 @@ async function restoreDbBackup(projectId, targetId, fileName) {
 /** 手动回滚到指定版本（方案 §20：直接使用服务器已有 release，不重新上传） */
 async function rollback(projectId, version, targetId) {
   if (activeRun) throw new Error('已有发布任务进行中')
-  const { project, target, conn } = await connectTarget(projectId, targetId)
+  const project = projects.list().find((p) => p.id === projectId)
+  if (!project) throw new Error('项目配置不存在，请先保存')
+  const target = getTarget(project, targetId)
+  if (!target) throw new Error('项目缺少部署目标，请先在配置中添加')
+  if (!safeVersion(version)) throw new Error('回滚版本无效，请重新选择')
   const home = target.remotePath
   const h = healthFor(project, target)
   const logBuf = []
   const runId = crypto.randomBytes(6).toString('hex')
+  let conn = null
+  // 在第一个异步操作之前占用互斥，连接等待也属于当前任务。
+  activeRun = { id: runId, projectId, conn: null, canceled: false }
+  const tracker = newStageTracker()
   const record = {
     id: runId, projectId: project.id, projectName: project.name, type: 'rollback',
     targetId: target.id, targetName: target.name,
     version, oldVersion: '', status: 'running',
     startedAt: Date.now(), finishedAt: 0, durationMs: 0,
     host: `${target.server.host}:${target.server.port}`, remotePath: home,
-    message: '', logFile: '',
+    message: '', logFile: '', stages: tracker.state,
   }
   logSink = (level, text) => logBuf.push(`${ts()} [${level.toUpperCase()}] ${text}`)
   log('info', `开始回滚 ${project.name}（${target.name}）→ ${version}`)
@@ -1378,15 +1386,20 @@ async function rollback(projectId, version, targetId) {
     return JSON.parse(JSON.stringify(record))
   }
 
-  activeRun = { id: runId, conn, canceled: false }
   try {
+    ;({ conn } = await connectTarget(projectId, targetId))
+    activeRun.conn = conn
+    if (isCanceled()) return finish('canceled', '回滚已取消，尚未修改服务器')
     await ssh.mkdirp(conn, ssh.remoteJoin(home, 'deployer'))
     const scriptRemote = ssh.remoteJoin(home, 'deployer', 'deploy.sh')
-    // 脚本缺失时自动补传（首次接管旧项目也能回滚）
-    const has = await ssh.exec(conn, `test -f ${quoteArg(scriptRemote)} && echo Y || echo N`)
-    if (!/Y/.test(has.stdout)) {
-      await uploadTextFile(conn, readDeployScript(), scriptRemote)
-    }
+    // 每次补传当前脚本，历史服务器也能使用新的失败恢复逻辑。
+    await uploadTextFile(conn, readDeployScript(), scriptRemote)
+    const curCmd = deployModeOf(project) === 'script'
+      ? `cat ${quoteArg(ssh.remoteJoin(home, 'CURRENT'))} 2>/dev/null`
+      : `readlink ${quoteArg(ssh.remoteJoin(home, 'current'))} 2>/dev/null`
+    const current = await ssh.exec(conn, `${curCmd} || true`)
+    record.oldVersion = (current.stdout || '').trim().split('/').pop() || ''
+    if (isCanceled()) return finish('canceled', '回滚已取消，尚未切换服务')
     const args = [
       'rollback', '--mode', deployModeOf(project),
       '--app', project.name, '--home', home, '--version', version,
@@ -1401,23 +1414,30 @@ async function rollback(projectId, version, targetId) {
       args.push('--no-health')
     }
     const cmd = `${project.deployMode === 'auto' && target.autoSudo ? 'sudo -n ' : ''}bash ${quoteArg(scriptRemote)} ${args.map(quoteArg).join(' ')}`
-    const tracker = newStageTracker()
     const resultBox = { ok: false, message: '', rolledBack: false, oldVersion: '' }
     const res = await execDeployScript(conn, cmd, tracker, resultBox)
+    if (isCanceled()) return finish('canceled', '回滚已取消，请查询线上版本确认服务器恢复结果')
     if (resultBox.ok && res.code === 0) {
+      for (const id of ['start', 'health']) {
+        if (tracker.state[id].status === 'running') tracker.end(id, 'success')
+      }
       log('success', `回滚成功，当前版本: ${version}`)
       return finish('success', `回滚到 ${version}`)
     }
     log('error', resultBox.message || `回滚失败（退出码 ${res.code}）`)
+    for (const id of ['start', 'health']) {
+      if (tracker.state[id].status === 'running') tracker.end(id, 'failed')
+    }
     return finish('failed', resultBox.message || '回滚失败')
   } catch (err) {
+    if (isCanceled()) return finish('canceled', '回滚已取消，请查询线上版本确认服务器恢复结果')
     const msg = (err && err.message) || String(err)
     log('error', `回滚异常: ${msg}`)
     return finish('failed', msg)
   } finally {
     ssh.close(conn)
     logSink = null
-    activeRun = null
+    if (activeRun?.id === runId) activeRun = null
   }
 }
 

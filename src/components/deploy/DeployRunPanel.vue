@@ -562,14 +562,18 @@ async function doRollback(version, targetId) {
     if (r && r.ok) {
       ElMessage.success(`已回滚到 ${version}`)
       if (isCurrentSelection(selection) && tid === props.activeTargetId) state.deploy.currentVersion = version
-    } else if (r && r.error) {
-      ElMessage.error(r.error)
+    } else if (r?.record?.status === 'canceled') {
+      ElMessage.info(r.record.message || '回滚已取消')
+    } else {
+      ElMessage.error(r?.error || r?.record?.message || '回滚失败，请查看发布日志')
     }
   } catch (e) {
     ElMessage.error(e.message || String(e))
   } finally {
     rollingBack.value = false
     state.deploy.running = false
+    // 失败、断连或取消也可能已切换过指针；结束后以服务器查询为准。
+    if (isCurrentSelection(selection) && tid === props.activeTargetId) void queryReleases(true)
     emit('history-changed')
   }
 }

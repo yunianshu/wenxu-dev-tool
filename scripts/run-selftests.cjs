@@ -21,6 +21,8 @@ const SUITES = [
   'deploy-auto-selftest.cjs',
   'deploy-servers-selftest.cjs',
   'deploy-auto-shell-selftest.cjs',
+  'deploy-recovery-selftest.cjs',
+  'deploy-rollback-state-selftest.cjs',
   'deploy-code-backup-selftest.cjs',
   'deploy-auto-db-selftest.cjs',
   'deploy-db-restore-selftest.cjs',

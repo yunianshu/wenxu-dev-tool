@@ -6,7 +6,8 @@
     class="deploy-config-drawer"
     @update:model-value="emit('update:modelValue', $event)"
   >
-    <div class="deploy-config-scroll">
+    <el-alert v-if="busy" title="部署任务进行中，完成后可修改设置" type="info" :closable="false" />
+    <div class="deploy-config-scroll" :inert="busy">
       <el-alert v-if="form.configMode !== 'quick'" title="数据库备份、健康检查和数据同步只作用于当前项目与环境，切换或编辑共享服务器不会套用其他项目的设置。" type="info" :closable="false" />
       <el-card shadow="never" class="card">
         <template #header>
@@ -307,7 +308,7 @@
     <template #footer>
       <div class="drawer-footer">
         <el-button @click="cancelEdit">取消</el-button>
-        <el-button type="primary" :disabled="!form.name" @click="emit('save')"><el-icon><Check /></el-icon>保存部署设置</el-button>
+        <el-button type="primary" :disabled="busy || !form.name" @click="emit('save')"><el-icon><Check /></el-icon>保存部署设置</el-button>
       </div>
     </template>
 
@@ -353,6 +354,7 @@ const props = defineProps({
   /** 部署项目列表（复制配置时的源项目候选） */
   projects: { type: Array, default: () => [] },
   servers: { type: Array, default: () => [] },
+  busy: { type: Boolean, default: false },
 })
 const emit = defineEmits(['update:modelValue', 'update:activeTargetId', 'save', 'reset-conn', 'copy-config'])
 
@@ -392,7 +394,7 @@ const importEnabled = computed({
 
 // ─── 取消回滚：抽屉直接编辑父级 form，取消必须恢复打开时的快照，否则修改残留（脏标记挂着、发布被禁用）───
 let openSnapshot = null
-watch(() => props.modelValue, (open) => {
+watch(() => [props.modelValue, props.form.id], ([open]) => {
   if (open) openSnapshot = JSON.parse(JSON.stringify(props.form))
 })
 function cancelEdit() {

@@ -20,6 +20,7 @@ function playwright() {
 
 function installFixture({ projects, reports, deployments, knowledgeRecords }) {
   const events = new Map()
+  window.__uiEmitDeployDone = async record => Promise.all([...(events.get('onDeployDone') || [])].map(fn => fn({ record })))
   const eventNames = new Set(['onWinFullscreen', 'onWinMaximized', 'onWinAskClose', 'onHarnessUpdate', 'onScanProgress', 'onScanRepoFound', 'onScanDone', 'onCollectProgress', 'onDeployLog', 'onDeployStage', 'onDeployProgress', 'onDeployDone', 'onDeployHistoryUpdated', 'onHarnessStatus', 'onTerminalData', 'onTerminalCwd', 'onTerminalExit', 'onTerminalClosed', 'onAiDelta'])
   const knowledgeKey = 'desktop-ui-test-knowledge'
   if (!localStorage.getItem(knowledgeKey)) localStorage.setItem(knowledgeKey, JSON.stringify(knowledgeRecords))
@@ -76,7 +77,14 @@ function installFixture({ projects, reports, deployments, knowledgeRecords }) {
       window.__uiAiRequests.push(copy({ messages, options }))
       throw new Error('想法工作台不应发起 AI 分析请求')
     },
-    projectsList: () => projects,
+    projectsList: () => copy(projects),
+    deployProjectsSave: payload => {
+      const index = projects.findIndex(project => project.id === payload.id)
+      if (index < 0) return { ok: false, error: '隔离项目不存在' }
+      projects[index] = copy(payload)
+      return { ok: true, id: payload.id }
+    },
+    deployRollback: () => ({ ok: false, record: { status: 'failed', message: '隔离回滚健康检查失败，已恢复原服务' } }),
     configLoad: () => config, configSave: value => Object.assign(config, value),
     uiPrefsLoad: prefs, uiPrefsSave: value => { localStorage.setItem('ui-test-prefs', JSON.stringify(value)); return { ok: true, prefs: value } },
     getIdentity: () => config.identities[0], winIsFullScreen: () => false, winIsMaximized: () => false,
@@ -186,6 +194,8 @@ async function main() {
       checks.push({ name, theme, width, height, layout })
       await page.screenshot({ path: path.join(OUTPUT, `${theme}-${width}-${name}.png`), fullPage: false })
     }
+    const deployFlowOnly = process.argv.includes('--deploy-flow-only')
+    if (!deployFlowOnly) {
     const pages = [['AI 工作台', 'knowledge'], ['项目', 'projects'], ['DeepSeek Harness', 'harness'], ['终端工作台', 'terminal'], ['一键填报', 'fillreport'], ['部署', 'deploy'], ['扩展管理', 'extensions'], ['设置', 'settings']]
     for (const theme of ['light', 'dark']) {
       await navigate('设置')
@@ -222,6 +232,7 @@ async function main() {
       await page.setViewportSize({ width, height })
       for (const [label, name] of [['AI 工作台', 'knowledge'], ['项目', 'projects'], ['终端工作台', 'terminal'], ['部署', 'deploy']]) { await navigate(label); await capture(name, 'dark', width, height) }
     }
+    }
     await page.setViewportSize({ width: 1440, height: 900 })
     await navigate('部署')
     await page.evaluate(async () => {
@@ -236,10 +247,61 @@ async function main() {
     assert.equal(await page.locator('.run-live-copy strong').textContent(), '项目打包', '发布运行态显示当前阶段')
     assert.equal(await page.locator('.run-live-copy').textContent().then(text => text.includes('已处理 42 个文件')), true, '发布运行态显示真实阶段进度')
     assert.equal(await page.locator('.stages').count(), 0, '运行中以加载动画代替阶段列表')
-    await capture('deploy-running', 'dark', 1440, 900)
+    if (!deployFlowOnly) await capture('deploy-running', 'dark', 1440, 900)
     await page.evaluate(async () => { const { state } = await import('/src/store.js'); state.deploy.running = false; state.deploy.finishedAt = Date.now() })
     await page.locator('.stages').waitFor()
     interactions.push('发布运行态加载动画与完成后阶段明细')
+    await page.evaluate(async () => { const { selectProject } = (await import('/src/composables/useProjects.js')).useProjects(); selectProject('project-0') })
+    await page.getByRole('button', { name: '部署设置', exact: true }).click()
+    const drawer = page.locator('.deploy-config-drawer')
+    const deploymentName = drawer.locator('.f-row .el-input__inner').first()
+    await deploymentName.fill('未保存部署草稿')
+    await page.keyboard.press('Escape')
+    await page.locator('.topbar-project-select').click()
+    await page.getByRole('option', { name: projects[1].name, exact: true }).click()
+    await page.locator('.topbar-project-select').click()
+    await page.getByRole('option', { name: projects[0].name, exact: true }).click()
+    await page.getByRole('button', { name: '部署设置', exact: true }).click()
+    assert.equal(await deploymentName.inputValue(), '未保存部署草稿', '切换项目保留部署草稿')
+    await page.evaluate(async () => {
+      const { state } = await import('/src/store.js')
+      state.deploy.running = true
+    })
+    assert.equal(await deploymentName.evaluate(input => !!input.closest('[inert]')), true, '已打开设置在任务运行中不可编辑')
+    assert.equal(await drawer.getByRole('button', { name: '保存部署设置', exact: true }).isDisabled(), true, '任务运行中禁止保存')
+    assert.equal(await page.getByRole('button', { name: 'AI 部署助手', exact: true }).isDisabled(), true, '任务运行中禁止套用其他方案')
+    await page.evaluate(() => window.__uiEmitDeployDone({ projectId: 'project-0', projectName: '隔离项目', status: 'canceled', type: 'deploy' }))
+    assert.equal(await deploymentName.inputValue(), '未保存部署草稿', '完成事件重载不覆盖未保存设置')
+    await page.keyboard.press('Escape')
+    await navigate('项目')
+    await navigate('部署')
+    await page.getByRole('button', { name: '部署设置', exact: true }).click()
+    assert.equal(await deploymentName.inputValue(), '未保存部署草稿', '离开部署页后返回仍保留草稿')
+    await drawer.getByRole('button', { name: '保存部署设置', exact: true }).click()
+    await page.waitForFunction(() => !document.querySelector('.deploy-page .bar .el-tag--warning'))
+    await page.getByRole('button', { name: '部署设置', exact: true }).click()
+    assert.equal(await deploymentName.inputValue(), '未保存部署草稿', '保存后使用落盘配置')
+    await deploymentName.fill('应取消的临时修改')
+    await drawer.getByRole('button', { name: '取消', exact: true }).click()
+    await page.getByRole('button', { name: '部署设置', exact: true }).click()
+    assert.equal(await deploymentName.inputValue(), '未保存部署草稿', '取消恢复打开时的配置')
+    // 恢复本段夹具，避免保存名称影响后续其他页面的固定项目测试。
+    await deploymentName.fill(projects[0].name)
+    await drawer.getByRole('button', { name: '保存部署设置', exact: true }).click()
+    await page.waitForFunction(() => !document.querySelector('.deploy-page .bar .el-tag--warning'))
+    await page.getByRole('button', { name: /线上 / }).click()
+    await page.locator('.rollback-select').click()
+    await page.getByRole('option', { name: '1.4.96', exact: true }).click()
+    await page.getByRole('button', { name: '回滚到此版本', exact: true }).click()
+    await page.getByRole('dialog', { name: '确认回滚', exact: true }).getByRole('button', { name: '回滚', exact: true }).click()
+    await page.getByText('隔离回滚健康检查失败，已恢复原服务', { exact: true }).waitFor()
+    interactions.push('部署草稿跨项目和导航保留、运行期间禁用配置、完成事件保护及回滚错误提示')
+    if (deployFlowOnly) {
+      assert.deepEqual(await page.evaluate(() => window.__uiUnknown), [], '部署检查不能出现未建模 IPC')
+      assert.deepEqual(errors, [], '部署检查不能出现运行时错误')
+      console.log('通过：真实界面部署草稿、运行期保护、完成刷新、保存和失败回滚提示')
+      return
+    }
     await navigate('AI 工作台')
     await page.locator('.knowledge-tabs').getByRole('button', { name: '想法地球', exact: true }).click()
     assert.equal(await page.getByRole('button', { name: '新建想法', exact: true }).count(), 0, '想法只从地球输入框创建');

@@ -157,7 +157,7 @@ function seedScriptProject(dir) {
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(path.join(dir, 'VERSION'), '1.0.0\n')
   const saved = deployProjects.save(deployProjects.normalizeProject({
-    name: '脚本部署项目', localPath: dir, deployMode: 'script',
+    name: '脚本部署项目', localPath: dir, deployMode: 'script', configMode: 'manual',
     scriptMode: { artifactDir: 'release', upgradeScript: 'upgrade.sh' },
     version: { strategy: 'auto', manual: '' },
     targets: [{
@@ -329,7 +329,7 @@ async function main() {
       'echo "[mkpkg] done"',
     ].join('\n'))
     const proj2 = deployProjects.save(deployProjects.normalizeProject({
-      name: '自动打包项目', localPath: proj2Dir, deployMode: 'script',
+      name: '自动打包项目', localPath: proj2Dir, deployMode: 'script', configMode: 'manual',
       scriptMode: { artifactDir: 'release', upgradeScript: 'upgrade.sh', packageCommand: 'bash mkpkg.sh', packageTimeoutSec: 60 },
       version: { strategy: 'auto', manual: '' },
       targets: [{
@@ -354,7 +354,7 @@ async function main() {
     )
     // 打包失败（命令退出非 0）→ 整单失败
     const proj3 = deployProjects.save(deployProjects.normalizeProject({
-      name: '打包失败项目', localPath: proj2Dir, deployMode: 'script',
+      name: '打包失败项目', localPath: proj2Dir, deployMode: 'script', configMode: 'manual',
       scriptMode: { artifactDir: 'release', packageCommand: 'bash -c "echo boom >&2; exit 3"' },
       version: { strategy: 'manual', manual: '3.0.0' }, // 目录无 3.0.0 产物 → 触发打包 → 失败
       targets: [{
@@ -531,7 +531,7 @@ async function main() {
       'echo "[mkpkg] done"',
     ].join('\n'))
     const mkProj = (manual, autoBump) => deployProjects.save(deployProjects.normalizeProject({
-      name: `版本同步项目-${manual}`, localPath: proj4Dir, deployMode: 'script',
+      name: `版本同步项目-${manual}`, localPath: proj4Dir, deployMode: 'script', configMode: 'manual',
       scriptMode: { artifactDir: 'release', upgradeScript: 'upgrade.sh', packageCommand: 'bash mkpkg.sh', packageTimeoutSec: 60, autoBumpVersion: autoBump },
       version: { strategy: 'manual', manual },
       targets: [{
@@ -589,7 +589,7 @@ async function main() {
     fs.rmSync(path.join(SERVER_ROOT, 'CURRENT'), { force: true })
     fs.rmSync(path.join(SERVER_ROOT, 'releases'), { recursive: true, force: true })
     const proj6 = deployProjects.save(deployProjects.normalizeProject({
-      name: '不写指针的项目', localPath: proj6Dir, deployMode: 'script',
+      name: '不写指针的项目', localPath: proj6Dir, deployMode: 'script', configMode: 'manual',
       scriptMode: { artifactDir: 'release', upgradeScript: 'upgrade.sh' },
       version: { strategy: 'auto', manual: '' },
       targets: [{
@@ -666,7 +666,7 @@ async function main() {
     git7('commit', '-q', '-m', 'fix: 统计周期新增近半年/近一年/全部')
     writeNotesAwareMkPkg(proj7Dir, true)
     const proj7 = deployProjects.save(deployProjects.normalizeProject({
-      name: '发布说明项目', localPath: proj7Dir, deployMode: 'script',
+      name: '发布说明项目', localPath: proj7Dir, deployMode: 'script', configMode: 'manual',
       scriptMode: { artifactDir: 'release', upgradeScript: 'upgrade.sh', packageCommand: 'bash mkpkg.sh', packageTimeoutSec: 60 },
       version: { strategy: 'auto', manual: '' },
       targets: notesTarget(),
@@ -703,7 +703,7 @@ async function main() {
     fs.writeFileSync(path.join(proj8Dir, 'docs', 'release-notes-8.9.0.md'), '# 旧版\n')
     writeNotesAwareMkPkg(proj8Dir, true)
     const proj8 = deployProjects.save(deployProjects.normalizeProject({
-      name: '关闭发布说明项目', localPath: proj8Dir, deployMode: 'script',
+      name: '关闭发布说明项目', localPath: proj8Dir, deployMode: 'script', configMode: 'manual',
       scriptMode: { artifactDir: 'release', upgradeScript: 'upgrade.sh', packageCommand: 'bash mkpkg.sh', packageTimeoutSec: 60, autoReleaseNotes: false },
       version: { strategy: 'auto', manual: '' },
       targets: notesTarget(),
@@ -724,7 +724,7 @@ async function main() {
     fs.writeFileSync(path.join(proj9Dir, 'VERSION'), '9.5.0\n')
     writeNotesAwareMkPkg(proj9Dir, false)
     const proj9 = deployProjects.save(deployProjects.normalizeProject({
-      name: '无约定项目', localPath: proj9Dir, deployMode: 'script',
+      name: '无约定项目', localPath: proj9Dir, deployMode: 'script', configMode: 'manual',
       scriptMode: { artifactDir: 'release', upgradeScript: 'upgrade.sh', packageCommand: 'bash mkpkg.sh', packageTimeoutSec: 60 },
       version: { strategy: 'auto', manual: '' },
       targets: notesTarget(),

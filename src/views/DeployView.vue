@@ -8,9 +8,9 @@
           <h1 class="topbar-page-title">部署</h1>
           <TopbarProjectSelect />
         </div>
-        <el-button v-if="currentProject" class="deploy-topbar-actions" @click="aiOpen = true"><el-icon><MagicStick /></el-icon>AI 部署助手</el-button>
+        <el-button v-if="currentProject" class="deploy-topbar-actions" :disabled="state.deploy.running" @click="aiOpen = true"><el-icon><MagicStick /></el-icon>AI 部署助手</el-button>
         <el-button @click="serverManagerOpen = true"><el-icon><Coin /></el-icon>服务器管理</el-button>
-        <el-button v-if="currentProject" @click="configOpen = true"><el-icon><Setting /></el-icon>部署设置</el-button>
+        <el-button v-if="currentProject" :disabled="state.deploy.running" @click="configOpen = true"><el-icon><Setting /></el-icon>部署设置</el-button>
       </div>
     </Teleport>
     <ServerManagerDialog v-model="serverManagerOpen" :servers="servers" :busy="state.deploy.running" @changed="onServersChanged" />
@@ -66,6 +66,7 @@
       :detected="detected"
       :projects="state.deploy.projects"
       :servers="servers"
+      :busy="state.deploy.running"
       @save="saveProject"
       @copy-config="onCopyConfig"
       @reset-conn="connResult = null"
@@ -144,9 +145,9 @@ const activeTarget = computed(() => {
 })
 
 /** 当前选中项目（用于脏检查） */
-const selectedRaw = computed(() => state.deploy.projects.find((p) => p.id === state.deploy.currentProjectId) || null)
+const selectedRaw = computed(() => state.deploy.projects.find((p) => p.id === form.id) || null)
 
-/** 表单是否与已保存配置不一致（凭据字段不参与比较） */
+/** 表单是否与已保存配置不一致（忽略脱敏表示，计入待保存凭据） */
 const dirty = computed(() => {
   if (!form.id || !selectedRaw.value) return false
   // 键序无关的稳定序列化：form 由 emptyProject() 展开、selectedRaw 由主进程 normalizeProject 产出，
@@ -168,10 +169,11 @@ const dirty = computed(() => {
     }
     return stable(c)
   }
-  // 清除凭据标记是待保存的变更：不计入则用户点了「清除」也不显示「有未保存修改」，易漏保存
-  const hasPendingClear = form.targets.some((t) =>
-    t.server?.clearSecret || t.server?.clearPassphrase || t.dataSync?.clearImportSecret)
-  return norm(form) !== norm(selectedRaw.value) || hasPendingClear
+  // 新凭据和清除标记都是待保存变更，不能在缓存草稿时遗漏。
+  const hasPendingCredentials = form.targets.some((t) =>
+    t.server?.clearSecret || t.server?.clearPassphrase || t.dataSync?.clearImportSecret
+    || t.server?.secret || t.server?.passphrase || t.dataSync?.importSecret)
+  return norm(form) !== norm(selectedRaw.value) || hasPendingCredentials
 })
 
 const publishVersion = computed(() => {
@@ -180,7 +182,9 @@ const publishVersion = computed(() => {
 })
 
 // ─── 数据加载 ───
-async function loadProjects() {
+async function loadProjects({ preserveDraft = false } = {}) {
+  const beforeReload = JSON.stringify(form)
+  if (preserveDraft) rememberDraft()
   try {
     // 磁盘是唯一真源：复制配置、删除项目、保存都直接改 deploy-projects.json，
     // 这里必须重新拉取。曾因「state.projects.items 非空就跳过拉取」而复用改动前的缓存，
@@ -189,6 +193,9 @@ async function loadProjects() {
     servers.value = await window.gitReport.deployServersList()
     state.deploy.projects = state.projects.items
   } catch { state.deploy.projects = [] }
+  if (disposed) return
+  // 完成事件的读取期间用户可能又编辑了表单，不能只保留请求发起时的草稿。
+  if (preserveDraft && JSON.stringify(form) !== beforeReload) rememberDraft()
   state.deploy.currentProjectId = state.projects.currentId
   const selected = state.deploy.projects.find((project) => project.id === state.deploy.currentProjectId)
   if (selected) fillForm(selected, selected.id === form.id ? activeTargetId.value : '')
@@ -196,6 +203,7 @@ async function loadProjects() {
 
 /** preferredTargetId：填充后尽量停留的环境（保存/换版本等流程不得把用户悄悄切到环境 1） */
 function fillForm(p, preferredTargetId = '') {
+  const previousProjectId = form.id
   const base = emptyProject()
   const merged = { ...base, ...JSON.parse(JSON.stringify(p || {})) }
   merged.version = { ...base.version, ...(p && p.version || {}) }
@@ -220,9 +228,13 @@ function fillForm(p, preferredTargetId = '') {
       })
     : base.targets
   Object.assign(form, merged)
-  const want = preferredTargetId && merged.targets.some((t) => t.id === preferredTargetId)
+  const draft = state.deploy.configDrafts[p?.id]
+  if (draft) Object.assign(form, JSON.parse(JSON.stringify(draft.form)))
+  if (draft) preferredTargetId = draft.targetId
+  if (!draft || previousProjectId !== form.id) configDrawerRef.value?.rebaseline()
+  const want = preferredTargetId && form.targets.some((t) => t.id === preferredTargetId)
     ? preferredTargetId
-    : (merged.targets.find((t) => t.id === merged.productionTargetId) || merged.targets.find((t) => t.server?.host) || merged.targets[0]).id
+    : (form.targets.find((t) => t.id === form.productionTargetId) || form.targets.find((t) => t.server?.host) || form.targets[0]).id
   activeTargetId.value = want
   detectVersion()
 }
@@ -248,7 +260,14 @@ function resetRunDisplay() {
   state.deploy.finishedAt = 0
 }
 
+function rememberDraft() {
+  if (!form.id) return
+  if (dirty.value) state.deploy.configDrafts[form.id] = { form: JSON.parse(JSON.stringify(form)), targetId: activeTargetId.value }
+  else delete state.deploy.configDrafts[form.id]
+}
+
 function onSelectProject(id) {
+  rememberDraft()
   const p = state.deploy.projects.find((x) => x.id === id)
   runPanelRef.value?.resetSelection()
   connResult.value = null
@@ -271,12 +290,14 @@ function newProject() {
 
 /** 复制服务器连接（含加密凭据），完成后选中新追加的第一个环境。 */
 async function onCopyConfig(fromProjectId) {
+  if (state.deploy.running) return ElMessage.warning('部署任务进行中，请完成后修改配置')
   // 复制前已存在的环境 id：复制后据此找出新追加的环境。
   // 不能用下标（prevTargetCount）判定——抽屉里可能有尚未保存的新增环境，下标会对不上
   const knownIds = new Set(form.targets.map((t) => t.id))
   try {
     const r = await window.gitReport.deployProjectsCopyConfig({ fromProjectId, toProjectId: form.id })
     if (!r || !r.ok) return ElMessage.error((r && r.error) || '复制失败')
+    delete state.deploy.configDrafts[form.id]
     // 复制改的是磁盘：loadProjects 必须重新拉取列表并回填，否则界面停在复制前
     await loadProjects()
     const p = state.deploy.projects.find((x) => x.id === form.id)
@@ -299,6 +320,7 @@ async function onCopyConfig(fromProjectId) {
 
 /** AI 部署助手把方案写回磁盘后：重新拉取并回填表单，当前环境保持不变 */
 async function onPlanApplied() {
+  delete state.deploy.configDrafts[form.id]
   await loadProjects()
   const p = state.deploy.projects.find((x) => x.id === form.id)
   if (p) fillForm(p, activeTargetId.value)
@@ -306,7 +328,9 @@ async function onPlanApplied() {
   runPanelRef.value?.resetSelection()
 }
 
-async function saveProject(successMsg = '配置已保存') {  if (!form.name) { ElMessage.warning('请填写项目名称'); return false }
+async function saveProject(successMsg = '配置已保存') {
+  if (state.deploy.running) { ElMessage.warning('部署任务进行中，请完成后保存配置'); return false }
+  if (!form.name) { ElMessage.warning('请填写项目名称'); return false }
   const payload = JSON.parse(JSON.stringify(form))
   if (!payload.targets.length) payload.targets = [emptyTarget()]
   // 部署目录留空时按目标随名称自动建议，用户仍可随时修改
@@ -315,6 +339,7 @@ async function saveProject(successMsg = '配置已保存') {  if (!form.name) { 
   }
   const r = await window.gitReport.deployProjectsSave(payload)
   if (r && r.ok) {
+    delete state.deploy.configDrafts[payload.id]
     ElMessage.success(successMsg)
     await loadSharedProjects()
     await loadProjects()
@@ -326,7 +351,7 @@ async function saveProject(successMsg = '配置已保存') {  if (!form.name) { 
     configOpen.value = false
     return true
   }
-  ElMessage.error('保存失败')
+  ElMessage.error(r?.error || '保存失败')
   return false
 }
 
@@ -407,14 +432,14 @@ async function testConnection() {
 }
 
 onMounted(() => {
-  loadProjects() // 发布历史由 DeployHistoryTable 的 immediate watch 驱动首载
+  loadProjects({ preserveDraft: true }) // 发布历史由 DeployHistoryTable 的 immediate watch 驱动首载
   // 发布完成事件：刷新历史 + 结果汇总（App.vue 已更新 running/stages）
   offDone = window.gitReport.onDeployDone(async (d) => {
     reloadHistory()
     const r = d && d.record
     if (!r) return
     if (r.projectId === form.id && (form.deployMode === 'auto' || quickMode.value)) {
-      await loadProjects()
+      await loadProjects({ preserveDraft: true })
     }
     if (disposed) return
     const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
@@ -453,6 +478,7 @@ watch(() => state.projects.currentId, (projectId) => {
 })
 
 onUnmounted(() => {
+  rememberDraft()
   disposed = true
   if (offDone) offDone()
   clearTimeout(detectTimer)

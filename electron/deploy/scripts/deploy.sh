@@ -304,6 +304,7 @@ link_current() {
 
 # ───────────────────────── 失败回滚 ─────────────────────────
 do_rollback() {
+  trap '' HUP INT TERM
   local reason="$1"
   stage rollback
   warn "$reason"
@@ -334,7 +335,13 @@ do_rollback() {
 }
 
 on_signal() { # SSH 连接被客户端取消/断开时触发
-  do_rollback "发布被中断（连接断开/取消）"
+  # 恢复过程中不再接受中断，避免第二次信号打断旧服务恢复。
+  trap '' HUP INT TERM
+  if [ "$MODE" = "script" ]; then
+    do_rollback_script "发布被中断（连接断开/取消）"
+  else
+    do_rollback "发布被中断（连接断开/取消）"
+  fi
 }
 trap on_signal HUP INT TERM
 
@@ -564,8 +571,11 @@ run_release_script() {
 
 # 脚本部署回滚：停新版本 → CURRENT 切回旧版本并重启（旧版本缺失时尽力而为）
 do_rollback_script() {
+  trap '' HUP INT TERM
   local reason="$1" old="$OLD_CURRENT_NAME" new
-  new="$(get_current)"
+  # 升级脚本不一定写 CURRENT，停止本次实际启动的版本，不能误停旧版本。
+  new=""
+  [ -n "$NEW_RELEASE" ] && new="$(basename "$NEW_RELEASE")"
   stage rollback
   warn "$reason"
   write_history "failed"
@@ -818,7 +828,9 @@ do_rollback_cmd() {
 
   local target="$RELEASES/$VERSION"
   OLD_RELEASE="$(readlink -f "$CURRENT" 2>/dev/null || echo "")"
-  NEW_RELEASE="" # 手动回滚无需再回滚
+  # 手动回滚失败也必须恢复操作前的可用服务。
+  NEW_RELEASE="$target"
+  AUTO_ROLLBACK=1
 
   stage start
   if [ -n "$OLD_RELEASE" ] && [ -d "$OLD_RELEASE" ] && [ "$OLD_RELEASE" != "$(readlink -f "$target")" ]; then
@@ -828,13 +840,13 @@ do_rollback_cmd() {
   link_current "$target"
   log "current -> releases/$VERSION，正在启动…"
   (cd "$target" && docker compose -f "$COMPOSE_FILE" up -d) \
-    || fail_now "目标版本启动失败: releases/$VERSION"
+    || do_rollback "目标版本启动失败: releases/$VERSION"
 
   stage health
   if [ -n "$HEALTH_URL" ]; then
-    run_health "$target" || fail_now "回滚后健康检查失败: $HEALTH_URL"
+    run_health "$target" || do_rollback "回滚后健康检查失败: $HEALTH_URL"
   else
-    health_docker "$target" || fail_now "回滚后容器状态异常"
+    health_docker "$target" || do_rollback "回滚后容器状态异常"
   fi
   ok "回滚完成，当前版本: $VERSION"
   write_history "rollback"
@@ -855,6 +867,9 @@ do_rollback_cmd_script() {
 
   local target="$RELEASES/$VERSION" cur
   cur="$(get_current)"
+  OLD_CURRENT_NAME="$cur"
+  NEW_RELEASE="$target"
+  AUTO_ROLLBACK=1
 
   stage start
   if [ -n "$cur" ] && [ "$cur" != "$VERSION" ] && [ -f "$RELEASES/$cur/stop.sh" ]; then
@@ -864,15 +879,12 @@ do_rollback_cmd_script() {
   set_current "$VERSION"
   log "CURRENT -> $VERSION，正在启动…"
   if ! run_release_script "$target" start.sh; then
-    err "目标版本启动失败，CURRENT 切回 $cur"
-    [ -n "$cur" ] && set_current "$cur"
-    [ -n "$cur" ] && run_release_script "$RELEASES/$cur" start.sh >/dev/null 2>&1 || true
-    fail_now "回滚启动失败: releases/$VERSION（已恢复指向 $cur）"
+    do_rollback_script "回滚启动失败: releases/$VERSION"
   fi
 
   if [ -n "$HEALTH_URL" ]; then
     stage health
-    health_http || fail_now "回滚后健康检查失败: $HEALTH_URL"
+    health_http || do_rollback_script "回滚后健康检查失败: $HEALTH_URL"
   fi
   ok "回滚完成，当前版本: $VERSION"
   write_history "rollback"

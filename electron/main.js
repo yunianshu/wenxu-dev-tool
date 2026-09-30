@@ -553,8 +553,8 @@ function registerIpc() {
 
   // 项目中心：项目是 AI、活动报告与部署共享的一等上下文
   ipcMain.handle('projects:list', () => projectService.list())
-  ipcMain.handle('projects:save', (_e, project) => projectService.save(project))
-  ipcMain.handle('projects:remove', (_e, projectId) => projectService.remove(projectId))
+  ipcMain.handle('projects:save', (_e, project) => project?.id && deployService.isBusy(project.id) ? { ok: false, error: '该项目的部署任务进行中，请完成后修改项目' } : projectService.save(project))
+  ipcMain.handle('projects:remove', (_e, projectId) => deployService.isBusy(projectId) ? { ok: false, error: '该项目的部署任务进行中，请完成后删除项目' } : projectService.remove(projectId))
 
   // 知识记录与项目配置独立保存；删除项目不会删除记录。
   ipcMain.handle('knowledge:list', () => knowledgeService.list())
@@ -713,9 +713,9 @@ function registerIpc() {
   // ─── 一键部署模块（OneDeploy） ───
   deployService.setEmitter((ch, payload) => broadcast(ch, payload))
   ipcMain.handle('deploy:projects:list', () => deployProjects.list())
-  ipcMain.handle('deploy:projects:save', (_e, p) => deployProjects.save(p))
-  ipcMain.handle('deploy:projects:copyConfig', (_e, args) => deployProjects.copyConfig(args))
-  ipcMain.handle('deploy:projects:remove', (_e, id) => deployProjects.remove(id))
+  ipcMain.handle('deploy:projects:save', (_e, p) => deployService.isBusy() ? { ok: false, error: '部署任务进行中，请完成后保存配置' } : deployProjects.save(p))
+  ipcMain.handle('deploy:projects:copyConfig', (_e, args) => deployService.isBusy() ? { ok: false, error: '部署任务进行中，请完成后复制配置' } : deployProjects.copyConfig(args))
+  ipcMain.handle('deploy:projects:remove', (_e, id) => deployService.isBusy() ? { ok: false, error: '部署任务进行中，请完成后删除配置' } : deployProjects.remove(id))
   ipcMain.handle('deploy:servers:list', () => deployProjects.listServers())
   ipcMain.handle('deploy:servers:save', (_e, server) => deployService.isBusy() ? { ok: false, error: '发布进行中，请完成后修改服务器' } : deployProjects.saveServer(server))
   ipcMain.handle('deploy:servers:remove', (_e, id) => deployService.isBusy() ? { ok: false, error: '发布进行中，请完成后修改服务器' } : deployProjects.removeServer(id))
@@ -841,6 +841,7 @@ function registerIpc() {
   })
   ipcMain.handle('deploy:ai:apply', (_e, { projectId, targetId, plan }) => {
     try {
+      if (deployService.isBusy()) return { ok: false, error: '部署任务进行中，请完成后套用方案' }
       return aiDeploy.applyPlan(projectId, targetId, plan)
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) }
