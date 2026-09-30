@@ -14,6 +14,8 @@ require.cache[electronPath] = {
 }
 const service = require('../electron/deploy/deploy-service')
 const logs = []
+const parentTemp = process.env.TEMP
+const parentTmp = process.env.TMP
 service.setEmitter((channel, payload) => { if (channel === 'deploy:log') logs.push(payload.text) })
 let build
 
@@ -46,6 +48,8 @@ class LoopbackProbe {
     var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     server.start();
     System.out.println("HTTP_OK");
+    java.net.http.HttpClient.newHttpClient();
+    System.out.println("CLIENT_OK");
     server.stop(0);
   }
 }`)
@@ -54,6 +58,10 @@ class LoopbackProbe {
     })
     assert.equal(result.status, 0, `新工作区 Java HTTP 初始化失败：${result.stderr}`)
     assert.ok(result.stdout.includes('HTTP_OK'))
+    const viaPackage = await service.runPackageCommand({ localPath: build.dir,
+      scriptMode: { packageCommand: 'java LoopbackProbe.java', packageTimeoutSec: 30 } }, source)
+    assert.deepEqual(viaPackage, { ok: true }, '未配置套接字目录的真实 Java 打包进程必须成功')
+    assert.ok(logs.includes('[打包] CLIENT_OK'))
     console.log('  ✓ 实际构建副本的 Java HTTP 服务初始化通过')
   } else {
     console.log('  跳过 Java HTTP 回归：本机未安装 Java，其余断言继续执行')
@@ -61,6 +69,7 @@ class LoopbackProbe {
 
   const fixture = path.join(build.dir, 'output.cjs')
   fs.writeFileSync(fixture, `
+require('fs').writeFileSync('child-env.json', JSON.stringify({temp: process.env.TEMP, tmp: process.env.TMP}));
 process.stdout.write(Buffer.from([0xe4]));
 process.stderr.write(Buffer.from(process.platform === 'win32' ? [0xd6] : [0xe4]));
 setTimeout(() => {
@@ -71,16 +80,28 @@ setTimeout(() => {
 `)
   const project = { localPath: build.dir, scriptMode: { packageCommand: `"${process.execPath}" output.cjs` } }
   assert.deepEqual(await service.runPackageCommand(project, source), { ok: true })
+  const childEnv = JSON.parse(fs.readFileSync(path.join(build.dir, 'child-env.json'), 'utf8'))
+  if (process.platform === 'win32') {
+    assert.equal(childEnv.temp, childEnv.tmp)
+    assert.equal(path.dirname(childEnv.temp), build.root)
+    assert.notEqual(childEnv.temp, build.dir, '临时目录与项目副本必须分离')
+    assert.ok(!fs.existsSync(childEnv.temp), '成功退出后必须清理子进程临时目录')
+  }
+  assert.equal(process.env.TEMP, parentTemp, '不能修改应用进程 TEMP')
+  assert.equal(process.env.TMP, parentTmp, '不能修改应用进程 TMP')
   assert.ok(logs.includes('[打包] 中文🙂'), 'UTF-8 字符跨数据块必须完整，含 CRLF')
   assert.ok(logs.includes('[打包] 中文'), 'stderr 尾行无换行也必须完整解码')
   if (process.platform === 'win32') assert.ok(logs.includes('[打包] GBK: 中文'), '同一输出流的 GBK 中文必须兼容')
   assert.ok(!logs.some((line) => line.includes('\ufffd')), '日志不应出现替换字符')
   console.log('  ✓ 真实打包进程的 UTF-8/GBK、分块与尾行日志通过')
 
-  fs.writeFileSync(fixture, 'process.exit(7)')
+  fs.writeFileSync(fixture, "require('fs').writeFileSync('failed-temp.txt', process.env.TEMP || ''); process.exit(7)")
   const failed = await service.runPackageCommand(project, source)
   assert.equal(failed.ok, false)
   assert.ok(failed.problem.includes('退出码 7'), '失败命令必须保留实际退出码')
+  if (process.platform === 'win32') {
+    assert.ok(!fs.existsSync(fs.readFileSync(path.join(build.dir, 'failed-temp.txt'), 'utf8')), '失败退出后必须清理子进程临时目录')
+  }
 
   const outside = path.join(testRoot, 'onedeploy-build-abcdef')
   fs.mkdirSync(outside)

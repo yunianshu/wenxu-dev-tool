@@ -450,9 +450,26 @@ function runPackageCommand(project, sourceDir) {
     : process.env
   return new Promise((resolve) => {
     let child
+    let tempWorkspace
+    const cleanupTemp = () => {
+      try { workspace.removeBuildWorkspace(tempWorkspace) } catch (e) {
+        log('warn', `打包临时目录清理失败：${e.message || e}`)
+      }
+    }
     try {
-      child = spawn(cmd, { shell: true, cwd: project.localPath, env: localShellEnv(baseEnv), windowsHide: true })
+      const env = localShellEnv(baseEnv)
+      if (process.platform === 'win32') {
+        // JDK 默认套接字目录来自 TEMP；仅迁移构建副本无法覆盖未显式配置的项目。
+        tempWorkspace = workspace.createBuildWorkspace()
+        for (const key of Object.keys(env)) {
+          if (/^(temp|tmp)$/i.test(key)) delete env[key]
+        }
+        env.TEMP = tempWorkspace.dir
+        env.TMP = tempWorkspace.dir
+      }
+      child = spawn(cmd, { shell: true, cwd: project.localPath, env, windowsHide: true })
     } catch (e) {
+      cleanupTemp()
       return resolve({ ok: false, problem: `打包命令无法启动: ${(e && e.message) || e}` })
     }
     if (activeRun) activeRun.pkgChild = child
@@ -495,6 +512,8 @@ function runPackageCommand(project, sourceDir) {
     child.stderr.on('data', (c) => pump('err', c))
     child.on('error', (e) => finish({ ok: false, problem: `打包命令执行失败: ${(e && e.message) || e}` }))
     child.on('close', (code) => {
+      // 超时/取消时等子进程真正退出后清理，避免删除仍在使用的临时文件。
+      cleanupTemp()
       for (const key of ['out', 'err']) {
         if (pending[key].length) writeLine(pending[key])
       }
