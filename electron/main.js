@@ -523,7 +523,7 @@ function registerIpc() {
     try {
       return await aiService.test({
         baseUrl: o.baseUrl,
-        apiKey: o.apiKey || store.getApiKey(), // 允许测试未保存的新 Key
+        apiKey: o.apiKey || store.getApiKey(o.profileId), // 允许测试未保存的新 Key
         model: o.model,
       })
     } catch (err) {
@@ -535,7 +535,7 @@ function registerIpc() {
     try {
       const models = await aiService.listModels({
         baseUrl: o.baseUrl,
-        apiKey: o.apiKey || store.getApiKey(),
+        apiKey: o.apiKey || store.getApiKey(o.profileId),
       })
       return { ok: true, models }
     } catch (err) {

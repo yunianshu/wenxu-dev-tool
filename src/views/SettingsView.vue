@@ -158,8 +158,19 @@
       <template #header>
         <div class="card-header"><span>AI 服务</span></div>
       </template>
-      <div class="ai-manager">
+      <div class="ai-manager" :inert="profileBusy">
         <div class="ai-form">
+          <div class="ai-row">
+            <span class="ai-label">当前配置</span>
+            <el-select :model-value="state.config.ai.activeProfileId" :disabled="profileBusy || testing || loadingModels" @change="switchAiProfile">
+              <el-option v-for="p in state.config.ai.profiles || []" :key="p.id" :value="p.id" :label="`${p.name} · ${p.model || '未选择模型'}`" />
+            </el-select>
+            <el-button :disabled="profileBusy || testing || loadingModels" @click="addAiProfile">新增配置</el-button>
+          </div>
+          <div class="ai-row">
+            <span class="ai-label">配置名称</span>
+            <el-input v-model="state.config.ai.name" placeholder="例如：日常开发、代码审查" />
+          </div>
           <div class="ai-row">
             <span class="ai-label">服务商</span>
             <el-select v-model="provider" @change="applyPreset">
@@ -480,6 +491,42 @@ const apiKeyInput = ref('')
 /** 可用模型列表（从接口 /models 拉取） */
 const modelOptions = ref([])
 const loadingModels = ref(false)
+const profileBusy = ref(false)
+
+function activateAiProfile(profile, profiles) {
+  state.config.ai = { ...profile, profiles, activeProfileId: profile.id }
+  apiKeyInput.value = ''
+  modelOptions.value = []
+  testResult.value = null
+  provider.value = 'custom'
+}
+
+async function switchAiProfile(id) {
+  if (profileBusy.value || id === state.config.ai.activeProfileId) return
+  profileBusy.value = true
+  try {
+    if (!(await saveConfig())) return
+    const previous = toPlain(state.config.ai)
+    const target = previous.profiles.find(p => p.id === id)
+    if (!target) return
+    activateAiProfile(target, previous.profiles)
+    if (!(await saveConfig())) activateAiProfile(previous, previous.profiles)
+    else ElMessage.success(`已切换到 ${state.config.ai.name}`)
+  } finally { profileBusy.value = false }
+}
+
+async function addAiProfile() {
+  if (profileBusy.value) return
+  profileBusy.value = true
+  try {
+    if (!(await saveConfig())) return
+    const previous = toPlain(state.config.ai)
+    const profile = { id: crypto.randomUUID(), name: `配置 ${previous.profiles.length + 1}`, baseUrl: '', model: '', temperature: 0.7, keyConfigured: false, keyMasked: '' }
+    activateAiProfile(profile, [...previous.profiles, profile])
+    if (!(await saveConfig())) activateAiProfile(previous, previous.profiles)
+    else ElMessage.success('已新增配置，请填写服务地址、密钥和模型后保存')
+  } finally { profileBusy.value = false }
+}
 
 function maskKey(key) {
   if (!key) return ''
@@ -500,12 +547,16 @@ function applyPreset(key) {
 /** 拉取可用模型列表；showSuccess=false 时静默（启动自动加载场景） */
 async function fetchModels(showSuccess = true) {
   if (!state.config.ai.baseUrl || loadingModels.value) return
+  const profileId = state.config.ai.activeProfileId
+  const baseUrl = state.config.ai.baseUrl
   loadingModels.value = true
   try {
     const r = await window.gitReport.aiModels(toPlain({
+      profileId: state.config.ai.activeProfileId,
       baseUrl: state.config.ai.baseUrl,
       apiKey: apiKeyInput.value || '',
     }))
+    if (profileId !== state.config.ai.activeProfileId || baseUrl !== state.config.ai.baseUrl) return
     if (r?.ok && r.models?.length) {
       modelOptions.value = r.models
       // 仅在未选择模型时自动挑第一个：用户自定义/服务端未列出的模型名不能被静默覆盖
@@ -527,6 +578,10 @@ const canFetchModels = computed(() => !!(state.config.ai.baseUrl && (state.confi
 
 /** 保存全部配置；AI 密钥：输入了新 Key 则替换，留空则主进程保留既有；禅道密码同规则 */
 async function saveConfig() {
+  if (state.config.ai.activeProfileId && !String(state.config.ai.name || '').trim()) {
+    ElMessage.error('请填写配置名称')
+    return false
+  }
   const secrets = [
     { section: 'ai', field: 'apiKey', input: apiKeyInput, configured: 'keyConfigured', masked: 'keyMasked', reentry: 'keyNeedsReentry' },
     { section: 'zentao', field: 'password', input: ztPwdInput, configured: 'pwdConfigured', masked: 'pwdMasked', reentry: 'pwdNeedsReentry' },
@@ -553,8 +608,12 @@ async function saveConfig() {
       // 保存期间新输入的内容保留；失败时同样保留输入，便于重试。
       if (item.input.value === item.value) item.input.value = ''
     }
+    const { profiles = [], activeProfileId, ...active } = toPlain(state.config.ai)
+    state.config.ai.profiles = profiles.map(p => p.id === activeProfileId ? active : p)
+    return true
   } catch (e) {
     ElMessage.error(`配置保存失败：${(e && e.message) || e}`)
+    return false
   }
 }
 
@@ -673,14 +732,18 @@ async function clearHpPwd() {
 }
 
 async function testAi() {
+  const profileId = state.config.ai.activeProfileId
+  const model = state.config.ai.model
   testing.value = true
   testResult.value = null
   try {
     const r = await window.gitReport.aiTest(toPlain({
+      profileId: state.config.ai.activeProfileId,
       baseUrl: state.config.ai.baseUrl,
       apiKey: apiKeyInput.value || '', // 空则主进程使用已存 Key
       model: state.config.ai.model,
     }))
+    if (profileId !== state.config.ai.activeProfileId || model !== state.config.ai.model) return
     testResult.value = r
     if (r?.ok) ElMessage.success('连接成功')
     else ElMessage.error(`连接失败：${r?.error || '未知错误'}`)

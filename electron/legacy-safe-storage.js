@@ -48,7 +48,7 @@ function migrateLegacyConfig(configPath, saveSecret, deleteSecret) {
   let old
   try { old = JSON.parse(fs.readFileSync(configPath, 'utf8')) } catch { return false }
   const candidates = [
-    { target: old.ai, encoded: old.ai?.keyEnc, apply: (id) => { old.ai.keyRef = id } },
+    ...(old.ai?.profiles?.length ? old.ai.profiles : [old.ai]).map(target => ({ target, encoded: target?.keyEnc, apply: (id) => { target.keyRef = id } })),
     { target: old.zentao?.pwdEnc, encoded: old.zentao?.pwdEnc?.enc, apply: (id) => { old.zentao.pwdEnc.keyRef = id } },
     { target: old.hanprint?.pwdEnc, encoded: old.hanprint?.pwdEnc?.enc, apply: (id) => { old.hanprint.pwdEnc.keyRef = id } },
   ].filter((item) => item.target && item.encoded && !item.target.keyRef)
@@ -69,6 +69,10 @@ function migrateLegacyConfig(configPath, saveSecret, deleteSecret) {
       } catch { /* 单项迁移失败不影响其他项，旧密文保持原样 */ }
     }
     if (!created.length) return false
+    if (old.ai?.profiles?.length) {
+      const active = old.ai.profiles.find(p => p.id === old.ai.activeProfileId) || old.ai.profiles[0]
+      old.ai = { ...active, profiles: old.ai.profiles, activeProfileId: active.id }
+    }
     tempPath = `${configPath}.migrate-${process.pid}-${randomUUID()}`
     fs.writeFileSync(tempPath, JSON.stringify(old, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
     fs.renameSync(tempPath, configPath)

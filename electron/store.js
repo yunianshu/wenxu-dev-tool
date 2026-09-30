@@ -93,6 +93,27 @@ function maskKey(key) {
   return `••••••${key.slice(-4)}`
 }
 
+function aiProfiles(ai = {}) {
+  if (Array.isArray(ai.profiles) && ai.profiles.length) return ai.profiles
+  return [{ ...DEFAULTS.ai, ...ai, id: 'default', name: '默认配置', profiles: undefined, activeProfileId: undefined }]
+}
+
+function redactAi(ai) {
+  const profiles = aiProfiles(ai).map((profile) => {
+    const p = { ...DEFAULTS.ai, ...profile }
+    const key = decryptKey(p)
+    p.keyConfigured = !!key
+    p.keyNeedsReentry = nodeBackend && !!p.keyEnc && !key
+    p.keyMasked = maskKey(key)
+    p.apiKey = ''
+    delete p.keyEnc
+    delete p.keyRef
+    return p
+  })
+  const active = profiles.find(p => p.id === ai.activeProfileId) || profiles[0]
+  return { ...active, activeProfileId: active.id, profiles }
+}
+
 function load() {
   if (nodeBackend && !legacyMigrationAttempted) {
     legacyMigrationAttempted = true
@@ -107,11 +128,8 @@ function load() {
     cfg.ai = { ...DEFAULTS.ai, ...(cfg.ai || {}) }
     // 公司内网地址固定默认：历史配置里留空时回落默认值，填过其他地址则原样保留
     if (!String(cfg.ai.baseUrl || '').trim()) cfg.ai.baseUrl = DEFAULTS.ai.baseUrl
-    const key = decryptKey(cfg.ai)
+    cfg.ai = redactAi(cfg.ai)
     // 明文 Key 不出主进程：仅下发「是否已配置 + 脱敏片段」
-    cfg.ai.keyConfigured = !!key
-    cfg.ai.keyNeedsReentry = nodeBackend && !!cfg.ai.keyEnc && !key
-    cfg.ai.keyMasked = key ? maskKey(key) : ''
     cfg.ai.apiKey = ''
     delete cfg.ai.keyEnc
     delete cfg.ai.keyRef
@@ -138,7 +156,7 @@ function load() {
   } catch {
     return {
       ...DEFAULTS,
-      ai: { ...DEFAULTS.ai, apiKey: '', keyConfigured: false, keyMasked: '' },
+      ai: redactAi(DEFAULTS.ai),
       zentao: { ...DEFAULTS.zentao, pwdConfigured: false, pwdMasked: '' },
       hanprint: { ...DEFAULTS.hanprint, pwdConfigured: false, pwdMasked: '' },
     }
@@ -162,40 +180,48 @@ function readStored() {
 }
 
 function save(cfg) {
+  const createdAiRefs = []
   try {
     const c = JSON.parse(JSON.stringify(cfg || {}))
     const old = readStored() // ai/zentao/hanprint 三段共用一次读盘
     if (c.ai) {
-      const newKey = c.ai.apiKey || ''
-      const clear = !!c.ai.clearKey
-      delete c.ai.clearKey
-      delete c.ai.keyConfigured
-      delete c.ai.keyMasked
-      delete c.ai.keyNeedsReentry
-      delete c.ai.apiKey
-      delete c.ai.keyEnc
-      delete c.ai.keyRef
-      if (!clear && !newKey) {
-        // 未输入新 Key 也未要求清除：保留磁盘既有 Key（字节原样，不触发解密）
-        const oldAi = old.ai || {}
-        if (oldAi.keyRef) c.ai.keyRef = oldAi.keyRef
-        else if (oldAi.keyEnc) c.ai.keyEnc = oldAi.keyEnc
-        else if (oldAi.apiKey) c.ai.apiKey = oldAi.apiKey
-      } else if (!clear && newKey) {
-        if (nodeBackend) c.ai.keyRef = saveKeyring(newKey, 'ai-key')
-        else {
-        try {
-          if (safeStorage.isEncryptionAvailable()) {
-            c.ai.keyEnc = safeStorage.encryptString(newKey).toString('base64')
-          } else {
-            c.ai.apiKey = newKey // 平台不支持加密时明文兜底
+      const incoming = c.ai
+      const profiles = aiProfiles(incoming)
+      const activeId = incoming.activeProfileId || profiles[0].id
+      if (!profiles.some(p => p.id === activeId) || new Set(profiles.map(p => p.id)).size !== profiles.length) return false
+      const oldProfiles = aiProfiles(old.ai)
+      for (const profile of profiles) {
+        if (profile.id === activeId) {
+          for (const field of ['name', 'baseUrl', 'model', 'temperature', 'apiKey', 'clearKey']) {
+            if (Object.hasOwn(incoming, field)) profile[field] = incoming[field]
           }
-        } catch {
-          c.ai.apiKey = newKey
         }
+        if (!profile.id || !String(profile.name || '').trim()) throw new Error('AI 配置必须包含唯一标识和名称')
+        const newKey = profile.apiKey || ''
+        const clear = !!profile.clearKey
+        for (const field of ['clearKey', 'keyConfigured', 'keyMasked', 'keyNeedsReentry', 'apiKey', 'keyEnc', 'keyRef', 'profiles', 'activeProfileId']) delete profile[field]
+        if (!clear && !newKey) {
+          // 按配置身份保留旧凭据，不触发解密，也不借用其他配置的密钥。
+          const oldAi = oldProfiles.find(p => p.id === profile.id) || {}
+          if (oldAi.keyRef) profile.keyRef = oldAi.keyRef
+          else if (oldAi.keyEnc) profile.keyEnc = oldAi.keyEnc
+          else if (oldAi.apiKey) profile.apiKey = oldAi.apiKey
+        } else if (!clear && newKey) {
+          if (nodeBackend) {
+            profile.keyRef = saveKeyring(newKey)
+            createdAiRefs.push(profile.keyRef)
+          }
+          else {
+            try {
+              if (safeStorage.isEncryptionAvailable()) profile.keyEnc = safeStorage.encryptString(newKey).toString('base64')
+              else profile.apiKey = newKey // 平台不支持加密时明文兜底
+            } catch {
+              profile.apiKey = newKey
+            }
+          }
         }
       }
-      // clear → 不带 keyEnc / apiKey，即清除
+      c.ai = { ...profiles.find(p => p.id === activeId), activeProfileId: activeId, profiles }
     }
     // 禅道密码与 AI Key 同规则：新值加密替换 / 留空保留磁盘旧密文 / clearPwd 显式清除
     if (c.zentao) {
@@ -232,21 +258,26 @@ function save(cfg) {
     }
     fs.writeFileSync(file(), JSON.stringify(c, null, 2), { encoding: 'utf8', mode: 0o600 })
     if (nodeBackend) {
-      const previous = [old.ai?.keyRef, old.zentao?.pwdEnc?.keyRef, old.hanprint?.pwdEnc?.keyRef].filter(Boolean)
-      const current = new Set([c.ai?.keyRef, c.zentao?.pwdEnc?.keyRef, c.hanprint?.pwdEnc?.keyRef].filter(Boolean))
+      const previous = [...aiProfiles(old.ai).map(p => p.keyRef), old.zentao?.pwdEnc?.keyRef, old.hanprint?.pwdEnc?.keyRef].filter(Boolean)
+      const current = new Set([...aiProfiles(c.ai).map(p => p.keyRef), c.zentao?.pwdEnc?.keyRef, c.hanprint?.pwdEnc?.keyRef].filter(Boolean))
       for (const id of previous) {
         if (!current.has(id)) try { keyringEntry(id).deletePassword() } catch { /* 旧项不存在或系统暂时不可用 */ }
       }
     }
     return true
   } catch {
+    for (const id of createdAiRefs) {
+      try { keyringEntry(id).deletePassword() } catch { /* 不影响旧配置凭据 */ }
+    }
     return false
   }
 }
 
 /** 主进程专用：返回明文 API Key（绝不发往渲染层） */
-function getApiKey() {
-  return decryptKey(readStored().ai || {})
+function getApiKey(profileId) {
+  const ai = readStored().ai || {}
+  if (profileId !== undefined) return decryptKey(aiProfiles(ai).find(p => p.id === profileId))
+  return decryptKey(aiProfiles(ai).find(p => p.id === ai.activeProfileId) || aiProfiles(ai)[0])
 }
 
 /** 主进程专用：返回禅道登录密码明文（绝不发往渲染层） */

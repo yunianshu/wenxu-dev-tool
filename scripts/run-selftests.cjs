@@ -66,6 +66,7 @@ const SUITES = [
   'ai-context-selftest.mjs',
   'project-chat-selftest.cjs',
   'ai-lifecycle-selftest.cjs',
+  'ai-profiles-selftest.cjs',
   'ui-state-selftest.cjs',
   'selftest-legacy-secret-migration.cjs',
   'selftest-legacy-deploy-migration.cjs',
