@@ -7,7 +7,6 @@
 const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
-const os = require('os')
 const { spawn } = require('child_process')
 const ssh = require('./ssh-service')
 const packager = require('./packager')
@@ -470,21 +469,34 @@ function runPackageCommand(project, sourceDir) {
       killTree(child)
       finish({ ok: false, problem: `打包命令超时（>${Math.round(timeoutMs / 1000)} 秒）已终止，可调整超时或检查构建环境` })
     }, timeoutMs)
-    // 按行流式转发（npm/vite 的 \r 进度条会被行缓冲自然吸收）
-    let pending = { out: '', err: '' }
+    // 按字节缓冲完整行，避免多字节字符跨数据块丢失；Windows 工具链兼容 GBK 输出。
+    const utf8 = new TextDecoder('utf-8', { fatal: true })
+    const legacy = process.platform === 'win32' ? new TextDecoder('gb18030') : null
+    const decode = (bytes) => {
+      try { return utf8.decode(bytes) } catch { return legacy ? legacy.decode(bytes) : bytes.toString('utf8') }
+    }
+    const writeLine = (bytes) => {
+      const line = decode(bytes).replace(/\s+$/, '')
+      if (line.trim()) log('info', `[打包] ${line.slice(0, 500)}`)
+    }
+    const pending = { out: Buffer.alloc(0), err: Buffer.alloc(0) }
     const pump = (key, chunk) => {
       if (isCanceled()) { killTree(child); return }
-      pending[key] += String(chunk)
-      const lines = pending[key].split(/\r?\n/)
-      pending[key] = lines.pop() || ''
-      for (const line of lines) if (line.trim()) log('info', `[打包] ${line.replace(/\s+$/, '').slice(0, 500)}`)
+      const bytes = Buffer.concat([pending[key], chunk])
+      let start = 0
+      let end
+      while ((end = bytes.indexOf(10, start)) !== -1) {
+        writeLine(bytes.subarray(start, end))
+        start = end + 1
+      }
+      pending[key] = bytes.subarray(start)
     }
     child.stdout.on('data', (c) => pump('out', c))
     child.stderr.on('data', (c) => pump('err', c))
     child.on('error', (e) => finish({ ok: false, problem: `打包命令执行失败: ${(e && e.message) || e}` }))
     child.on('close', (code) => {
       for (const key of ['out', 'err']) {
-        if (pending[key].trim()) log('info', `[打包] ${pending[key].trim().slice(0, 500)}`)
+        if (pending[key].length) writeLine(pending[key])
       }
       if (isCanceled()) return finish({ ok: false, problem: '打包已取消' })
       if (code === 0) {
@@ -751,14 +763,15 @@ async function run(projectId, targetId) {
         const command = String(project.scriptMode?.packageCommand || '')
         const entry = command.match(/^\s*(?:bash|sh)\s+["']?([^"'\s]+\.sh)/)
         if (entry && !fs.existsSync(path.resolve(project.localPath, entry[1]))) throw new Error(`打包入口不存在: ${entry[1]}；可切换为自动发布，由程序生成部署方案`)
-        buildWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'onedeploy-build-'))
-        const copied = await workspace.copyProject(project.localPath, buildWorkspace, { artifactDir: project.scriptMode?.artifactDir, artifactExts: ARTIFACT_EXTS })
+        buildWorkspace = workspace.createBuildWorkspace()
+        log('info', `本次构建工作区：${buildWorkspace.dir}`)
+        const copied = await workspace.copyProject(project.localPath, buildWorkspace.dir, { artifactDir: project.scriptMode?.artifactDir, artifactExts: ARTIFACT_EXTS })
         if (copied.skipped.length) {
           const head = copied.skipped.slice(0, 3).join('、')
           log('warn', `已跳过 ${copied.skipped.length} 个本机读不了的条目（WSL 建的符号链接在 Windows 上无法访问）：${head}${copied.skipped.length > 3 ? ' 等' : ''}`)
         }
         if (isCanceled()) throw new Error('发布已取消')
-        const buildProject = { ...project, localPath: buildWorkspace }
+        const buildProject = { ...project, localPath: buildWorkspace.dir }
         const syncNote = syncProjectVersionForPackage(buildProject, ver)
         if (syncNote) log('warn', syncNote)
         const rnNote = ensureReleaseNotesForPackage(buildProject, ver, gitInfo)
@@ -1041,9 +1054,7 @@ async function run(projectId, targetId) {
     // 清理本地残留 zip（失败场景；成功路径已在 finish 前删除；脚本形态产物包保留）
     try { if (pack && !pack.keepLocal && fs.existsSync(pack.zipPath)) fs.unlinkSync(pack.zipPath) } catch { /* noop */ }
     try { if (dataPack && fs.existsSync(dataPack.zipPath)) fs.unlinkSync(dataPack.zipPath) } catch { /* 临时数据包清理失败不改变发布结果 */ }
-    if (buildWorkspace && path.dirname(path.resolve(buildWorkspace)) === path.resolve(os.tmpdir()) && path.basename(buildWorkspace).startsWith('onedeploy-build-')) {
-      fs.rmSync(buildWorkspace, { recursive: true, force: true })
-    }
+    try { workspace.removeBuildWorkspace(buildWorkspace) } catch (e) { log('warn', `构建工作区清理失败：${e.message}`) }
   }
 }
 

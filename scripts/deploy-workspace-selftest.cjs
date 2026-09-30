@@ -13,13 +13,13 @@
  */
 const assert = require('assert')
 const fs = require('fs')
-const os = require('os')
 const path = require('path')
 const { execFileSync } = require('child_process')
-const { copyProject, shouldSkipDir, isLinuxVenv } = require('../electron/deploy/build-workspace')
+const { createBuildWorkspace, removeBuildWorkspace, copyProject, shouldSkipDir, isLinuxVenv } = require('../electron/deploy/build-workspace')
 const { buildPackage } = require('../electron/deploy/packager')
 
-const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-test-')))
+const testWorkspace = createBuildWorkspace()
+const tmpRoot = testWorkspace.dir
 const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
 const wslPath = (p) => '/mnt/' + path.resolve(p).replace(/^([A-Za-z]):\\/, (m, d) => d.toLowerCase() + '/').replace(/\\/g, '/')
 
@@ -160,12 +160,12 @@ put(path.join(projB, 'artifacts', 'notes.txt'), 'notes')
     console.log('  ✓ ZIP 打包：指向项目外的链接仍被拦截')
   }
 
-  fs.rmSync(tmpRoot, { recursive: true, force: true })
+  removeBuildWorkspace(testWorkspace)
   console.log('打包工作区验证：全部通过')
 })().catch((e) => {
   console.error(e.message)
   try {
-    fs.rmSync(tmpRoot, { recursive: true, force: true })
+    removeBuildWorkspace(testWorkspace)
   } catch {
     /* 清理失败不影响结论 */
   }

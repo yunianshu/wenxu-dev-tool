@@ -9,6 +9,30 @@
  */
 const fs = require('fs')
 const path = require('path')
+const os = require('os')
+
+/** 部分 Windows 环境在用户 AppData 下无法连接 Java 本地套接字，构建副本放到主目录。 */
+function createBuildWorkspace() {
+  const base = process.platform === 'win32' ? path.join(os.homedir(), '.plm-build') : os.tmpdir()
+  fs.mkdirSync(base, { recursive: true, mode: 0o700 })
+  const root = fs.realpathSync(base)
+  return { root, dir: fs.mkdtempSync(path.join(root, 'onedeploy-build-')) }
+}
+
+/** 只清理本次创建的直接子目录，拒绝越界路径和被替换的符号链接。 */
+function removeBuildWorkspace(workspace) {
+  if (!workspace) return
+  const root = path.resolve(workspace.root)
+  const dir = path.resolve(workspace.dir)
+  if (path.dirname(dir) !== root || !/^onedeploy-build-[a-z0-9]{6}$/i.test(path.basename(dir))) {
+    throw new Error('构建工作区清理路径越界')
+  }
+  if (!fs.existsSync(dir)) return
+  if (fs.realpathSync(root) !== root || fs.lstatSync(dir).isSymbolicLink()) {
+    throw new Error('构建工作区清理路径已被符号链接替换')
+  }
+  fs.rmSync(dir, { recursive: true, force: true })
+}
 
 /** 脚本部署支持的发布包扩展名（与 deploy-service 的产物解析保持一致：V2 tar.gz 优先） */
 const ARTIFACT_EXTS = ['.tar.gz', '.tgz', '.zip']
@@ -91,4 +115,4 @@ async function copyProject(srcDir, destDir, { artifactDir, artifactExts = ARTIFA
   return { skipped: [...unreadable] }
 }
 
-module.exports = { copyProject, collectUnreadable, shouldSkipDir, isLinuxVenv, ARTIFACT_EXTS }
+module.exports = { createBuildWorkspace, removeBuildWorkspace, copyProject, collectUnreadable, shouldSkipDir, isLinuxVenv, ARTIFACT_EXTS }

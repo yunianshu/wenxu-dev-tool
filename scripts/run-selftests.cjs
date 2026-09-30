@@ -41,6 +41,7 @@ const SUITES = [
   'deploy-version-guard-selftest.cjs',
   'deploy-packager-symlink-selftest.cjs',
   'deploy-package-shell-selftest.cjs',
+  'deploy-package-workspace-selftest.cjs',
   'deploy-workspace-selftest.cjs',
   'report-history-selftest.cjs',
   'git-service-selftest.cjs',
