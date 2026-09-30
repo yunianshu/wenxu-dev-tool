@@ -26,7 +26,6 @@ function installFixture({ projects, reports, deployments, knowledgeRecords }) {
   const readKnowledge = () => JSON.parse(localStorage.getItem(knowledgeKey))
   const writeKnowledge = records => localStorage.setItem(knowledgeKey, JSON.stringify(records))
   const copy = value => structuredClone(value)
-  const aiRequests = new Map()
   window.__uiAiRequests = []
   const saveKnowledge = payload => {
     const records = readKnowledge()
@@ -66,18 +65,10 @@ function installFixture({ projects, reports, deployments, knowledgeRecords }) {
     knowledgeRestore: (id, revision) => lifecycleKnowledge(id, revision, true),
     knowledgeImport: payload => saveKnowledge({ title: payload.fileName.replace(/\.(md|markdown)$/i, ''), body: payload.content, type: 'idea', status: 'inbox' }),
     knowledgeExport: id => { const record = readKnowledge().find(row => row.id === id); return record ? { ok: true, fileName: record.title + '.md', content: '# ' + record.title + '\n\n' + record.body } : { ok: false, error: '记录不存在' } },
-    aiChat: (messages, options) => new Promise(resolve => {
+    aiChat: (messages, options) => {
       window.__uiAiRequests.push(copy({ messages, options }))
-      const result = '# 可复用的知识整理方法\n\n## 已知事实\n\n所选记录分别描述实践与适用条件。\n\n## 假设与矛盾\n\n需要在相同条件下比较结果，暂不能推广为统一规则。\n\n## 待验证步骤\n\n1. 在一个项目中验证。\n2. 记录例外与结果，再决定是否采用。'
-      const job = { timers: [], resolve }
-      aiRequests.set(options.requestId, job)
-      for (const [delay, length] of [[80, 32], [180, 88], [300, result.length]]) job.timers.push(setTimeout(() => {
-        if (!aiRequests.has(options.requestId)) return
-        for (const callback of events.get('onAiDelta') || []) callback({ requestId: options.requestId, text: result.slice(0, length) })
-        if (length === result.length) { aiRequests.delete(options.requestId); resolve({ ok: true, text: result }) }
-      }, delay))
-    }),
-    aiStop: requestId => { const job = aiRequests.get(requestId); if (job) { job.timers.forEach(clearTimeout); aiRequests.delete(requestId); job.resolve({ ok: false, aborted: true }) } return { ok: true } },
+      throw new Error('想法工作台不应发起 AI 分析请求')
+    },
     projectsList: () => projects,
     configLoad: () => config, configSave: value => Object.assign(config, value),
     uiPrefsLoad: prefs, uiPrefsSave: value => { localStorage.setItem('ui-test-prefs', JSON.stringify(value)); return { ok: true, prefs: value } },
@@ -293,56 +284,12 @@ async function main() {
     await page.getByRole('textbox', { name: '搜索知识记录', exact: true }).fill('旧响应')
     assert.equal(await page.locator('.knowledge-table .el-table__body tr').count(), 1, '搜索知识标题、正文与标签产生真实筛选')
     await page.getByRole('textbox', { name: '搜索知识记录', exact: true }).fill('')
-    for (const title of ['用知识记录积累开发经验', '代码评审检查步骤']) await page.locator('.knowledge-table .el-table__body tr').filter({ hasText: title }).locator('.el-checkbox').click()
-    await page.getByRole('button', { name: '整理所选', exact: true }).click()
-    await page.locator('.knowledge-analysis').waitFor()
-    assert.equal(await page.locator('.analysis-sources li').count(), 2, 'AI 面板仅列出勾选的两条来源')
-    // 本轮仅整理已选来源；输入新想法的独立来源持久化由组件专项回归覆盖。
-    await page.getByRole('button', { name: '开始分析', exact: true }).click()
-    await page.waitForFunction(() => document.querySelector('#knowledge-analysis-body')?.value.includes('待验证步骤') && !document.querySelector('#knowledge-analysis-body')?.readOnly)
-    const aiRequest = await page.evaluate(() => window.__uiAiRequests.at(-1))
-    assert(aiRequest.options.requestId.startsWith('knowledge-'))
-    assert(aiRequest.messages[1].content.includes('knowledge-0') && aiRequest.messages[1].content.includes('knowledge-3'), 'AI 请求携带勾选来源')
-    assert(!aiRequest.messages[1].content.includes('排查自动保存中的旧响应'), 'AI 请求不附带未选知识')
-    await page.locator('#knowledge-analysis-title').fill('测试 · 可复用整理草稿')
-    await page.locator('#knowledge-analysis-body').fill((await page.locator('#knowledge-analysis-body').inputValue()) + '\n\n人工补充：保留适用边界。')
-    await capture('knowledge-analysis', 'dark', 1440, 900)
-    await page.getByRole('button', { name: '保存为草稿', exact: true }).click()
-    await page.locator('.knowledge-editor').waitFor()
-    await page.waitForFunction(() => document.querySelector('.knowledge-editor input[aria-label="记录标题"]')?.value === '测试 · 可复用整理草稿' && document.querySelectorAll('.record-sources .source-row').length === 2)
-    const analysisDraft = await page.evaluate(() => JSON.parse(localStorage.getItem('desktop-ui-test-knowledge')).find(row => row.title === '测试 · 可复用整理草稿'))
-    assert.equal(analysisDraft.status, 'draft')
-    assert.equal(analysisDraft.type, 'method')
-    assert.deepEqual([...analysisDraft.sourceIds].sort(), ['knowledge-0', 'knowledge-3'])
-    assert(analysisDraft.body.includes('人工补充'))
-    assert.equal(await page.locator('.record-sources .source-row').count(), 2, '保存后的编辑器显示来源记录')
-    await capture('knowledge-ai-draft', 'dark', 1440, 900)
-    interactions.push('知识搜索、多选整理、累积AI流、可编辑结果与带sourceIds的独立草稿')
-
-    await page.locator('.knowledge-topbar-actions').getByRole('button', { name: '分析想法', exact: true }).click()
-    const originalIdea = '测试新想法：用每周复盘验证知识方法的适用边界。'
-    await page.locator('#knowledge-analysis-goal').fill(originalIdea)
-    await page.getByRole('button', { name: '开始分析', exact: true }).click()
-    await page.waitForFunction(() => document.querySelector('#knowledge-analysis-body')?.value.includes('待验证步骤') && !document.querySelector('#knowledge-analysis-body')?.readOnly)
-    const originalRecord = await page.evaluate(text => JSON.parse(localStorage.getItem('desktop-ui-test-knowledge')).find(row => row.body === text), originalIdea)
-    assert(originalRecord?.id, '原始想法在AI请求前作为独立记录保存')
-    assert.equal(originalRecord.status, 'inbox')
-    await page.locator('#knowledge-analysis-title').fill('测试 · 新想法分析草稿')
-    await page.getByRole('button', { name: '关闭知识分析', exact: true }).click()
-    await page.locator('.knowledge-topbar-actions').getByRole('button', { name: '分析想法', exact: true }).click()
-    assert.equal(await page.locator('#knowledge-analysis-goal').inputValue(), originalIdea, '关闭重开保留原始输入')
-    assert.equal(await page.locator('#knowledge-analysis-title').inputValue(), '测试 · 新想法分析草稿', '关闭重开保留编辑后的分析草稿')
-    await page.getByRole('button', { name: '保存为草稿', exact: true }).click()
-    await page.locator('.knowledge-editor').waitFor()
-    const ideaDraft = await page.evaluate(() => JSON.parse(localStorage.getItem('desktop-ui-test-knowledge')).find(row => row.title === '测试 · 新想法分析草稿'))
-    assert.deepEqual(ideaDraft.sourceIds, [originalRecord.id], '新想法草稿关联原始输入记录')
-    assert.equal(ideaDraft.type, 'idea')
-    assert.equal(ideaDraft.status, 'draft')
-    await page.locator('.knowledge-topbar-actions').getByRole('button', { name: '分析想法', exact: true }).click()
-    assert.equal(await page.locator('#knowledge-analysis-goal').inputValue(), '', '保存成功后清除已完成分析的缓存')
-    assert.equal(await page.locator('.analysis-result').count(), 0)
-    await page.getByRole('button', { name: '关闭知识分析', exact: true }).click()
-    interactions.push('原始想法独立持久化、关闭恢复分析草稿与保存成功清理缓存')
+    assert.equal(await page.getByRole('button', { name: '分析想法', exact: true }).count(), 0, '工作台不再提供 AI 分析');
+    assert.equal(await page.getByRole('button', { name: '整理所选', exact: true }).count(), 0, '工作台不再提供批量整理');
+    assert.equal(await page.locator('.knowledge-table .el-checkbox').count(), 0, '列表移除无用途的批量选择');
+    assert.equal(await page.locator('.knowledge-tabs button').count(), 3, '只保留地球、全部记录和回收站');
+    assert.equal((await page.evaluate(() => window.__uiAiRequests)).length, 0, '想法记录不发起 AI 请求');
+    interactions.push('保留地球与记录管理，移除 AI 分析及分类入口');
 
     await navigate('项目')
     await page.getByRole('option', { name: /Personnel PLM/ }).click()
@@ -397,7 +344,7 @@ async function main() {
     assert.deepEqual(errors, [], '页面不能发生运行时错误')
     assert.deepEqual(externalRequests, [], '测试不能访问外部服务')
     fs.writeFileSync(path.join(OUTPUT, 'verification.json'), JSON.stringify({ timestamp: new Date().toISOString(), checks, interactions, errors, unknown, externalRequests, screenshots: checks.length + 2 }, null, 2))
-    console.log(`通过：${checks.length} 个页面/主题/尺寸检查，知识库与AI草稿、项目与扩展交互、填报门禁和主题重载；截图：${OUTPUT}`)
+    console.log(`通过：${checks.length} 个页面/主题/尺寸检查，想法地球与记录保存、项目与扩展交互、填报门禁和主题重载；截图：${OUTPUT}`)
   } catch (error) {
     if (page) {
       await page.screenshot({ path: path.join(OUTPUT, 'failure.png') }).catch(() => {})

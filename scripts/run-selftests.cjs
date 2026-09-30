@@ -61,7 +61,6 @@ const SUITES = [
   'projects-selftest.cjs',
   'knowledge-selftest.cjs',
   'knowledge-state-selftest.cjs',
-  'knowledge-ai-selftest.cjs',
   'knowledge-rpc-selftest.cjs',
   'ai-context-selftest.mjs',
   'project-chat-selftest.cjs',

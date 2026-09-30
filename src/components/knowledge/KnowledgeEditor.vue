@@ -10,7 +10,6 @@
       <div class="editor-actions">
         <template v-if="!deleted">
           <el-tooltip content="立即保存 · Ctrl+S" placement="bottom"><el-button text :disabled="saving" @click="requestSave"><el-icon><DocumentChecked /></el-icon><span>保存</span></el-button></el-tooltip>
-          <el-button :disabled="saving || !hasContent" @click="emit('analyze')"><el-icon><MagicStick /></el-icon><span>AI 整理 / 分析</span></el-button>
         </template>
         <el-button v-else type="primary" :disabled="saving" @click="emit('restore')"><el-icon><RefreshLeft /></el-icon><span>恢复记录</span></el-button>
         <el-dropdown trigger="click" @command="onMoreAction">
@@ -29,8 +28,6 @@
     <div class="record-heading">
       <el-input :model-value="draft.title" :readonly="deleted" maxlength="240" placeholder="记录标题" aria-label="记录标题" class="record-title" @update:model-value="(value) => changeField('title', value)" />
       <div class="record-properties">
-        <label class="property-field"><span>类型</span><el-select :model-value="draft.type" :disabled="deleted" aria-label="记录类型" class="type-select" @update:model-value="(value) => changeField('type', value)"><el-option v-for="option in typeOptions" :key="option.value" :value="option.value" :label="option.label" /></el-select></label>
-        <label class="property-field"><span>状态</span><el-select :model-value="draft.status" :disabled="deleted" aria-label="整理状态" class="status-select" @update:model-value="(value) => changeField('status', value)"><el-option v-for="option in statusOptions" :key="option.value" :value="option.value" :label="option.label" /></el-select></label>
         <label class="property-field project-field"><span>项目</span><el-select :model-value="draft.projectId || ''" :disabled="deleted" filterable clearable placeholder="不关联项目" aria-label="关联项目" class="project-select" @update:model-value="changeProject">
           <el-option v-if="historicalProject" :value="draft.projectId" :label="`${draft.projectName || '历史项目'}（已不在项目列表）`" />
           <el-option v-for="project in projects" :key="project.id" :value="project.id" :label="project.name" />
@@ -49,12 +46,11 @@
       </div>
       <div class="body-tools">
         <span class="markdown-hint">{{ displayMode === 'preview' ? '点击链接可复制' : 'Markdown' }}</span>
-        <el-tooltip v-if="!deleted" :content="draft.body.trim() ? '仅空白正文可插入模板，不会覆盖已有内容' : `插入${typeLabel}模板`" placement="top"><span><el-button text :disabled="!!draft.body.trim()" @click="insertTemplate"><el-icon><Tickets /></el-icon><span>插入模板</span></el-button></span></el-tooltip>
       </div>
     </div>
 
     <div class="body-workspace">
-      <textarea v-if="displayMode === 'edit'" :value="draft.body" class="markdown-input" aria-label="记录正文" placeholder="写下想法、问题或实践经验…&#10;&#10;支持 Markdown，内容会自动保存。" spellcheck="false" @input="changeField('body', $event.target.value)" />
+      <textarea v-if="displayMode === 'edit'" :value="draft.body" class="markdown-input" aria-label="记录正文" placeholder="写下你的想法…&#10;&#10;支持 Markdown，内容会自动保存。" spellcheck="false" @input="changeField('body', $event.target.value)" />
       <article v-else-if="draft.body.trim()" class="markdown-preview" aria-label="正文预览" @click="copyPreviewLink" @auxclick="copyPreviewLink" v-html="previewHtml" />
       <div v-else class="preview-empty"><el-icon><Document /></el-icon><span>暂无正文</span></div>
     </div>
@@ -73,7 +69,7 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { KNOWLEDGE_TYPES, KNOWLEDGE_STATUSES, knowledgeTime } from '../../utils/knowledge'
+import { KNOWLEDGE_TYPES, knowledgeTime } from '../../utils/knowledge'
 
 const props = defineProps({
   record: { type: Object, required: true },
@@ -82,20 +78,8 @@ const props = defineProps({
   saveError: { type: String, default: '' },
   sources: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['change', 'save', 'trash', 'restore', 'analyze', 'open-source', 'export'])
+const emit = defineEmits(['change', 'save', 'trash', 'restore', 'open-source', 'export'])
 
-const typeOptions = Object.entries(KNOWLEDGE_TYPES).map(([value, label]) => ({ value, label: value === 'sop' ? '流程（SOP）' : label }))
-const statusOptions = Object.entries(KNOWLEDGE_STATUSES).map(([value, label]) => ({ value, label }))
-const templates = {
-  idea: '## 想法\n\n\n## 适用场景\n\n\n## 下一步\n\n- [ ] ',
-  problem: '## 问题描述\n\n\n## 复现条件\n\n\n## 已尝试的方法\n\n\n## 结论与后续\n\n',
-  decision: '## 决策背景\n\n\n## 备选方案\n\n\n## 最终决定\n\n\n## 原因与影响\n\n',
-  experience: '## 背景\n\n\n## 实践过程\n\n\n## 结果与经验\n\n\n## 下次如何改进\n\n',
-  method: '## 适用场景\n\n\n## 准备条件\n\n\n## 操作方法\n\n1. \n\n## 验证方式\n\n',
-  sop: '## 目的与范围\n\n\n## 前置条件\n\n\n## 执行步骤\n\n1. \n\n## 完成标准\n\n- [ ] \n\n## 异常处理\n\n',
-  principle: '## 原则\n\n\n## 为什么\n\n\n## 适用边界\n\n\n## 示例\n\n',
-  ai: '## 场景\n\n\n## 问题\n\n\n## 策略\n\n\n## Prompt 模式\n\n```text\n\n```\n\n## AI 输出\n\n\n## 人工修正\n\n\n## 最终效果\n\n\n## 适用边界\n\n',
-}
 const editableFields = ['title', 'body', 'type', 'status', 'tags', 'projectId', 'projectName']
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const normalizedRecord = (record) => ({ ...clone(record), title: record.title || '', body: record.body || '', type: record.type || 'idea', status: record.status || 'inbox', tags: Array.isArray(record.tags) ? [...record.tags] : [] })
@@ -133,10 +117,8 @@ watch(() => props.record, (record) => {
 
 const deleted = computed(() => !!draft.value.deletedAt)
 const displayMode = computed(() => deleted.value ? 'preview' : mode.value)
-const hasContent = computed(() => !!(draft.value.title.trim() || draft.value.body.trim()))
 const historicalProject = computed(() => !!draft.value.projectId && !props.projects.some((project) => project.id === draft.value.projectId))
-const typeName = (type) => typeOptions.find((option) => option.value === type)?.label || '记录'
-const typeLabel = computed(() => typeName(draft.value.type))
+const typeName = (type) => KNOWLEDGE_TYPES[type] || '记录'
 const characterCount = computed(() => [...draft.value.body.replace(/\s/g, '')].length)
 const previewHtml = computed(() => {
   const parsed = marked.parse(draft.value.body, { async: false, gfm: true, breaks: true })
@@ -168,11 +150,6 @@ function changeProject(id) {
   const project = props.projects.find((item) => item.id === projectId)
   const projectName = project?.name || (projectId === draft.value.projectId ? draft.value.projectName || '' : '')
   applyChanges({ projectId, projectName })
-}
-function insertTemplate() {
-  if (deleted.value || draft.value.body.trim()) return
-  changeField('body', templates[draft.value.type] || templates.idea)
-  mode.value = 'edit'
 }
 function requestSave() { if (!deleted.value && !props.saving) emit('save') }
 function onEditorKeydown(event) {
@@ -224,8 +201,6 @@ async function copyPreviewLink(event) {
 .record-properties { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
 .property-field { display: flex; align-items: center; gap: 8px; font-size: 12px; min-width: 0; }
 .property-field > span { color: var(--text-muted); flex-shrink: 0; }
-.type-select { width: 112px; }
-.status-select { width: 112px; }
 .project-field { flex: 1; }
 .project-select { width: 100%; min-width: 160px; max-width: 280px; }
 .record-tags { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; }
@@ -274,7 +249,6 @@ async function copyPreviewLink(event) {
 @media (max-width: 1280px) {
   .editor-toolbar, .save-error, .trash-notice, .record-heading, .body-toolbar, .markdown-input, .markdown-preview, .record-sources, .editor-footer { padding-left: 16px; padding-right: 16px; }
   .record-properties { gap: 12px; }
-  .type-select, .status-select { width: 104px; }
 }
 @media (max-width: 960px) {
   .editor-toolbar { align-items: flex-start; flex-wrap: wrap; }
