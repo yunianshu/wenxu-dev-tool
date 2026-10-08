@@ -212,7 +212,7 @@ async function main() {
     await page.getByRole('button', { name: '继续终端工作', exact: true }).click()
     await page.locator('.terminal-page').waitFor()
     await page.waitForFunction(async () => (await window.gitReport.terminalList()).sessions.some(row => row.projectId === 'project-0'))
-    await page.getByRole('button', { name: '返回项目', exact: true }).click()
+    assert.equal(await page.getByRole('button', { name: '返回项目', exact: true }).count(), 0, '终端工作台不显示返回项目')
     await navigate('工作台')
     await page.waitForFunction(() => !document.querySelector('.work-overview .el-alert'))
     assert((await page.locator('.work-status').innerText()).includes('1 个运行中'), '真实终端返回结构正确展示运行会话')

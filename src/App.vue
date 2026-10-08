@@ -24,7 +24,7 @@
         :projects="state.projects.items"
         :current-id="state.projects.currentId"
         hide-project-switcher
-        :show-project-return="['deploy', 'terminal', 'knowledge'].includes(view)"
+        :show-project-return="['deploy', 'knowledge'].includes(view)"
         @return-project="returnToProject"
         @select-project="selectProject"
       />
