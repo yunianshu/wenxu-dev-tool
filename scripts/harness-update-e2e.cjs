@@ -4,6 +4,8 @@
  * 验收标准（源自需求：监听 dsh 是否有更新 → 有更新要提示 → 可在应用内热更新）：
  *   E1 自动监听并提示 —— 应用启动后自动查询官方源，发现新版本时侧栏菜单图标出现新版本小圆点
  *   E2 应用内热更新 —— 经界面链路触发后，用随包 npm 在**真实网络**上下载并安装新版本
+ *   E2e~E2i 字节级进度 —— 真实网络下能测得依赖树总包数、下载总量（tarball HEAD 之和），
+ *        采样到已下载字节增长与非零下载速度，进度阶段覆盖分析/下载/安装
  *   E3 更新真实生效 —— 服务重启后实际运行的 dsh 版本为新版本，服务仍能就绪、内嵌页可加载
  *   E4 重启不回落 —— 再次重启服务仍使用热更新版本（不被随包归档覆盖回旧版本）
  *   E5 无残留 —— 应用退出后 dsh 进程树消失
@@ -24,7 +26,8 @@ const path = require('path')
 
 const ROOT = path.resolve(__dirname, '..')
 const USER_DATA = path.join(os.tmpdir(), `pm-harness-update-e2e-${Date.now()}`)
-/** 全新主目录：模拟「用户机器从未用过 dsh」，同时隔离本机 ~/.dsh */
+/** 全新 dsh 主目录：经 $DSH_HOME 传给应用（隔离本机 ~/.dsh，不动 USERPROFILE——
+ *  Electron 启动期解析 userData 依赖真实主目录，覆盖会让应用加载即崩） */
 const HOME_SANDBOX = path.join(os.tmpdir(), `pm-harness-update-home-${Date.now()}`)
 
 const EVAL = `(async () => {
@@ -72,7 +75,8 @@ const EVAL = `(async () => {
   r.settingsButton = !!settingBtn
   if (settingBtn) { settingBtn.click(); await sleep(1200) }
   r.versionRow = text('.harness-version')
-  r.updateButton = [...document.querySelectorAll('.el-dialog button')]
+  // 「更新到」按钮在顶栏（版本行在设置面板里只有版本号与检查更新）
+  r.updateButton = [...document.querySelectorAll('#app-topbar-slot button')]
     .map((b) => b.textContent.trim()).find((t) => t.startsWith('更新到')) || ''
   const cancel = [...document.querySelectorAll('.el-dialog button')].find((b) => b.textContent.trim() === '取消')
   if (cancel) cancel.click()
@@ -80,14 +84,34 @@ const EVAL = `(async () => {
 
   // E2：应用内热更新（真实下载 + 安装 + 交换 + 重启服务）
   if (!r.updateAvailable) { r.skipped = '当前已是最新版本，未触发安装'; return r }
+  // 字节级进度采样：安装可达分钟级，轮询广播状态直到 busy 结束（总量/已下载/速度/阶段）
   const started = Date.now()
-  const install = await window.gitReport.harnessUpdateInstall({ version: r.latest })
+  const installPromise = window.gitReport.harnessUpdateInstall({ version: r.latest })
+  const samples = []
+  const tSample = Date.now()
+  while (Date.now() - tSample < 600000) {
+    await sleep(2000)
+    const st = await window.gitReport.harnessUpdateStatus().catch(() => null)
+    if (st && st.busy) {
+      const it = st.install || {}
+      samples.push({ s: it.status, d: it.downloadedBytes || 0, t: it.totalBytes || 0, b: it.bytesPerSecond || 0, p: it.packages || 0, tp: it.totalPackages || 0 })
+    } else if (samples.length) break
+  }
+  const install = await installPromise
   r.installMs = Date.now() - started
   r.installOk = !!(install && install.ok === true)
   r.installVersion = (install && install.version) || ''
   r.installError = (install && install.error) || ''
   r.statusAfterInstall = (install && install.install && install.install.status) || ''
   r.packages = (install && install.install && install.install.packages) || 0
+  r.progress = {
+    samples: samples.length,
+    totalPackages: samples.length ? Math.max(...samples.map((x) => x.tp)) : 0,
+    totalBytes: samples.length ? Math.max(...samples.map((x) => x.t)) : 0,
+    maxDownloaded: samples.length ? Math.max(...samples.map((x) => x.d)) : 0,
+    sawSpeed: samples.some((x) => x.b > 0),
+    stages: [...new Set(samples.map((x) => x.s))],
+  }
 
   // E3：服务重启后实际运行新版本，且内嵌页仍可加载
   const t1 = Date.now()
@@ -125,9 +149,10 @@ const EXIT_MS = Number(process.env.SMOKE_EXIT_MS) || 900000
 const env = {
   ...process.env,
   PROJECT_MANAGER_USER_DATA: USER_DATA,
-  // 全新主目录（Windows 用 USERPROFILE，POSIX 用 HOME）：保证 ~/.dsh 不存在
-  USERPROFILE: HOME_SANDBOX,
-  HOME: HOME_SANDBOX,
+  // 全新 dsh 主目录（$DSH_HOME）：模拟「用户机器从未用过 dsh」，同时隔离本机 ~/.dsh。
+  // 不能覆盖 USERPROFILE/HOME——Electron 启动期解析 userData 依赖真实主目录，
+  // 覆盖会让应用加载即崩（Failed to get 'userData' path）；dsh 本身支持 $DSH_HOME 重定向
+  DSH_HOME: HOME_SANDBOX,
   // 强制走归档解包路径（跳过开发态原样目录），与打包态一致，且让热更新被允许
   DSH_RUNTIME_CACHE: path.join(USER_DATA, 'runtime'),
   SMOKE_HARNESS: '1',
@@ -141,6 +166,10 @@ const env = {
 }
 
 fs.mkdirSync(HOME_SANDBOX, { recursive: true })
+// 预写端口配置：e2e 服务用冷门端口，避开默认 3080 与本机生产版应用实际占用的端口
+// （曾实测生产版配置为 3081；服务交换窗口内端口被占会让「新版本启动」误判失败）
+fs.mkdirSync(USER_DATA, { recursive: true })
+fs.writeFileSync(path.join(USER_DATA, 'config.json'), JSON.stringify({ harness: { port: 38817 } }))
 console.log(`=== DeepSeek Harness 更新 E2E（${label}） ===`)
 console.log(`userData=${USER_DATA}`)
 console.log(`全新主目录=${HOME_SANDBOX}`)
@@ -217,6 +246,16 @@ assert('E2b 安装出的版本为目标版本', r.installVersion === r.latest, `
 assert('E2c 安装完成且最终状态为 done', r.statusAfterInstall === 'done', String(r.statusAfterInstall))
 assert('E2d 实际落盘了依赖包（>100 个）', Number(r.packages) > 100, `packages=${r.packages}`)
 console.log(`      （真实安装耗时 ${Math.round(Number(r.installMs || 0) / 1000)} 秒）`)
+
+// E2e~E2i 字节级进度（需求：下载总量/当前下载量/下载速度/安装进度在真实网络下可见）
+const pr = r.progress || { stages: [] }
+assert('E2e 依赖分析给出真实依赖树规模（总包数 > 100）', pr.totalPackages > 100, `totalPackages=${pr.totalPackages}`)
+assert('E2f 测得真实下载总量（> 50MB）', pr.totalBytes > 50 * 1024 * 1024, `totalBytes=${pr.totalBytes}`)
+assert('E2g 采样到下载字节增长（> 10MB）', pr.maxDownloaded > 10 * 1024 * 1024, `maxDownloaded=${pr.maxDownloaded}`)
+assert('E2h 采样到非零下载速度', pr.sawSpeed === true, `samples=${pr.samples}`)
+assert('E2i 进度覆盖分析与安装阶段',
+  pr.stages.includes('analyzing') && (pr.stages.includes('downloading') || pr.stages.includes('installing')),
+  pr.stages.join(','))
 
 // E3 更新真实生效
 assert('E3a 服务重启后运行的是新版本', r.harnessVersionAfter === r.latest,

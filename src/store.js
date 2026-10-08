@@ -86,7 +86,13 @@ export const state = reactive({
     reason: '',             // 不允许时的原因
     error: '',
     busy: false,
-    install: { status: 'idle', version: '', fetched: 0, packages: 0, elapsedMs: 0, error: '' },
+    // 进度字段与主进程 idleInstall() 对齐：字节级下载量实测自 npm 缓存，
+    // totalPackages/totalBytes 来自更新前的依赖分析（0=未知，分析失败时降级显示）
+    install: {
+      status: 'idle', version: '', fetched: 0, packages: 0,
+      totalPackages: 0, totalBytes: 0, downloadedBytes: 0, bytesPerSecond: 0,
+      elapsedMs: 0, error: '',
+    },
   },
   /** 终端工作台（内嵌多窗格终端）：pane 进程在主进程常驻，窗格列表也必须跨视图保留——
    *  切页只卸载终端视图，窗格身份（哪个窗格对应哪条会话）要活得和会话一样久。

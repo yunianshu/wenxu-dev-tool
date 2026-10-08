@@ -112,7 +112,15 @@
             <span class="harness-version">dsh {{ updateCurrent || '未知' }}</span>
             <el-button size="small" :loading="updateChecking" @click="checkUpdate">检查更新</el-button>
           </div>
-          <div v-if="updating" class="harness-hint">{{ updateProgressText }}</div>
+          <div v-if="updating" class="harness-update-progress">
+            <el-progress
+              :percentage="updatePercent"
+              :indeterminate="updateIndeterminate"
+              :show-text="!updateIndeterminate"
+              :stroke-width="8"
+            />
+            <div class="harness-hint">{{ updateProgressText }}</div>
+          </div>
           <div v-else-if="updateReason" class="harness-hint">{{ updateReason }}</div>
           <div v-else-if="updateError" class="harness-hint">{{ updateError }}</div>
         </el-form-item>
@@ -205,22 +213,68 @@ const updateReason = computed(() => state.harnessUpdate.reason || '')
 const updateError = computed(() => state.harnessUpdate.error || '')
 /** 安装阶段文案：只给标签与数值（安装可达分钟级，转圈不够） */
 const UPDATE_STAGE_TEXT = {
-  preparing: '准备组件', downloading: '下载依赖', installing: '安装依赖',
+  analyzing: '分析依赖', preparing: '准备组件', downloading: '下载依赖', installing: '安装依赖',
   verifying: '校验', swapping: '切换运行时', restarting: '重启服务',
+}
+/** 字节数人性化：下载量/速度都在 MB 量级，小于 1 MB 降级 KB/B */
+function formatBytes(value) {
+  const n = Number(value) || 0
+  if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`
+  return `${n} B`
 }
 const updateProgressText = computed(() => {
   const install = updateInstall.value
   const parts = [UPDATE_STAGE_TEXT[install.status] || '更新中']
   if (install.version) parts.push(install.version)
-  if (install.packages) parts.push(`${install.packages} 个包`)
-  else if (install.fetched) parts.push(`已下载 ${install.fetched}`)
+  if (install.status === 'downloading') {
+    // 字节级实测（npm 缓存增量）：总量为依赖分析的静态估算（lockfile 与实际安装
+    // 的可选依赖取舍略有出入，故标「约」）；缺失（分析失败降级）时只显示已下载量与速度
+    const downloaded = formatBytes(install.downloadedBytes)
+    parts.push(install.totalBytes ? `约 ${downloaded} / ${formatBytes(install.totalBytes)}` : `已下载 ${downloaded}`)
+    if (install.bytesPerSecond > 0) parts.push(`${formatBytes(install.bytesPerSecond)}/s`)
+  } else if (install.status === 'installing') {
+    parts.push(install.totalPackages
+      ? `已安装 ${install.packages || 0} / ${install.totalPackages} 个包`
+      : (install.packages ? `${install.packages} 个包` : ''))
+  } else if (install.packages) {
+    parts.push(`${install.packages} 个包`)
+  }
   if (install.elapsedMs) parts.push(`${Math.max(1, Math.round(install.elapsedMs / 1000))} 秒`)
-  return parts.join(' · ')
+  return parts.filter(Boolean).join(' · ')
 })
-/** 顶栏那一行只放得下阶段与秒数，版本号与包数见 updateProgressText */
+/** 设置面板进度条：0～99%，总量未知时用流动动画表达「在动但无法定量」 */
+const updatePercent = computed(() => {
+  const install = updateInstall.value
+  if (install.status === 'downloading') {
+    return install.totalBytes > 0
+      ? Math.min(99, Math.round((install.downloadedBytes / install.totalBytes) * 100))
+      : 70
+  }
+  if (install.status === 'installing' && install.totalPackages > 0) {
+    return Math.min(99, Math.round(((install.packages || 0) / install.totalPackages) * 100))
+  }
+  return 70
+})
+const updateIndeterminate = computed(() => {
+  const install = updateInstall.value
+  if (install.status === 'downloading') return !(install.totalBytes > 0)
+  if (install.status === 'installing') return !(install.totalPackages > 0)
+  return true
+})
+/** 顶栏一行放不下整句进度：有总量给百分比，没有给已下载量；完整信息见 updateProgressText */
 const updateShortText = computed(() => {
   const install = updateInstall.value
   const stage = UPDATE_STAGE_TEXT[install.status] || '更新中'
+  if (install.status === 'downloading') {
+    if (install.totalBytes > 0 && install.downloadedBytes > 0) {
+      return `${stage} · ${Math.min(99, Math.round((install.downloadedBytes / install.totalBytes) * 100))}%`
+    }
+    return `${stage} · ${formatBytes(install.downloadedBytes)}`
+  }
+  if (install.status === 'installing' && install.totalPackages > 0) {
+    return `${stage} · ${Math.min(99, Math.round(((install.packages || 0) / install.totalPackages) * 100))}%`
+  }
   const seconds = install.elapsedMs ? Math.max(1, Math.round(install.elapsedMs / 1000)) : 0
   return seconds ? `${stage} · ${seconds} 秒` : stage
 })
@@ -669,6 +723,10 @@ onBeforeUnmount(() => {
 .harness-immersive-label { white-space: nowrap; }
 
 .harness-hint { margin-top: 2px; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+
+/* 更新进度条 + 数值说明（设置面板内） */
+.harness-update-progress { width: 100%; }
+.harness-update-progress .harness-hint { margin-top: 4px; }
 
 /* 运行时版本行：版本号 + 检查更新（有新版本时多一个更新按钮） */
 .harness-version-row { display: flex; align-items: center; gap: 8px; }

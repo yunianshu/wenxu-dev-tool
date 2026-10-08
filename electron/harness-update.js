@@ -12,10 +12,13 @@
  *
  * 安装链路（全程不触碰正在运行的运行时，失败不影响现有服务）：
  *   1. 解包随包 npm 组件到 <userData>/updater（幂等，按标记复用）
- *   2. npm install --prefix <userData>/rt-new/dsh @deepseek-ai/dsh@<版本>（--ignore-scripts：
- *      dsh 依赖的 node-pty / sharp / koffi 都是**预编译包**，无需构建脚本）
- *   3. 校验入口与真实版本号 → 打 CREATE_NO_WINDOW 补丁（补丁点变化即中止，保留旧运行时）
- *   4. 停服务 → 目录交换（runtime ⇄ rt-new，失败自动回滚）→ 写热更新标记 → 重启服务
+ *   2. 分析依赖：npm install --package-lock-only 只解析不下载，得到精确总包数与 tarball 清单，
+ *      再逐个 HEAD tarball 测出精确下载总量（失败降级为「无总量」模式，不阻塞更新）
+ *   3. npm install --prefix <userData>/rt-new/dsh @deepseek-ai/dsh@<版本>（--ignore-scripts：
+ *      dsh 依赖的 node-pty / sharp / koffi 都是**预编译包**，无需构建脚本）；
+ *      下载量从 npm 缓存目录的实测增量得出，速度按采样平滑
+ *   4. 校验入口与真实版本号 → 打 CREATE_NO_WINDOW 补丁（补丁点变化即中止，保留旧运行时）
+ *   5. 停服务 → 目录交换（runtime ⇄ rt-new，失败自动回滚）→ 写热更新标记 → 重启服务
  *
  * 暂存目录取名 rt-new / rt-old（比 runtime 还短）：依赖树最深相对路径约 166 字符，
  * 长目录名会顶破 Windows 默认 260 字符上限。
@@ -43,7 +46,15 @@ const UPDATER_MARKER = 'harness-updater.json'
 const SWAP_TRIES = 24
 const SWAP_DELAY_MS = 500
 /** 安装进度采样间隔 */
-const PROGRESS_INTERVAL_MS = 1500
+const PROGRESS_INTERVAL_MS = 2000
+/** 依赖分析（lockfile-only）的看门狗：元数据解析一般十几秒，超时视为挂死并降级 */
+const ANALYZE_STALL_MS = 5 * 60 * 1000
+/** 下载总量测量：单 tarball HEAD 超时、整体预算与并发（任一失败即放弃精确总量） */
+const HEAD_TIMEOUT_MS = 8000
+const HEAD_BUDGET_MS = 90 * 1000
+const HEAD_CONCURRENCY = 12
+/** 安装阶段看门狗：输出与磁盘包数双双静止超过阈值视为挂死 */
+const STALL_LIMIT_MS = 5 * 60 * 1000
 
 let emitter = () => {}
 /** 运行期状态（不落盘的部分）：检查中 / 安装进度 */
@@ -51,10 +62,14 @@ let runtime = { checking: false, install: idleInstall() }
 
 function idleInstall() {
   return {
-    status: 'idle', // idle | preparing | downloading | installing | verifying | swapping | restarting | done | error
+    status: 'idle', // idle | analyzing | preparing | downloading | installing | verifying | swapping | restarting | done | error
     version: '',
-    fetched: 0,     // 已下载的包数（统计 npm 的 http fetch 日志行）
-    packages: 0,    // 已落盘的包目录数
+    fetched: 0,           // 已发出的 registry 请求数（npm http fetch 日志行，活动信号）
+    packages: 0,          // 已落盘的包目录数
+    totalPackages: 0,     // 依赖树总包数（分析阶段解析 lockfile 得出；0=未知）
+    totalBytes: 0,        // 下载总量（逐个 HEAD tarball 精确测得；0=未知，测量失败降级）
+    downloadedBytes: 0,   // 已下载字节（npm 缓存 content 区实测增量，含少量元数据）
+    bytesPerSecond: 0,    // 平滑后的下载速度（字节/秒；采样窗口 2 秒 + EMA）
     startedAt: 0,
     finishedAt: 0,
     error: '',
@@ -188,23 +203,26 @@ function setInstall(patch) {
   return emit()
 }
 
-/** GET JSON：优先 Electron net.fetch（走系统代理，公司网络更可靠），回退全局 fetch。
- *  网络错误重试 2 次：本机安全软件对新生成的二进制首连可能瞬时掐断（实测
- *  ERR_CONNECTION_CLOSED，重试即过），源本身 4xx/5xx 不重试。 */
-async function httpJson(url) {
-  let fetchImpl = null
+/** fetch 实现：优先 Electron net.fetch（走系统代理，公司网络更可靠），回退全局 fetch */
+function fetchImpl() {
   try {
     const { net } = require('electron')
-    if (net && typeof net.fetch === 'function') fetchImpl = net.fetch.bind(net)
+    if (net && typeof net.fetch === 'function') return net.fetch.bind(net)
   } catch { /* 非 Electron 环境（自测） */ }
-  if (!fetchImpl) fetchImpl = globalThis.fetch
-  if (typeof fetchImpl !== 'function') throw new Error('当前环境不支持网络请求')
+  return globalThis.fetch
+}
+
+/** GET JSON：网络错误重试 2 次：本机安全软件对新生成的二进制首连可能瞬时掐断（实测
+ *  ERR_CONNECTION_CLOSED，重试即过），源本身 4xx/5xx 不重试。 */
+async function httpJson(url) {
+  const fetchFn = fetchImpl()
+  if (typeof fetchFn !== 'function') throw new Error('当前环境不支持网络请求')
 
   let lastError = null
   for (let attempt = 0; attempt < 3; attempt += 1) {
     if (attempt) await sleep(attempt * 2000)
     try {
-      const response = await fetchImpl(url, {
+      const response = await fetchFn(url, {
         headers: { accept: 'application/vnd.npm.install-v1+json, application/json' },
         redirect: 'follow',
         signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
@@ -218,6 +236,60 @@ async function httpJson(url) {
     }
   }
   throw lastError
+}
+
+/**
+ * 探测单个 tarball 的总大小。
+ * 实测 registry 的 HEAD 响应不带 Content-Length（CDN 行为），改用 1 字节 Range GET：
+ * 命中 Range 的源回 206 + Content-Range「bytes 0-0/总大小」，直接取总大小；
+ * 忽略 Range 的源回 200 + Content-Length（即全量长度），同样可用。
+ * 显式存在且 >0 才算数（tarball 不可能为 0 字节；缺失头的 Number(null)=0 不得误判）。
+ * 两次尝试都拿不到返回 -1。
+ */
+async function probeSize(fetchFn, url) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetchFn(url, {
+        headers: { Range: 'bytes=0-0' },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(HEAD_TIMEOUT_MS),
+      })
+      const range = /\/(\d+)\s*$/.exec(String(response.headers.get('content-range') || ''))
+      if (response.status === 206 && range) return Number(range[1])
+      const length = Number(response.headers.get('content-length'))
+      if (response.status === 200 && Number.isFinite(length) && length > 0) return length
+      return -1
+    } catch {
+      if (attempt) return -1
+    }
+  }
+  return -1
+}
+
+/**
+ * 逐个测量 tarball 总大小，求和得到精确下载总量。
+ * 任何一个测不到就整体放弃（返回 0=未知，界面退化为只显示已下载量与速度）；
+ * 整体限时预算，避免个别慢请求把「分析依赖」阶段拖长。
+ */
+async function measureTotalBytes(urls) {
+  const fetchFn = fetchImpl()
+  if (typeof fetchFn !== 'function' || !urls.length) return 0
+  const startedAt = Date.now()
+  let total = 0
+  for (let i = 0; i < urls.length; i += HEAD_CONCURRENCY) {
+    if (Date.now() - startedAt > HEAD_BUDGET_MS) {
+      log(`下载总量测量超预算（${Math.round(HEAD_BUDGET_MS / 1000)} 秒），放弃（不影响更新）`)
+      return 0
+    }
+    const sizes = await Promise.all(urls.slice(i, i + HEAD_CONCURRENCY).map((url) => probeSize(fetchFn, url)))
+    if (sizes.some((size) => size < 0)) {
+      log('部分 tarball 大小测不到，放弃精确总量（不影响更新）')
+      return 0
+    }
+    total += sizes.reduce((sum, size) => sum + size, 0)
+  }
+  log(`下载总量测量完成：${urls.length} 个包 / ${(total / 1048576).toFixed(1)} MB`)
+  return total
 }
 
 /**
@@ -355,16 +427,19 @@ async function proxyEnvFor(url) {
   } catch { return {} }
 }
 
-/** 在暂存目录里用随包 npm 安装目标版本（流式进度 + 看门狗） */
-async function installTree({ cli, prefix, version, registry, proxy = {} }) {
-  fs.rmSync(path.dirname(prefix), { recursive: true, force: true }) // 清理上次失败的残留
+/** 准备暂存目录：清掉上次失败残留 + 根 package.json（npm install 的挂载点） */
+function prepareStaging(prefix) {
+  fs.rmSync(prefix, { recursive: true, force: true })
   fs.mkdirSync(prefix, { recursive: true })
   fs.writeFileSync(path.join(prefix, 'package.json'), JSON.stringify({ name: 'harness-runtime', private: true }, null, 2))
+}
 
+/** npm install 参数：lockOnly=true 只解析依赖树并写 lockfile（不下载 tarball） */
+function npmInstallArgs({ cli, prefix, registry, lockOnly }) {
   const args = [
     '--expose-internals', cli, 'install',
     '--prefix', prefix,
-    '--no-audit', '--no-fund', '--no-package-lock',
+    '--no-audit', '--no-fund',
     // dsh 的 node-pty / sharp / koffi 都是预编译包，安装脚本在无 Node 的机器上既无必要也跑不动
     '--ignore-scripts',
     '--loglevel', 'http',
@@ -375,9 +450,19 @@ async function installTree({ cli, prefix, version, registry, proxy = {} }) {
     '--fetch-retries', '3',
     '--fetch-retry-mintimeout', '2000',
     '--fetch-retry-maxtimeout', '30000',
-    `${PACKAGE}@${version}`,
   ]
-  const env = {
+  if (lockOnly) {
+    args.push('--package-lock-only')
+  } else {
+    // 分析阶段已把元数据与 lockfile 备好：prefer-offline 直接复用缓存，不再重新解析
+    args.push('--prefer-offline')
+  }
+  return args
+}
+
+/** npm 子进程环境：跑在 Electron 自带 Node 上，缓存独立于用户全局 npm，互不干扰 */
+function npmEnv(proxy) {
+  return {
     ...process.env,
     ELECTRON_RUN_AS_NODE: '1',
     npm_config_cache: npmCacheDir(),
@@ -387,57 +472,176 @@ async function installTree({ cli, prefix, version, registry, proxy = {} }) {
     npm_config_progress: 'false',
     ...proxy,
   }
-  log(`安装 ${PACKAGE}@${version} → ${prefix}`)
-  // 先落到「下载依赖」：npm 总是先解析/拉取再落盘，不能只靠轮询（安装可能比轮询间隔还快）
-  setInstall({ status: 'downloading', fetched: 0, packages: 0 })
-  // detached 仅 POSIX：进程组整组可杀；Windows 用 taskkill /T
+}
+
+/**
+ * 跑一个 npm 子进程并等待退出（流式输出 + 看门狗）。
+ * 看门狗按「输出静止超过 stallMs」终止进程（超时参数失守、代理黑洞等）；
+ * 磁盘侧的进展（落盘包数变化）由调用方经 notifyActivity 喂给看门狗。
+ * detached 仅 POSIX：进程组整组可杀；Windows 用 taskkill /T。
+ */
+async function runNpm({ args, proxy = {}, stallMs = STALL_LIMIT_MS, onChunk, onSpawn }) {
   const proc = spawn(process.execPath, args, {
-    env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+    env: npmEnv(proxy), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     detached: process.platform !== 'win32',
   })
-
   let tail = ''
-  let fetched = 0
   let lastActivityAt = Date.now()
-  const onChunk = (chunk) => {
-    const text = String(chunk)
-    tail = (tail + text).slice(-4000)
-    // npm --loglevel=http 每取一个包打一行；按行数近似「已下载包数」作为下载阶段进度
-    fetched += (text.match(/http fetch (?:GET|POST)/g) || []).length
+  // 磁盘侧的落盘进展（无输出也推进）由调用方经此回调喂给看门狗
+  if (onSpawn) onSpawn(() => { lastActivityAt = Date.now() })
+  const onOutput = (chunk) => {
+    tail = (tail + String(chunk)).slice(-4000)
     lastActivityAt = Date.now()
+    if (onChunk) onChunk(String(chunk))
   }
-  proc.stdout.on('data', onChunk)
-  proc.stderr.on('data', onChunk)
+  proc.stdout.on('data', onOutput)
+  proc.stderr.on('data', onOutput)
 
-  // 看门狗：输出与磁盘包数双双静止超过阈值视为挂死（超时参数失守、代理黑洞等），
-  // 主动终止安装并报错——保留旧运行时，用户可重试；否则 UI 会永远停在「下载依赖」
-  const STALL_LIMIT_MS = 5 * 60 * 1000
   let stalled = false
   const watchdog = setInterval(() => {
-    const packages = countPackages(prefix)
-    if (packages !== runtime.install.packages) lastActivityAt = Date.now()
-    if (Date.now() - lastActivityAt > STALL_LIMIT_MS) {
+    if (Date.now() - lastActivityAt > stallMs) {
       stalled = true
-      log(`安装 ${STALL_LIMIT_MS / 60000} 分钟无进展，终止（已下载 ${fetched} 行 / ${packages} 包）`)
       killTree(proc.pid)
     }
   }, 10000)
   if (watchdog.unref) watchdog.unref()
 
-  const timer = setInterval(() => {
-    const packages = countPackages(prefix)
-    setInstall({ fetched, packages, status: packages > 0 ? 'installing' : 'downloading' })
-  }, PROGRESS_INTERVAL_MS)
-  if (timer.unref) timer.unref()
-
   const code = await new Promise((resolve) => {
     proc.once('error', () => resolve(-1))
     proc.once('exit', (c) => resolve(c === null ? (stalled ? -2 : -1) : c))
   })
-  clearInterval(timer)
   clearInterval(watchdog)
-  if (stalled) throw new Error('安装过程长时间无进展（网络中断？），已终止；原有运行时未受影响，可重试')
-  setInstall({ fetched, packages: countPackages(prefix) })
+  return { code, tail, stalled, notifyActivity: () => { lastActivityAt = Date.now() } }
+}
+
+/**
+ * 判断是否「其他平台」的可选二进制包（@esbuild/darwin-arm64 这类）。
+ * lockfile 是平台无关的：--package-lock-only 会列出全部平台的可选依赖，而实际
+ * 只安装当前平台的那一个（实测 dsh 0.2.1-alpha.1：628 个条目里 81 个他平台包
+ * 占了 416MB，不剔除会让「下载总量」虚高 4 倍、百分比永远停在两三成）。
+ * 命名模式取自主流二进制分发包（esbuild/swc/sharp/rollup/lightningcss 等）约定。
+ */
+const FOREIGN_PLATFORM_RE = /(?:^|[-/])(win32|darwin|linux|android|freebsd|openbsd|sunos|aix)-(x64|ia32|arm64|armv7|arm|ppc64|s390x|riscv64|loong64|mips64)(?:-(musl|gnu))?$|[-/](musl|gnu)$|-wasm32$/
+
+function isForeignPlatformBinary(name) {
+  const matched = FOREIGN_PLATFORM_RE.exec(name)
+  if (!matched) return false
+  const platform = matched[1]
+  const arch = matched[2]
+  // 平台-架构组合与当前机一致的不剔除（如 win32-x64 在 Windows x64 上要装）
+  if (platform && arch) return !(platform === process.platform && arch === process.arch)
+  // -musl/-gnu/-wasm32 结尾的 Linux/wasm 变体：非 Linux 机器上一律不装
+  return process.platform !== 'linux'
+}
+
+/**
+ * 分析依赖树：借 npm 只解析不下载（--package-lock-only），得到精确总包数与
+ * tarball 清单（元数据进入 npm 缓存，真实安装阶段 prefer-offline 直接复用）。
+ * 失败不阻塞更新：返回空清单，进度退化为「无总量」模式，真实安装阶段会给出确切错误。
+ */
+async function analyzeTree({ cli, prefix, version, registry, proxy = {} }) {
+  setInstall({ status: 'analyzing', totalPackages: 0, totalBytes: 0, downloadedBytes: 0, bytesPerSecond: 0 })
+  try {
+    prepareStaging(prefix)
+    const args = npmInstallArgs({ cli, prefix, registry, lockOnly: true }).concat(`${PACKAGE}@${version}`)
+    log(`分析依赖树：${PACKAGE}@${version}`)
+    const { code, tail, stalled } = await runNpm({ args, proxy, stallMs: ANALYZE_STALL_MS })
+    if (code !== 0) throw new Error(`npm 退出码 ${code}${stalled ? '（无进展已终止）' : ''}${tail.trim() ? `：${tail.trim().split('\n').slice(-2).join(' ')}` : ''}`)
+    // npm --prefix 即项目根：lockfile 与 package.json 同在 prefix 下（分析完即用，安装阶段可被清掉重解析）
+    const lock = readJson(path.join(prefix, 'package-lock.json'))
+    const urls = Object.entries((lock && lock.packages) || {})
+      .map(([key, entry]) => ({ key, url: String((entry && entry.resolved) || '') }))
+      .filter(({ key, url }) => {
+        if (!/^https?:/.test(url)) return false
+        const name = key.split('node_modules/').pop() || ''
+        return !isForeignPlatformBinary(name)
+      })
+      .map(({ url }) => url)
+    if (!urls.length) throw new Error('lockfile 中没有 tarball 地址')
+    log(`依赖树解析完成：${urls.length} 个包`)
+    setInstall({ totalPackages: urls.length })
+    return urls
+  } catch (err) {
+    log(`依赖分析失败（不阻塞更新，进度将不显示总量）：`, err.message)
+    return []
+  }
+}
+
+/** 目录字节总量（递归；npm 缓存 content 区数千小文件，单轮几百毫秒） */
+function dirSizeBytes(dir) {
+  let total = 0
+  const stack = [dir]
+  while (stack.length) {
+    const current = stack.pop()
+    let entries = []
+    try { entries = fs.readdirSync(current, { withFileTypes: true }) } catch { continue }
+    for (const entry of entries) {
+      const full = path.join(current, entry.name)
+      if (entry.isDirectory()) stack.push(full)
+      else { try { total += fs.statSync(full).size } catch { /* 轮询间隙被移动的临时文件 */ } }
+    }
+  }
+  return total
+}
+
+/** 在暂存目录里用随包 npm 安装目标版本（lockfile 由分析阶段产出；字节级进度 + 看门狗） */
+async function installTree({ cli, prefix, version, registry, proxy = {} }) {
+  prepareStaging(prefix)
+  const args = npmInstallArgs({ cli, prefix, registry, lockOnly: false }).concat(`${PACKAGE}@${version}`)
+  log(`安装 ${PACKAGE}@${version} → ${prefix}`)
+  // 先落到「下载依赖」：npm 总是先解析/拉取再落盘，不能只靠轮询（安装可能比轮询间隔还快）
+  setInstall({ status: 'downloading', fetched: 0, packages: 0, downloadedBytes: 0, bytesPerSecond: 0 })
+
+  // npm 把 registry 内容（tarball 为主）全部落在缓存 content 区：目录增量即已下载字节。
+  // 基线在 spawn 前取样，分析阶段写入的元数据不计入本次下载量。
+  const contentDir = path.join(npmCacheDir(), '_cacache', 'content-v2')
+  const baselineBytes = dirSizeBytes(contentDir)
+  let fetched = 0
+  let lastBytes = 0
+  let lastSampledAt = 0
+  let bytesPerSecond = 0
+
+  // 采样器先于 npm 启动：进度必须覆盖安装全程（npm 退出后再起就只剩收尾一条）
+  let notifyActivity = () => {}
+  const timer = setInterval(() => {
+    const packages = countPackages(prefix)
+    if (packages !== runtime.install.packages) notifyActivity()
+    // 速度做 EMA 平滑（权重 0.6/0.4）：单窗口抖动大（npm 偶尔整批无输出）
+    const bytes = Math.max(0, dirSizeBytes(contentDir) - baselineBytes)
+    const now = Date.now()
+    if (lastSampledAt) {
+      const dt = (now - lastSampledAt) / 1000
+      if (dt > 0) bytesPerSecond = Math.round(bytesPerSecond * 0.6 + (Math.max(0, bytes - lastBytes) / dt) * 0.4)
+    }
+    lastBytes = bytes
+    lastSampledAt = now
+    setInstall({
+      fetched, packages, downloadedBytes: bytes, bytesPerSecond,
+      status: packages > 0 ? 'installing' : 'downloading',
+    })
+  }, PROGRESS_INTERVAL_MS)
+  if (timer.unref) timer.unref()
+
+  const { code, tail, stalled } = await runNpm({
+    args, proxy,
+    onSpawn: (activity) => { notifyActivity = activity },
+    onChunk: (text) => {
+      // npm --loglevel=http 每取一个包打一行；行数作为「源上有动静」的活动信号
+      fetched += (text.match(/http fetch (?:GET|POST)/g) || []).length
+    },
+  })
+  clearInterval(timer)
+  const finish = () => setInstall({
+    fetched, packages: countPackages(prefix),
+    downloadedBytes: Math.max(0, dirSizeBytes(contentDir) - baselineBytes),
+    bytesPerSecond: 0,
+  })
+  // 看门狗终止（stalled）与 npm 报错都如实上抛：保留旧运行时，用户可重试
+  if (stalled) {
+    finish()
+    throw new Error('安装过程长时间无进展（网络中断？），已终止；原有运行时未受影响，可重试')
+  }
+  finish()
   if (code !== 0) {
     throw new Error(`安装失败（npm 退出码 ${code}）${tail.trim() ? `：${tail.trim().split('\n').slice(-3).join(' ')}` : ''}`)
   }
@@ -524,11 +728,15 @@ function writeHotMarker(version, registry) {
   })
 }
 
+/** 配置里的期望端口（重启服务沿用；读不到返回 0，由服务自动分配） */
+function configPort() {
+  try { return Number(require('./store').load().harness.port) || 0 } catch { /* 非 Electron（自测） */ return 0 }
+}
+
 /** 重启 Harness 服务以使用新运行时（端口沿用配置） */
 async function restartService() {
   setInstall({ status: 'restarting' })
-  let port = 0
-  try { port = Number(require('./store').load().harness.port) || 0 } catch { /* 非 Electron（自测） */ }
+  const port = configPort()
   const harnessService = require('./harness-service')
   const snapshot = await harnessService.restart(port ? { port } : {})
   return snapshot
@@ -567,6 +775,9 @@ async function install(opts = {}) {
     const { cli } = await ensureUpdater()
     const proxy = await proxyEnvFor(registry)
     if (proxy.HTTPS_PROXY) log(`npm 走系统代理：${proxy.HTTPS_PROXY}`)
+    // 先解析依赖树并测量下载总量；测量失败只降级进度显示（totalBytes=0），更新照常进行
+    const urls = await analyzeTree({ cli, prefix: path.join(stagingDir(), 'dsh'), version, registry, proxy })
+    setInstall({ totalBytes: urls.length ? await measureTotalBytes(urls) : 0 })
     await installTree({ cli, prefix: path.join(stagingDir(), 'dsh'), version, registry, proxy })
     verifyTree(stagingDir(), version)
 
@@ -583,7 +794,10 @@ async function install(opts = {}) {
 
     if (wasActive) {
       const snapshot = await restartService()
-      if (snapshot.status !== 'running') throw new Error(`新版本服务未能启动：${snapshot.error || snapshot.status}`)
+      if (snapshot.status !== 'running') {
+        // 带上 dsh 的退出输出（detail）：新版本起不来时用户与诊断都需要看见原因
+        throw new Error(`新版本服务未能启动：${snapshot.error || snapshot.status}${snapshot.detail ? `：${String(snapshot.detail).trim().slice(-400)}` : ''}`)
+      }
     }
     if (hadPreviousRuntime) fs.rmSync(backupDir(), { recursive: true, force: true })
     fs.rmSync(stagingDir(), { recursive: true, force: true })
@@ -608,11 +822,12 @@ async function install(opts = {}) {
     }
     writeState({ lastError: `更新失败：${message}` })
     setInstall({ status: 'error', error: message, finishedAt: Date.now() })
-    // 启动阶段失败：服务已停，尽力恢复原运行时并把服务拉起来
+    // 启动阶段失败：服务已停，尽力按原端口恢复原运行时并把服务拉起来
     if (stopBeforeSwap && wasActive) {
       try {
         const harnessService = require('./harness-service')
-        await harnessService.start({ retryOnFail: true })
+        const port = configPort()
+        await harnessService.start({ port, retryOnFail: true })
       } catch { /* 用户可手动重启 */ }
     }
     return { ok: false, error: message }
@@ -635,6 +850,9 @@ module.exports = {
   pickLatestVersion,
   ensureUpdater,
   countPackages,
+  dirSizeBytes,
+  analyzeTree,
+  measureTotalBytes,
   runtimeDir,
   stagingDir,
   backupDir,

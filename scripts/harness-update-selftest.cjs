@@ -12,6 +12,15 @@
  *   U7  随包版本更新时以随包为准（重新解包，热更新标记不再生效）
  *   U8  打补丁失败 / 版本不符时中止更新，且**保留原有运行时**
  *   U9  非随包形态（DSH_RUNTIME_DIR / 开发态源码目录）拒绝热更新
+ *   U12 字节级下载进度（需求「下载总量/当前下载量/下载速度/安装进度」）：
+ *       U12a 依赖分析给出精确总包数（lockfile 解析）
+ *       U12b 下载总量 = tarball content-length 之和（HEAD 逐个测量）
+ *       U12c 已下载字节为 npm 缓存实测增量且 > 0
+ *       U12d 采样到非零下载速度（平滑值）
+ *       U12e 安装阶段广播「已落盘包数 / 总包数」
+ *       U12f 「分析依赖」阶段已广播
+ *       U12g 依赖分析失败时降级为无总量，更新仍完成
+ *       U12h tarball 大小测不到时降级（totalBytes=0），更新仍完成
  *
  * 用法：node scripts/harness-update-selftest.cjs
  */
@@ -55,16 +64,32 @@ const PATCH_POINTS = [
   'options.args), 0, startupInfo, processInfo) === 0',
 ].join('\n')
 
-/** 桩 npm：按 --prefix 造出目标版本依赖树，并打印 http fetch 行以驱动进度计数 */
+/** 桩 npm：分析模式（--package-lock-only）写 lockfile；安装模式造树 + 按节拍向 npm 缓存
+ *  写 tarball 字节（字节轮询实测的对象），节拍与时长由环境变量控制 */
 const STUB_NPM = `#!/usr/bin/env node
 const fs = require('fs')
 const path = require('path')
 const argv = process.argv.slice(2)
 const prefix = argv[argv.indexOf('--prefix') + 1]
+const registry = argv[argv.indexOf('--registry') + 1] || ''
 const spec = String(argv[argv.length - 1] || '')
 const version = spec.split('@').pop()
 const mode = process.env.STUB_NPM_MODE || 'ok'
-for (let i = 0; i < 5; i += 1) console.log('http fetch GET 200 https://registry.example/pkg-' + i)
+const lockOnly = argv.includes('--package-lock-only')
+for (let i = 0; i < 3; i += 1) console.log('http fetch GET 200 https://registry.example/pkg-' + i)
+if (lockOnly) {
+  // 分析失败降级路径：该模式不产出 lockfile（真实 npm 对应解析报错/超时）
+  if (mode === 'skip-lockfile') process.exit(0)
+  const packages = { '': {} }
+  for (let i = 0; i < 8; i += 1) {
+    packages['node_modules/pkg-' + i] = { resolved: registry + '/pkg-' + i + '/-/pkg-' + i + '-1.0.0.tgz' }
+  }
+  // 其他平台的可选二进制：lockfile 会列出但本机不装，不得计入总包数/总量（U12i）
+  packages['node_modules/@esbuild/darwin-arm64'] = { resolved: registry + '/esbuild-darwin/-/esbuild-darwin-arm64-1.0.0.tgz' }
+  packages['node_modules/@img/sharp-linux-x64'] = { resolved: registry + '/sharp-linux/-/sharp-linux-x64-1.0.0.tgz' }
+  fs.writeFileSync(path.join(prefix, 'package-lock.json'), JSON.stringify({ name: 'harness-runtime', lockfileVersion: 3, packages }))
+  process.exit(0)
+}
 const write = (rel, text) => {
   const file = path.join(prefix, rel)
   fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -75,8 +100,18 @@ write('node_modules/@deepseek-ai/dsh/lib/bin.js', '// stub dsh entry\\n')
 // 补丁点失配：写了文件但没有已知的三处创建标志位
 if (mode === 'no-patch-points') write('node_modules/@deepseek-ai/dsh-win32-process/lib/index.js', '// no known create points\\n')
 else write('node_modules/@deepseek-ai/dsh-win32-process/lib/index.js', ${JSON.stringify(PATCH_POINTS)} + '\\n')
-// 真实安装是分钟级：慢一点才能覆盖进度轮询（自测专用）
-setTimeout(() => process.exit(0), Number(process.env.STUB_NPM_MS || 0))
+// 模拟下载节奏：tarball 内容按节拍落入 npm 缓存 content 区（32KB/拍，真实安装是分钟级）
+const cache = process.env.npm_config_cache || ''
+const step = Number(process.env.STUB_CACHE_STEP_MS || 700)
+const total = Number(process.env.STUB_NPM_MS || 0)
+for (let i = 0; i * step < total; i += 1) {
+  setTimeout(() => {
+    const file = path.join(cache, '_cacache', 'content-v2', 'sha512', 'aa', 'bb', 'stub-' + i)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, Buffer.alloc(32768))
+  }, i * step)
+}
+setTimeout(() => process.exit(0), total)
 `
 
 function writeJson(file, value) {
@@ -94,10 +129,25 @@ function writeRuntimeTree(dir, version) {
   return entry
 }
 
-/** 假 registry：只服务 @deepseek-ai/dsh 的 packument（对象或函数，函数用于按状态切换内容） */
+/** 假 registry：@deepseek-ai/dsh 的 packument（对象或函数）+ tarball 大小探测
+ *  （与真实源同形：HEAD 回 content-length，Range GET 回 206 + content-range；
+ *  大小 = 1000×(序号+1)；probeFail 模拟两种探测都不可用 → 总量测量降级） */
 function startRegistry(packument, state) {
   const server = http.createServer((req, res) => {
     state.hits += 1
+    const tarball = req.url.match(/pkg-(\d+)\//)
+    if (tarball && (req.method === 'HEAD' || String(req.headers.range || '').includes('bytes=0-0'))) {
+      if (state.probeFail) { res.writeHead(405); res.end(); return }
+      const size = 1000 * (Number(tarball[1]) + 1)
+      if (req.method === 'HEAD') {
+        res.writeHead(200, { 'content-length': String(size) })
+        res.end()
+        return
+      }
+      res.writeHead(206, { 'content-range': `bytes 0-0/${size}` })
+      res.end('x')
+      return
+    }
     if (state.failWith) {
       res.writeHead(state.failWith, { 'content-type': 'application/json' })
       res.end('{}')
@@ -176,7 +226,7 @@ function startRegistry(packument, state) {
     `${runtimeDir} / ${rt.currentRuntimeVersion()}`)
 
   // ── U2 检查更新 ──
-  const registryState = { hits: 0, failWith: 0 }
+  const registryState = { hits: 0, failWith: 0, probeFail: false }
   const server = await startRegistry(() => (registryState.empty ? {} : PACKUMENT), registryState)
   const registry = `http://127.0.0.1:${server.address().port}`
 
@@ -235,8 +285,8 @@ function startRegistry(packument, state) {
   registryState.empty = false
 
   // ── U5 应用内热更新（桩 npm 造树） ──
-  // 桩 npm 睡够一个进度采样周期，覆盖「下载依赖 → 安装依赖」的阶段广播
-  process.env.STUB_NPM_MS = '2200'
+  // 桩 npm 睡够两个进度采样周期，且按 700ms 节拍写缓存字节，覆盖「下载量/速度」实测链路
+  process.env.STUB_NPM_MS = '4500'
   const result = await update.install({ version: LATEST, registry })
   check('U5a 更新成功', result.ok === true && result.version === LATEST, result.error || '')
   check('U5b 运行时目录已换成新版本',
@@ -247,12 +297,29 @@ function startRegistry(packument, state) {
     hot.dshVersion === LATEST && hot.win32NoWindowPatch === harnessPatch.WIN32_NO_WINDOW_PATCH
     && hot.platform === PLATFORM && hot.arch === ARCH && hot.source === 'registry')
   check('U5d 暂存目录已清理', !fs.existsSync(path.join(root, 'rt-new')))
-  check('U5e 安装进度有阶段广播',
-    ['preparing', 'downloading', 'installing', 'verifying', 'swapping', 'done'].every((s) => events.some((e) => e.install.status === s)),
+  check('U5e 安装进度有阶段广播（含分析依赖）',
+    ['analyzing', 'preparing', 'downloading', 'installing', 'verifying', 'swapping', 'done'].every((s) => events.some((e) => e.install.status === s)),
     [...new Set(events.map((e) => e.install.status))].join(','))
   if (PLATFORM === 'win32') {
     check('U5f 新运行时已带 CREATE_NO_WINDOW 补丁', harnessPatch.isRuntimePatched(cacheDir) === true)
   }
+
+  // ── U12 字节级下载进度（总量 / 已下载 / 速度 / 包数进度） ──
+  check('U12a 依赖分析给出精确总包数（lockfile 解析）',
+    result.install.totalPackages === 8, String(result.install.totalPackages))  // 桩 registry 对 8 个 tarball 报 1000×(序号+1) 字节：总和必须分毫不差
+  check('U12b 下载总量 = tarball content-length 之和',
+    result.install.totalBytes === 36000, String(result.install.totalBytes))
+  check('U12c 已下载字节为 npm 缓存实测增量（>0）',
+    result.install.downloadedBytes > 0, String(result.install.downloadedBytes))
+  check('U12d 采样到非零下载速度（EMA 平滑值）',
+    events.some((e) => e.install.status === 'installing' && e.install.bytesPerSecond > 0))
+  check('U12e 安装阶段广播「已落盘包数 / 总包数」',
+    events.some((e) => e.install.status === 'installing' && e.install.packages > 0 && e.install.totalPackages === 8))
+  check('U12f 「分析依赖」阶段已广播', events.some((e) => e.install.status === 'analyzing'))
+  // 桩 lockfile 里混入了 darwin-arm64 / linux-x64 二进制包：他平台包不进总包数也不进总量
+  check('U12i 其他平台的可选二进制包不计入总包数与总量',
+    result.install.totalPackages === 8 && result.install.totalBytes === 36000,
+    `totalPackages=${result.install.totalPackages} totalBytes=${result.install.totalBytes}`)
 
   // ── U6 热更新运行时优先复用（核心不变量：不能被随包归档覆盖回旧版本） ──
   fs.writeFileSync(path.join(cacheDir, 'sentinel.txt'), 'hot')
@@ -293,6 +360,21 @@ function startRegistry(packument, state) {
     && /合成启动失败/.test(restartFail.error) && rt.installedVersion(cacheDir) === LATEST)
   check('U8g 回滚后旧服务重新启动且备份已归位', oldServiceRestarted
     && !fs.existsSync(path.join(root, 'rt-old')) && !fs.existsSync(path.join(root, 'rt-new')))
+
+  // ── U12g/U12h 降级路径：分析失败 / 总量测量失败都不能阻塞更新本身 ──
+  process.env.STUB_NPM_MODE = 'skip-lockfile'
+  const noAnalyze = await update.install({ version: '0.1.6-stub', registry })
+  check('U12g 依赖分析失败时降级为无总量并完成更新',
+    noAnalyze.ok === true && noAnalyze.install.totalPackages === 0 && noAnalyze.install.totalBytes === 0,
+    noAnalyze.error || `totalPackages=${noAnalyze.install.totalPackages}`)
+  delete process.env.STUB_NPM_MODE
+
+  registryState.probeFail = true
+  const noHead = await update.install({ version: '0.1.6-stub', registry })
+  check('U12h tarball 大小探测不可用时降级（totalBytes=0）且更新成功',
+    noHead.ok === true && noHead.install.totalPackages === 8 && noHead.install.totalBytes === 0,
+    noHead.error || `totalBytes=${noHead.install.totalBytes}`)
+  registryState.probeFail = false
 
   // ── U9 非随包形态拒绝热更新 ──
   const overrideDir = path.join(root, 'override')
