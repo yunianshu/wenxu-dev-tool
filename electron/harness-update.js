@@ -2,8 +2,11 @@
  * DeepSeek Harness 内置运行时更新（版本检查 + 应用内热更新）
  *
  * 需求：监视 @deepseek-ai/dsh 是否有新版本，有新版本时提示用户，并支持在应用内直接升级。
- * 版本口径：**取源上版本号最大的那个，包含预发布版本**（dsh 只发 alpha/rc，
- * dist-tags.latest 常年停在旧版，例如 latest=0.1.5-rc.3 时源上已有 0.1.7-rc.1）。
+ * 版本口径按「更新渠道」区分（dsh 所有版本都带预发布后缀，官方用 dist-tags 区分发布线）：
+ *   stable（正式版）= dist-tags.latest 指向的发布线（官方认定的最新稳定版）；
+ *   alpha           = 源上版本号最大的一个，含预发布（追 alpha 线最前沿）。
+ * 渠道在配置 harness.channel 里切换；当前运行版本高于渠道目标时（如在 alpha 版上切回
+ * 正式版），提供「切换」入口：走同一条安装链路装指定版本（支持降级）。
  *
  * 为什么用「随包 npm」而不是自己写下载器：dsh 依赖树约 600 个包、2.6 万个文件，
  * 版本解析（依赖范围、可选依赖、平台过滤、peer、提升与冲突嵌套）是 npm 的活。
@@ -33,6 +36,9 @@ const { isValidVersion, isNewer, compareVersions } = require('./version-compare'
 /** dsh 包名与默认源（源可在配置里改：公司内网镜像） */
 const PACKAGE = '@deepseek-ai/dsh'
 const DEFAULT_REGISTRY = 'https://registry.npmjs.org'
+/** 更新渠道：stable=正式版（跟随 dist-tags.latest）；alpha=版本号最大者（含预发布） */
+const CHANNELS = ['stable', 'alpha']
+const DEFAULT_CHANNEL = 'stable'
 /** 自动检查间隔：6 小时（手动「检查更新」不受限制） */
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 /** 检查口径标记：口径本身变化时（如从只认 dist-tags.latest 改为含预发布的最新版），
@@ -168,15 +174,19 @@ function updateGuard() {
 function status() {
   const current = harnessRuntime.currentRuntimeVersion()
   const latest = String(readState().latestVersion || '')
+  const channel = effectiveChannel()
   const guard = updateGuard()
   const install = runtime.install
   return {
     ok: true,
     checking: runtime.checking,
+    channel,
     current,
     latest,
     // 只在两边都是合法版本时判断，脏值（如手改的标记文件）宁可漏报
     updateAvailable: isValidVersion(latest) && isValidVersion(current) && isNewer(latest, current),
+    // 渠道目标低于当前版本（如 alpha 版上切回正式版）：提供「切换」入口（降级安装）
+    switchAvailable: isValidVersion(latest) && isValidVersion(current) && compareVersions(latest, current) < 0,
     canUpdate: guard.ok,
     reason: guard.reason,
     checkedAt: Number(readState().lastCheckAt || 0),
@@ -313,11 +323,44 @@ function pickLatestVersion(packument) {
   return best
 }
 
-/** 查询源上的最新版本（scoped 包名需转义斜杠） */
-async function fetchLatest(registry) {
+/**
+ * 按渠道挑目标版本：
+ *   stable（正式版）= dist-tags.latest（官方发布线；个别源的 latest 缺失或指向脏值时
+ *     回退到全集最大版，正式渠道不至于完全失明）
+ *   alpha = 全集版本号最大者（含预发布，即 pickLatestVersion 原口径）
+ */
+function pickChannelVersion(packument, channel) {
+  if (channel !== 'alpha') {
+    const tagged = String(((packument || {})['dist-tags'] || {}).latest || '').trim().replace(/^v/, '')
+    if (isValidVersion(tagged)) return tagged
+  }
+  return pickLatestVersion(packument)
+}
+
+function normalizeChannel(value) {
+  const text = String(value == null ? '' : value).trim()
+  return CHANNELS.includes(text) ? text : ''
+}
+
+/** 配置里的更新渠道（配置读取依赖 Electron，故懒加载；读不到按默认渠道） */
+function configChannel() {
+  try {
+    const store = require('./store')
+    const cfg = store.load()
+    return normalizeChannel(cfg.harness && cfg.harness.channel) || DEFAULT_CHANNEL
+  } catch { return DEFAULT_CHANNEL }
+}
+
+/** 本次生效渠道：显式参数 > 配置（用户意图） */
+function effectiveChannel(override) {
+  return normalizeChannel(override) || configChannel()
+}
+
+/** 查询源上指定渠道的目标版本（scoped 包名需转义斜杠） */
+async function fetchLatest(registry, channel) {
   const url = `${registry}/${PACKAGE.replace('/', '%2f')}`
   const packument = await httpJson(url)
-  const latest = pickLatestVersion(packument)
+  const latest = pickChannelVersion(packument, effectiveChannel(channel))
   if (!isValidVersion(latest)) throw new Error('源上未找到有效的版本号')
   return { latest, distTags: packument['dist-tags'] || {} }
 }
@@ -329,30 +372,35 @@ async function fetchLatest(registry) {
 async function check(opts = {}) {
   if (runtime.install.status !== 'idle' && !['done', 'error'].includes(runtime.install.status)) return status()
   const state = readState()
-  // 口径变化时忽略节流：只查一次就写回新口径，之后恢复正常 6 小时节流
+  const channel = effectiveChannel(opts.channel)
+  // 口径/渠道变化时忽略节流：只查一次就写回新口径，之后恢复正常 6 小时节流
   const policyStale = state.checkPolicy !== CHECK_POLICY
-  if (!opts.force && !policyStale && Date.now() - Number(state.lastCheckAt || 0) < CHECK_INTERVAL_MS) return status()
+  const channelStale = state.channel !== channel
+  if (!opts.force && !policyStale && !channelStale && Date.now() - Number(state.lastCheckAt || 0) < CHECK_INTERVAL_MS) return status()
 
   runtime.checking = true
   emit()
   try {
     const registry = registryUrl(opts.registry)
-    const { latest } = await fetchLatest(registry)
+    const { latest } = await fetchLatest(registry, channel)
     const current = harnessRuntime.currentRuntimeVersion()
     const updateAvailable = isValidVersion(current) && isNewer(latest, current)
-    // 同一个新版本只提示一次（用户可能反复启动应用）
+    // 同一个新版本只提示一次；渠道变化时重置提示记账，让新渠道的结论能再提示一次
     const notify = updateAvailable && state.notifiedVersion !== latest
     writeState({
       lastCheckAt: Date.now(),
       checkPolicy: CHECK_POLICY,
+      channel,
       latestVersion: latest,
       registry,
       lastError: '',
+      ...(channelStale ? { notifiedVersion: '' } : {}),
       ...(notify ? { notifiedVersion: latest } : {}),
     })
     runtime.checking = false
-    log(`检查更新：本地 ${current || '未知'}，源上 ${latest}${updateAvailable ? '（有新版本）' : ''}`)
-    return emit({ notify })
+    log(`检查更新（${channel}）：本地 ${current || '未知'}，源上 ${latest}${updateAvailable ? '（有新版本）' : ''}`)
+    // 广播带上本次实际渠道（status() 只看配置，显式按渠道检查时两者可能不同）
+    return emit({ notify, channel })
   } catch (err) {
     const message = (err && err.message) || String(err)
     runtime.checking = false
@@ -754,11 +802,12 @@ async function install(opts = {}) {
   if (!guard.ok) return { ok: false, error: guard.reason }
 
   const registry = registryUrl(opts.registry)
+  const channel = effectiveChannel(opts.channel)
   let version = String(opts.version || readState().latestVersion || '').trim().replace(/^v/, '')
   if (!isValidVersion(version)) {
-    // 未指定版本（或记录已失效）时现查一次源
+    // 未指定版本（或记录已失效）时现查一次源（按当前渠道）
     try {
-      version = (await fetchLatest(registry)).latest
+      version = (await fetchLatest(registry, channel)).latest
     } catch (err) {
       return { ok: false, error: `无法确定要安装的版本：${(err && err.message) || String(err)}` }
     }
@@ -801,7 +850,7 @@ async function install(opts = {}) {
     }
     if (hadPreviousRuntime) fs.rmSync(backupDir(), { recursive: true, force: true })
     fs.rmSync(stagingDir(), { recursive: true, force: true })
-    writeState({ latestVersion: version, lastError: '', lastInstalledAt: Date.now() })
+    writeState({ latestVersion: version, channel, lastError: '', lastInstalledAt: Date.now() })
     // 统计的是 <runtime>/dsh 下的 node_modules（与安装 prefix 同级），不是 runtime 根
     setInstall({ status: 'done', packages: countPackages(path.join(runtimeDir(), 'dsh')), finishedAt: Date.now() })
     log(`热更新完成：dsh ${version}`)
@@ -848,6 +897,9 @@ module.exports = {
   registryUrl,
   fetchLatest,
   pickLatestVersion,
+  pickChannelVersion,
+  effectiveChannel,
+  DEFAULT_CHANNEL,
   ensureUpdater,
   countPackages,
   dirSizeBytes,

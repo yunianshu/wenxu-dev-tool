@@ -79,9 +79,11 @@ export const state = reactive({
   /** 内置 Harness 运行时更新：dsh 新版本提示与应用内热更新进度 */
   harnessUpdate: {
     checking: false,
+    channel: 'stable',     // 更新渠道：stable=正式版 / alpha=最新预发布
     current: '',            // 当前运行时的 dsh 版本
-    latest: '',             // 源上的最新版本
+    latest: '',             // 当前渠道在源上的目标版本
     updateAvailable: false,
+    switchAvailable: false, // 渠道目标低于当前版本（如 alpha 版切回正式版）：可降级切换
     canUpdate: false,       // 当前形态是否允许热更新（开发态/自定义运行时目录不允许）
     reason: '',             // 不允许时的原因
     error: '',

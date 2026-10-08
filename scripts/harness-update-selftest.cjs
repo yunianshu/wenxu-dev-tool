@@ -12,6 +12,11 @@
  *   U7  随包版本更新时以随包为准（重新解包，热更新标记不再生效）
  *   U8  打补丁失败 / 版本不符时中止更新，且**保留原有运行时**
  *   U9  非随包形态（DSH_RUNTIME_DIR / 开发态源码目录）拒绝热更新
+ *   U13 更新渠道（stable=正式版 / alpha=预发布）：
+ *       U13a stable 目标 = dist-tags.latest；alpha 目标 = 全集版本号最大者（含预发布）
+ *       U13b 渠道变化忽略 6 小时节流立即重查；切渠道后的新结论重新提示一次
+ *       U13c 当前版本高于渠道目标（alpha 版上切回正式版）→ switchAvailable
+ *       U13d 「切换」走同一条安装链路：装渠道目标版本（降级）成功
  *   U12 字节级下载进度（需求「下载总量/当前下载量/下载速度/安装进度」）：
  *       U12a 依赖分析给出精确总包数（lockfile 解析）
  *       U12b 下载总量 = tarball content-length 之和（HEAD 逐个测量）
@@ -208,7 +213,7 @@ function startRegistry(packument, state) {
   check('U1c 同版本不算更新 / 旧版本不算更新',
     isNewer('0.1.5-alpha.1', '0.1.5-alpha.1') === false
     && isNewer('0.1.5-alpha.1', '0.1.5-rc.1') === false)
-  // 需求口径：升级要定位到「源上最新」，预发布版本也算——不能停在落后的 dist-tags.latest
+  // alpha 渠道口径：追「源上最大版本」，预发布也算——不能停在落后的 dist-tags.latest
   check('U1d 最新版本取含预发布的版本号最大者（忽略落后的 latest tag）',
     update.pickLatestVersion(PACKUMENT) === LATEST
     && update.pickLatestVersion(PACKUMENT) !== LATEST_TAG)
@@ -225,7 +230,7 @@ function startRegistry(packument, state) {
   check('U0 随包运行时已解包（前置）', runtimeDir === cacheDir && rt.currentRuntimeVersion() === SHIPPED,
     `${runtimeDir} / ${rt.currentRuntimeVersion()}`)
 
-  // ── U2 检查更新 ──
+  // ── U2 检查更新（默认渠道 stable：目标 = dist-tags.latest） ──
   const registryState = { hits: 0, failWith: 0, probeFail: false }
   const server = await startRegistry(() => (registryState.empty ? {} : PACKUMENT), registryState)
   const registry = `http://127.0.0.1:${server.address().port}`
@@ -234,20 +239,29 @@ function startRegistry(packument, state) {
   update.setEmitter((payload) => events.push(payload))
 
   const first = await update.check({ force: true, registry })
-  check(`U2a 发现新版本（${SHIPPED} → ${LATEST}，非落后的 ${LATEST_TAG}）`,
-    first.updateAvailable === true && first.latest === LATEST && first.current === SHIPPED,
-    `${first.current} → ${first.latest}`)
+  check(`U2a 正式渠道发现新版本（${SHIPPED} → ${LATEST_TAG}）`,
+    first.updateAvailable === true && first.latest === LATEST_TAG && first.current === SHIPPED
+    && first.channel === 'stable',
+    `${first.current} → ${first.latest}（${first.channel}）`)
   check('U2b 首次发现新版本时要求提示（notify=true）', events.some((e) => e.notify === true))
   check('U2c 检查结果落盘（下次启动仍能提示）',
-    JSON.parse(fs.readFileSync(path.join(root, 'harness-update.json'), 'utf8')).latestVersion === LATEST)
+    JSON.parse(fs.readFileSync(path.join(root, 'harness-update.json'), 'utf8')).latestVersion === LATEST_TAG)
+
+  // ── U13a/b alpha 渠道：目标 = 全集版本号最大者（含预发布） ──
+  events.length = 0
+  const alphaCheck = await update.check({ force: true, registry, channel: 'alpha' })
+  check(`U13a alpha 渠道目标为最大版本（${LATEST}，非落后的 ${LATEST_TAG}）`,
+    alphaCheck.latest === LATEST && alphaCheck.channel === 'alpha' && alphaCheck.updateAvailable === true,
+    `${alphaCheck.latest}（${alphaCheck.channel}）`)
+  check('U13b 渠道变化后的新结论重新提示一次（notify=true）', events.some((e) => e.notify === true))
 
   // ── U3 节流与去重提示 ──
   const hitsAfterFirst = registryState.hits
-  const second = await update.check({ registry }) // 未 force：6 小时内不再查询
+  const second = await update.check({ registry, channel: 'alpha' }) // 未 force：6 小时内不再查询
   check('U3a 未到期不重复查询', registryState.hits === hitsAfterFirst && second.latest === LATEST,
     `hits=${registryState.hits}`)
   events.length = 0
-  await update.check({ force: true, registry })
+  await update.check({ force: true, registry, channel: 'alpha' })
   check('U3b 同一新版本不重复提示', !events.some((e) => e.notify === true))
 
   // 旧版本应用留下的状态里没有检查口径标记：升级后必须立即按新口径重查一次，
@@ -258,11 +272,19 @@ function startRegistry(packument, state) {
   staleState.lastCheckAt = Date.now()
   fs.writeFileSync(statePath, JSON.stringify(staleState))
   const hitsBeforePolicyChange = registryState.hits
-  const repolicy = await update.check({ registry })
+  const repolicy = await update.check({ registry, channel: 'alpha' })
   check('U3c 检查口径变化后忽略节流重查',
     registryState.hits > hitsBeforePolicyChange && repolicy.latest === LATEST
     && JSON.parse(fs.readFileSync(statePath, 'utf8')).checkPolicy === update.CHECK_POLICY,
     `hits=${registryState.hits}`)
+
+  // ── U13c 渠道变化忽略节流（切回 stable 立即重查，不等 6 小时） ──
+  const hitsBeforeChannelChange = registryState.hits
+  const backToStable = await update.check({ registry }) // 未 force，且刚查过：仅因渠道变化重查
+  check('U13c 渠道变化后忽略节流重查',
+    registryState.hits > hitsBeforeChannelChange && backToStable.latest === LATEST_TAG
+    && JSON.parse(fs.readFileSync(statePath, 'utf8')).channel === 'stable',
+    `hits=${registryState.hits} / ${backToStable.latest}`)
 
   // ── U4 源不可用 ──
   const checkedAtBeforeFail = JSON.parse(fs.readFileSync(path.join(root, 'harness-update.json'), 'utf8')).lastCheckAt
@@ -281,7 +303,7 @@ function startRegistry(packument, state) {
   registryState.empty = true
   const emptyCheck = await update.check({ force: true, registry })
   check('U4c 源上没有有效版本号时如实记录错误（保留上次结论）',
-    /未找到有效的版本号/.test(emptyCheck.error) && emptyCheck.latest === LATEST, emptyCheck.error)
+    /未找到有效的版本号/.test(emptyCheck.error) && emptyCheck.latest === LATEST_TAG, emptyCheck.error)
   registryState.empty = false
 
   // ── U5 应用内热更新（桩 npm 造树） ──
@@ -386,6 +408,17 @@ function startRegistry(packument, state) {
     guardStatus.canUpdate === false && refused.ok === false && /DSH_RUNTIME_DIR/.test(refused.error),
     refused.error)
   delete process.env.DSH_RUNTIME_DIR
+
+  // ── U13d/e 渠道切换：运行时版本高于正式渠道目标 → 切换入口 → 降级安装 ──
+  const switchCheck = await update.check({ force: true, registry })
+  check(`U13d 当前版本高于正式渠道目标（${LATEST_TAG}）时提供切换入口`,
+    switchCheck.channel === 'stable' && switchCheck.latest === LATEST_TAG
+    && switchCheck.updateAvailable === false && switchCheck.switchAvailable === true,
+    `${switchCheck.current} → ${switchCheck.latest}`)
+  const switched = await update.install({ registry }) // 不指定版本：装当前渠道目标（降级）
+  check('U13e 切换走同一条安装链路装渠道目标版本（降级成功）',
+    switched.ok === true && switched.version === LATEST_TAG && rt.currentRuntimeVersion() === LATEST_TAG,
+    switched.error || rt.currentRuntimeVersion())
 
   // ── U7 随包版本更新时以随包为准 ──
   writeJson(path.join(resDir, 'harness-runtime.json'), { ...shippedMarker, dshVersion: '9.9.9' })

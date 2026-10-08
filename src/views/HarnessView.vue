@@ -18,6 +18,10 @@
           <el-button v-else-if="updateAvailable && updateCanUpdate" type="primary" plain @click="promptUpdate">
             <el-icon><Download /></el-icon>更新到 {{ updateLatest }}
           </el-button>
+          <!-- 渠道切换：当前版本高于渠道目标（如 alpha 版上切回正式版）→ 降级安装 -->
+          <el-button v-else-if="updateSwitch && updateCanUpdate" plain @click="promptUpdate">
+            <el-icon><Sort /></el-icon>切换到{{ channelLabel }} {{ updateLatest }}
+          </el-button>
           <el-button v-if="running" @click="openExternal"><el-icon><TopRight /></el-icon>浏览器打开</el-button>
           <el-button v-if="running" @click="reload"><el-icon><Refresh /></el-icon>刷新</el-button>
           <el-button v-if="running" :loading="busy" @click="restart"><el-icon><RefreshRight /></el-icon>重启服务</el-button>
@@ -124,6 +128,13 @@
           <div v-else-if="updateReason" class="harness-hint">{{ updateReason }}</div>
           <div v-else-if="updateError" class="harness-hint">{{ updateError }}</div>
         </el-form-item>
+        <el-form-item label="更新渠道">
+          <el-radio-group v-model="channelInput">
+            <el-radio-button value="stable">正式版</el-radio-button>
+            <el-radio-button value="alpha">Alpha</el-radio-button>
+          </el-radio-group>
+          <div class="harness-hint">正式版跟随官方发布线；Alpha 第一时间追新版本（含预发布）。</div>
+        </el-form-item>
         <el-form-item label="监听端口">
           <el-input-number v-model="portInput" :min="1024" :max="65535" :step="1" controls-position="right" />
           <div class="harness-hint">端口被占用时会自动改用系统分配的空闲端口。</div>
@@ -171,6 +182,8 @@ let overlayStop = null
 const settingsVisible = ref(false)
 const portInput = ref(3080)
 const autoStartInput = ref(true)
+/** 更新渠道（stable=正式版 / alpha）：随「保存」落配置并立即按新渠道复查 */
+const channelInput = ref('stable')
 /** webview 加载失败浮层（仅 running 状态；非 running 由占位层展示 snapshot.error） */
 const loadFailed = ref(false)
 const loadFailText = ref('')
@@ -207,6 +220,9 @@ const updateChecking = computed(() => state.harnessUpdate.checking === true)
 const updateCurrent = computed(() => state.harnessUpdate.current || snapshot.value.dshVersion || '')
 const updateLatest = computed(() => state.harnessUpdate.latest || '')
 const updateAvailable = computed(() => state.harnessUpdate.updateAvailable === true)
+/** 渠道目标低于当前版本（如在 alpha 版上切回正式版）：提供「切换」入口（降级安装） */
+const updateSwitch = computed(() => state.harnessUpdate.switchAvailable === true)
+const channelLabel = computed(() => (state.harnessUpdate.channel === 'alpha' ? 'Alpha 版' : '正式版'))
 /** canUpdate=false（开发态/自定义运行时目录）时不提供更新入口 */
 const updateCanUpdate = computed(() => state.harnessUpdate.canUpdate !== false)
 const updateReason = computed(() => state.harnessUpdate.reason || '')
@@ -462,7 +478,9 @@ function onNavigated() {
 
 async function saveSettings() {
   const port = Math.min(65535, Math.max(1024, Number(portInput.value) || 3080))
-  state.config.harness = { ...(state.config.harness || {}), port, autoStart: !!autoStartInput.value }
+  const channel = channelInput.value === 'alpha' ? 'alpha' : 'stable'
+  const channelChanged = channel !== (state.config.harness?.channel || 'stable')
+  state.config.harness = { ...(state.config.harness || {}), port, autoStart: !!autoStartInput.value, channel }
   try {
     const r = await window.gitReport.configSave(toPlain(state.config))
     if (r && r.ok === false) {
@@ -475,46 +493,54 @@ async function saveSettings() {
   }
   settingsVisible.value = false
   ElMessage.success('已保存，重启服务后生效')
+  // 渠道变了：立即按新渠道复查一次，让「更新/切换」入口跟上（主进程对渠道变化不节流）
+  if (channelChanged) await checkUpdate(true)
 }
 
-/** 手动检查内置运行时新版本（主进程按 6 小时节流，手动检查不受限） */
-async function checkUpdate() {
+/** 手动检查内置运行时新版本（主进程按 6 小时节流，手动检查不受限）；
+ *  silent=渠道切换后的自动复查：不弹结论提示，只刷新顶栏入口 */
+async function checkUpdate(silent = false) {
   try {
     const result = await window.gitReport.harnessUpdateCheck()
-    if (result && result.ok === false) {
+    if (!silent && result && result.ok === false) {
       ElMessage.error(result.error || '检查更新失败')
       return
     }
     // 检查失败（源不可达等）时 status 里带 error，不能误报「已是最新版本」
-    if (result && result.error) {
+    if (!silent && result && result.error) {
       ElMessage.error(result.error)
       return
     }
-    if (result && result.updateAvailable) ElMessage.success(`有新版本 ${result.latest}`)
-    else ElMessage.success('已是最新版本')
+    if (!silent) {
+      if (result && result.updateAvailable) ElMessage.success(`有新版本 ${result.latest}`)
+      else ElMessage.success('已是最新版本')
+    }
   } catch (err) {
-    ElMessage.error(err?.message || '检查更新失败')
+    if (!silent) ElMessage.error(err?.message || '检查更新失败')
   }
 }
 
-/** 应用内热更新：确认后由主进程安装新版本并重启服务（进度经广播回写 store） */
+/** 应用内热更新：确认后由主进程安装新版本并重启服务（进度经广播回写 store）。
+ *  降级切换（渠道目标低于当前版本）走同一条安装链路，只换确认文案 */
 async function promptUpdate() {
   const latest = updateLatest.value
   const current = updateCurrent.value
+  const switching = updateSwitch.value && !updateAvailable.value
+  const action = switching ? `将切换到${channelLabel.value} ${latest}（当前 ${current || '未知'}，版本会回退）` : `当前 ${current || '未知'}，将更新到 ${latest}`
   try {
     await ElMessageBox.confirm(
-      `当前 ${current || '未知'}，将更新到 ${latest}。更新期间服务会重启一次，约 1～5 分钟。`,
-      '更新 DeepSeek Harness',
-      { type: 'warning', confirmButtonText: '开始更新', cancelButtonText: '取消' },
+      `${action}。更新期间服务会重启一次，约 1～5 分钟。`,
+      switching ? `切换到${channelLabel.value}` : '更新 DeepSeek Harness',
+      { type: 'warning', confirmButtonText: switching ? '开始切换' : '开始更新', cancelButtonText: '取消' },
     )
   } catch { return /* 用户取消 */ }
   updateBusy.value = true
   try {
     const result = await window.gitReport.harnessUpdateInstall({ version: latest })
-    if (result && result.ok === false) ElMessage.error(result.error || '更新失败')
-    else ElMessage.success(`已更新到 ${(result && result.version) || latest}`)
+    if (result && result.ok === false) ElMessage.error(result.error || (switching ? '切换失败' : '更新失败'))
+    else ElMessage.success(switching ? `已切换到 ${(result && result.version) || latest}` : `已更新到 ${(result && result.version) || latest}`)
   } catch (err) {
-    ElMessage.error(err?.message || '更新失败')
+    ElMessage.error(err?.message || (switching ? '切换失败' : '更新失败'))
   } finally {
     updateBusy.value = false
   }
@@ -541,6 +567,7 @@ onMounted(async () => {
   if (!running.value && !starting.value && installed.value) start()
   portInput.value = Number(state.config.harness?.port) || 3080
   autoStartInput.value = state.config.harness?.autoStart !== false
+  channelInput.value = state.config.harness?.channel === 'alpha' ? 'alpha' : 'stable'
   window.addEventListener('keydown', onKeydown)
   // 上次退出时处于全屏 → 进入本视图即恢复铺满
   if (state.config.harness?.fullscreen === true) enterFullscreen()

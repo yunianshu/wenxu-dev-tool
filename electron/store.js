@@ -63,9 +63,10 @@ const DEFAULTS = {
   },
   // 内置 DeepSeek Harness（dsh web 本地服务）：启动应用时自动拉起，关闭应用时一并关闭
   harness: {
-    port: 3080,       // 期望端口；被占用时自动改用系统分配的空闲端口
-    autoStart: true,  // 随应用启动自动开启
-    registry: '',     // 内置 dsh 运行时更新的 npm 源；空=官方源（registry.npmjs.org），可换内网镜像
+    port: 3080,          // 期望端口；被占用时自动改用系统分配的空闲端口
+    autoStart: true,     // 随应用启动自动开启
+    registry: '',        // 内置 dsh 运行时更新的 npm 源；空=官方源（registry.npmjs.org），可换内网镜像
+    channel: 'stable',   // 更新渠道：stable=正式版（dist-tags.latest 发布线）/ alpha=最新预发布
   },
   // 关闭窗口行为：ask=每次询问（默认按钮是最小化到托盘）/ minimize=直接最小化 / quit=直接退出
   closeAction: 'ask',
@@ -150,6 +151,8 @@ function load() {
     cfg.hanprint.pwdMasked = hpPwd ? maskKey(hpPwd) : ''
     delete cfg.hanprint.pwdEnc
     cfg.harness = { ...DEFAULTS.harness, ...(cfg.harness || {}) }
+    // 更新渠道：脏值回落正式版
+    if (cfg.harness.channel !== 'alpha') cfg.harness.channel = DEFAULTS.harness.channel
     // 关闭行为偏好：历史配置缺失或脏值回落「每次询问」
     if (!['ask', 'minimize', 'quit'].includes(cfg.closeAction)) cfg.closeAction = DEFAULTS.closeAction
     return cfg
