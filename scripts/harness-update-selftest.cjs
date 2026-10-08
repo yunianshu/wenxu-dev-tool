@@ -319,8 +319,8 @@ function startRegistry(packument, state) {
     hot.dshVersion === LATEST && hot.win32NoWindowPatch === harnessPatch.WIN32_NO_WINDOW_PATCH
     && hot.platform === PLATFORM && hot.arch === ARCH && hot.source === 'registry')
   check('U5d 暂存目录已清理', !fs.existsSync(path.join(root, 'rt-new')))
-  check('U5e 安装进度有阶段广播（含分析依赖）',
-    ['analyzing', 'preparing', 'downloading', 'installing', 'verifying', 'swapping', 'done'].every((s) => events.some((e) => e.install.status === s)),
+  check('U5e 安装进度有阶段广播（含分析依赖/测量总量）',
+    ['analyzing', 'preparing', 'measuring', 'downloading', 'installing', 'verifying', 'swapping', 'done'].every((s) => events.some((e) => e.install.status === s)),
     [...new Set(events.map((e) => e.install.status))].join(','))
   if (PLATFORM === 'win32') {
     check('U5f 新运行时已带 CREATE_NO_WINDOW 补丁', harnessPatch.isRuntimePatched(cacheDir) === true)

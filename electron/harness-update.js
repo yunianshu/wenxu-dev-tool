@@ -65,6 +65,19 @@ const STALL_LIMIT_MS = 5 * 60 * 1000
 let emitter = () => {}
 /** 运行期状态（不落盘的部分）：检查中 / 安装进度 */
 let runtime = { checking: false, install: idleInstall() }
+/** 安装心跳：分析/测总量这类无产出的静默阶段也要每 2 秒广播一次状态，
+ *  让界面上的耗时持续走动——否则几分钟后用户无从分辨「在跑」还是「卡死」 */
+let heartbeat = null
+
+function startHeartbeat() {
+  stopHeartbeat()
+  heartbeat = setInterval(() => { if (runtime.install.status !== 'idle') emit() }, 2000)
+  if (heartbeat.unref) heartbeat.unref()
+}
+
+function stopHeartbeat() {
+  if (heartbeat) { clearInterval(heartbeat); heartbeat = null }
+}
 
 function idleInstall() {
   return {
@@ -814,6 +827,7 @@ async function install(opts = {}) {
   }
 
   runtime.install = { ...idleInstall(), status: 'preparing', version, startedAt: Date.now() }
+  startHeartbeat()
   emit()
   log(`开始热更新：${PACKAGE}@${version}（源 ${registry}）`)
   let stopBeforeSwap = false
@@ -826,6 +840,7 @@ async function install(opts = {}) {
     if (proxy.HTTPS_PROXY) log(`npm 走系统代理：${proxy.HTTPS_PROXY}`)
     // 先解析依赖树并测量下载总量；测量失败只降级进度显示（totalBytes=0），更新照常进行
     const urls = await analyzeTree({ cli, prefix: path.join(stagingDir(), 'dsh'), version, registry, proxy })
+    setInstall({ status: 'measuring' })
     setInstall({ totalBytes: urls.length ? await measureTotalBytes(urls) : 0 })
     await installTree({ cli, prefix: path.join(stagingDir(), 'dsh'), version, registry, proxy })
     verifyTree(stagingDir(), version)
@@ -853,6 +868,7 @@ async function install(opts = {}) {
     writeState({ latestVersion: version, channel, lastError: '', lastInstalledAt: Date.now() })
     // 统计的是 <runtime>/dsh 下的 node_modules（与安装 prefix 同级），不是 runtime 根
     setInstall({ status: 'done', packages: countPackages(path.join(runtimeDir(), 'dsh')), finishedAt: Date.now() })
+    stopHeartbeat()
     log(`热更新完成：dsh ${version}`)
     return { ok: true, version, ...status() }
   } catch (err) {
@@ -871,6 +887,7 @@ async function install(opts = {}) {
     }
     writeState({ lastError: `更新失败：${message}` })
     setInstall({ status: 'error', error: message, finishedAt: Date.now() })
+    stopHeartbeat()
     // 启动阶段失败：服务已停，尽力按原端口恢复原运行时并把服务拉起来
     if (stopBeforeSwap && wasActive) {
       try {
@@ -885,6 +902,7 @@ async function install(opts = {}) {
 
 /** 供自测把状态复位（避免套件间互相影响） */
 function resetForTest() {
+  stopHeartbeat()
   runtime = { checking: false, install: idleInstall() }
 }
 

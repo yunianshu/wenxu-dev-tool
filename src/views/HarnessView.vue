@@ -229,7 +229,7 @@ const updateReason = computed(() => state.harnessUpdate.reason || '')
 const updateError = computed(() => state.harnessUpdate.error || '')
 /** 安装阶段文案：只给标签与数值（安装可达分钟级，转圈不够） */
 const UPDATE_STAGE_TEXT = {
-  analyzing: '分析依赖', preparing: '准备组件', downloading: '下载依赖', installing: '安装依赖',
+  analyzing: '分析依赖', preparing: '准备组件', measuring: '测量下载总量', downloading: '下载依赖', installing: '安装依赖',
   verifying: '校验', swapping: '切换运行时', restarting: '重启服务',
 }
 /** 字节数人性化：下载量/速度都在 MB 量级，小于 1 MB 降级 KB/B */
