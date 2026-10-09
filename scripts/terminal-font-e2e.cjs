@@ -93,16 +93,21 @@ const HELPERS = `
       && value.panes.every((p) => p.family && (!family || p.family.includes(family)) && (!size || p.size === size))
       ? value : null
   }, '终端窗格 ' + count + ' / ' + (family || '默认字体') + ' / ' + (size || '任意字号'))
+  /** 当前选中项：横向字体项通过 aria-checked 暴露选中状态 */
+  const activeFamily = (control) => control.querySelector('.terminal-font-option[aria-checked="true"]')?.textContent.trim() || ''
+  const activeCount = (control) => control.querySelectorAll('.terminal-font-option[aria-checked="true"]').length
+  /** 预设字体直接点列表项；列表外的字体走「自定义」项输入 */
   const selectFamily = async (control, name) => {
-    const select = control.querySelector('.terminal-font-family')
-    click(select?.querySelector('.el-select__wrapper'), '字体选择框')
-    const input = select?.querySelector('input')
-    if (!input) throw new Error('字体选择框缺少可编辑输入')
-    input.focus()
-    input.value = name
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    const option = await waitFor(() => findText('.el-select-dropdown__item', name), '字体选项 ' + name)
-    click(option, '字体选项 ' + name)
+    const option = findText('.terminal-font-option', name, control)
+    if (option) click(option, '字体项 ' + name)
+    else {
+      click(findText('.terminal-font-option', '自定义', control), '自定义字体项')
+      const input = await waitFor(() => control.querySelector('.terminal-font-custom input'), '自定义字体输入框')
+      input.focus()
+      input.value = name
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }))
+    }
     await waitFor(async () => (await window.gitReport.uiPrefsLoad()).terminalFontFamily === name, '字体偏好保存')
   }
   const stepSize = async (control) => {
@@ -119,7 +124,7 @@ const HELPERS = `
   /** 打开字体设置：唯一入口是「设置 → 界面」 */
   const openFonts = async () => {
     await navigate('设置')
-    click(findText('.settings-sections .el-segmented__item', '界面'), '界面设置分区')
+    click(findText('.settings-sections [role="tab"]', '界面'), '界面设置分区')
     return waitFor(() => [...document.querySelectorAll('.settings-ui .terminal-font-settings')].find(visible), '设置页字体组件')
   }
   /** 关掉字体设置 = 切回终端工作台（窗格在那里重新挂载） */
@@ -143,7 +148,14 @@ function probe(body) {
 const FIRST = probe(`
   result.before = await ready(1, '', 13)
   let control = await openFonts()
+  result.list = {
+    options: control.querySelectorAll('.terminal-font-option').length,
+    hasSelect: !!control.querySelector('.el-select'),
+    selected: activeFamily(control),
+    activeCount: activeCount(control),
+  }
   await selectFamily(control, ${JSON.stringify(PRESET)})
+  result.presetSelected = { label: activeFamily(control), activeCount: activeCount(control) }
   await closeFonts()
   result.preset = await ready(1, ${JSON.stringify(PRESET)}, 13)
 
@@ -163,11 +175,12 @@ const FIRST = probe(`
   result.added = await ready(2, ${JSON.stringify(CUSTOM)}, firstSize)
 
   await navigate('设置')
-  click(await waitFor(() => findText('.settings-sections .el-segmented__item', '界面'), '界面设置分区'), '界面设置分区')
+  click(await waitFor(() => findText('.settings-sections [role="tab"]', '界面'), '界面设置分区'), '界面设置分区')
   control = await waitFor(() => [...document.querySelectorAll('.settings-ui .terminal-font-settings')].find(visible), '设置页字体组件')
   result.settings = {
     size: Number(control.querySelector('.font-size-value')?.textContent),
-    family: control.querySelector('.terminal-font-family')?.textContent.trim() || '',
+    family: activeFamily(control),
+    activeCount: activeCount(control),
   }
   const secondSize = await stepSize(control)
   await closeFonts()
@@ -179,14 +192,16 @@ const SECOND = probe(`
   const control = await openFonts()
   result.settingsBeforeReset = {
     size: Number(control.querySelector('.font-size-value')?.textContent),
-    family: control.querySelector('.terminal-font-family')?.textContent.trim() || '',
+    family: activeFamily(control),
+    activeCount: activeCount(control),
   }
   click(findText('button', '恢复默认', control), '恢复默认')
   await waitFor(async () => {
     const prefs = await window.gitReport.uiPrefsLoad()
     return prefs.terminalFontFamily === '' && prefs.terminalFontSize === 13
   }, '默认字体与字号保存')
-  result.resetLabel = control.querySelector('.terminal-font-family')?.textContent.trim() || ''
+  result.resetLabel = activeFamily(control)
+  result.resetActiveCount = activeCount(control)
   await closeFonts()
   result.reset = await ready(2, '', 13)
 `)
@@ -252,6 +267,9 @@ async function main() {
   console.log('[1/2] 设置页改字体、终端页生效、新窗格继承')
   const first = await startInstance(FIRST, CAPTURE)
   check('默认字体与字号可渲染', first.before.panes[0].size === 13 && !!first.before.panes[0].family)
+  check('字体项为横向列表且不再有下拉框', first.list.options >= 12 && first.list.hasSelect === false, `项数 ${first.list.options}`)
+  check('默认字体项显示为当前选中', first.list.selected.includes('默认等宽字体') && first.list.activeCount === 1, JSON.stringify(first.list))
+  check('点击字体项即选中并显示唯一标识', first.presetSelected.label === PRESET && first.presetSelected.activeCount === 1, JSON.stringify(first.presetSelected))
   check('预设字体在终端页生效', first.preset.panes[0].family.includes(PRESET))
   check('自定义字体在终端页生效且保留等宽回退', first.changed.panes[0].family.includes(CUSTOM) && first.changed.panes[0].family.includes('monospace'))
   check('改字体期间会话不重启（切页前后同一 pty）', identities(first.before) === identities(first.preset) && identities(first.before) === identities(first.changed))
@@ -259,7 +277,8 @@ async function main() {
   check('新窗格继承字体和字号', first.added.panes.length === 2 && first.added.panes.every((pane) => pane.family.includes(CUSTOM) && pane.size === 14))
   check('新增窗格保留原会话', first.added.sessions.some((s) => `${s.id}:${s.pid}` === identities(first.before)))
   check('全部会话工作目录都属于临时测试项目', PROJECTS.every((p) => first.added.sessions.some((s) => path.resolve(s.cwd) === path.resolve(p.localPath))))
-  check('设置页展示同一份字体偏好', first.settings.family.includes(CUSTOM) && first.settings.size === 14)
+  check('设置页展示同一份字体偏好', first.settings.family.includes(CUSTOM) && first.settings.size === 14, JSON.stringify(first.settings))
+  check('自定义字体在设置页显示为当前选中项', first.settings.family === CUSTOM && first.settings.activeCount === 1)
   check('设置页调整后切回终端立即生效', first.back.panes.every((pane) => pane.family.includes(CUSTOM) && pane.size === 15))
   check('切页仍复用所有原会话', identities(first.added) === identities(first.back))
   const saved = readPrefs()
@@ -269,9 +288,11 @@ async function main() {
   const second = await startInstance(SECOND)
   check('重启后所有窗格恢复已保存字体与字号', second.restored.panes.length === 2 && second.restored.panes.every((pane) => pane.family.includes(CUSTOM) && pane.size === 15))
   check('重启后的设置控件显示已保存值', second.settingsBeforeReset.family.includes(CUSTOM) && second.settingsBeforeReset.size === 15)
+  check('重启后自定义字体仍是唯一选中项', second.settingsBeforeReset.family === CUSTOM && second.settingsBeforeReset.activeCount === 1)
   check('恢复默认同时重置全部窗格字体与字号', second.reset.panes.every((pane) => pane.family === first.before.panes[0].family && pane.size === 13))
   check('恢复默认不重启会话', identities(second.restored) === identities(second.reset))
   check('默认字体选项可正确显示空字符串值', second.resetLabel.includes('默认等宽字体'))
+  check('恢复默认后选中标识回到默认字体项', second.resetLabel.includes('默认等宽字体') && second.resetActiveCount === 1)
   const reset = readPrefs()
   check('恢复默认结果持久化', reset.terminalFontFamily === '' && reset.terminalFontSize === 13)
   check('其他界面偏好未被改写', saved.sidebarCollapsed === false && reset.sidebarCollapsed === false)
