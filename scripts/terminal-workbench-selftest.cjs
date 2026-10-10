@@ -126,13 +126,23 @@ async function main() {
     if (channel === 'terminal:cwd') cwdSeen.push(payload)
   })
 
-  const session = ptyService.create({
-    projectId: 'selftest-project',
-    projectName: '自测项目',
-    cwd: workDir,
-    cols: 90,
-    rows: 24,
-  })
+  // 后台宿主可能带禁色变量；真实终端应按自身能力输出颜色，且不改父进程环境。
+  const originalNoColor = process.env.NO_COLOR
+  process.env.NO_COLOR = '1'
+  let session
+  try {
+    session = ptyService.create({
+      projectId: 'selftest-project',
+      projectName: '自测项目',
+      cwd: workDir,
+      cols: 90,
+      rows: 24,
+    })
+    check('创建终端不修改宿主的禁色变量', process.env.NO_COLOR === '1')
+  } finally {
+    if (originalNoColor === undefined) delete process.env.NO_COLOR
+    else process.env.NO_COLOR = originalNoColor
+  }
   check('会话创建返回可序列化信息', !!session.id && session.pid > 0 && session.cwd === workDir,
     `${session.shellLabel} pid=${session.pid}`)
   check('会话信息不含 pty 对象', !('term' in session))
@@ -174,6 +184,22 @@ async function main() {
   const attached = ptyService.attach(session.id)
   check('attach 回放缓冲输出', stripAnsi(attached.output).includes(marker), `缓冲 ${attached.bytes ?? attached.output.length} 字符`)
   check('attach 回传会话元信息', attached.pid === session.pid && attached.projectName === '自测项目')
+
+  if (process.platform === 'win32' && session.shellLabel === 'PowerShell 7') {
+    const colorToken = Date.now().toString(36)
+    const greenMarker = `DEVPM_GREEN_${colorToken}`
+    const envMarker = `DEVPM_COLOR_ENV_${colorToken}`
+    // 拆开标记，避免命令输入回显被误认成执行结果。
+    ptyService.write(session.id, `Write-Host ('DEVPM_GREEN_' + '${colorToken}') -ForegroundColor Green; Write-Output ('DEVPM_COLOR_ENV_' + '${colorToken}' + ':' + [string][bool](Test-Path Env:NO_COLOR) + ':' + $PSStyle.OutputRendering)\r`)
+    await waitFor(() => stripAnsi(ptyService.attach(session.id).output).includes(`${envMarker}:`), { label: 'PowerShell 颜色探针输出' })
+    const rawColor = ptyService.attach(session.id).output
+    check('PowerShell 不继承后台禁色变量，保持终端输出模式',
+      stripAnsi(rawColor).includes(`${envMarker}:False:Host`))
+    const green = new RegExp(`\\x1b\\[(?:32|92|38;5;10)m${greenMarker}`)
+    check('真实 PowerShell 绿色输出在实时通道保留 ANSI 颜色',
+      green.test(dataSeen.filter((p) => p.sessionId === session.id).map((p) => p.data).join('')))
+    check('attach 回放保留相同的绿色 ANSI 颜色', green.test(rawColor))
+  }
 
   // resize：应用不报错且尺寸落在会话信息里
   ptyService.resize(session.id, 120, 40)

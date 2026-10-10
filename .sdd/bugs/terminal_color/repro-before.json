@@ -1,0 +1,103 @@
+{
+  "startedAt": "2026-10-10T06:41:12.355Z",
+  "endedAt": "2026-10-10T06:41:54.087Z",
+  "controlledInput": {
+    "profile": false,
+    "term": "xterm-256color",
+    "noColor": "仅对照 NO_COLOR=1 与移除变量"
+  },
+  "results": [
+    {
+      "shell": "pwsh",
+      "mode": "interactive",
+      "noColor": true,
+      "diagnostics": {
+        "psreadline": true,
+        "encoding": "gb2312",
+        "rendering": "PlainText",
+        "vt": true,
+        "version": "7.6.5"
+      },
+      "foregroundSgr": [],
+      "hasGreen": false
+    },
+    {
+      "shell": "pwsh",
+      "mode": "interactive",
+      "noColor": false,
+      "diagnostics": {
+        "psreadline": true,
+        "version": "7.6.5",
+        "rendering": "Host",
+        "encoding": "gb2312",
+        "vt": true
+      },
+      "foregroundSgr": [
+        "\u001b[38;5;10m"
+      ],
+      "hasGreen": true
+    },
+    {
+      "shell": "pwsh",
+      "mode": "encoded",
+      "noColor": true,
+      "diagnostics": {
+        "psreadline": true,
+        "version": "7.6.5",
+        "vt": true,
+        "rendering": "PlainText",
+        "encoding": "gb2312"
+      },
+      "foregroundSgr": [],
+      "hasGreen": false
+    },
+    {
+      "shell": "pwsh",
+      "mode": "encoded",
+      "noColor": false,
+      "diagnostics": {
+        "psreadline": true,
+        "rendering": "Host",
+        "vt": true,
+        "version": "7.6.5",
+        "encoding": "gb2312"
+      },
+      "foregroundSgr": [
+        "\u001b[38;5;10m"
+      ],
+      "hasGreen": true
+    },
+    {
+      "shell": "windows-powershell",
+      "mode": "encoded",
+      "noColor": true,
+      "diagnostics": {
+        "vt": true,
+        "rendering": "",
+        "encoding": "gb2312",
+        "version": "5.1.26100.9444",
+        "psreadline": true
+      },
+      "foregroundSgr": [
+        "\u001b[38;5;10m"
+      ],
+      "hasGreen": true
+    },
+    {
+      "shell": "windows-powershell",
+      "mode": "encoded",
+      "noColor": false,
+      "diagnostics": {
+        "vt": true,
+        "rendering": "",
+        "encoding": "gb2312",
+        "version": "5.1.26100.9444",
+        "psreadline": true
+      },
+      "foregroundSgr": [
+        "\u001b[38;5;10m"
+      ],
+      "hasGreen": true
+    }
+  ]
+}

@@ -305,19 +305,26 @@ function create(options = {}) {
   const rows = Math.max(4, Number(options.rows) || 30)
   const id = `pty-${Date.now().toString(36)}-${(seq += 1).toString(36)}`
 
+  const env = {
+    ...process.env,
+    // 让子进程里的 CLI 知道自己是终端、以及终端能力（颜色/宽度由 xterm 决定）
+    TERM: 'xterm-256color',
+    // 应用自己的进程标识，便于用户脚本识别「跑在项目工具里」
+    DEVPM_TERMINAL: '1',
+    DEVPM_PROJECT_ID: String(options.projectId || ''),
+  }
+  // 后台宿主可能为日志设置 NO_COLOR，PowerShell 7 会因此禁用带色输出。
+  // PTY 有自己的终端能力，只清理子进程副本；Windows 环境变量名不区分大小写。
+  for (const key of Object.keys(env)) {
+    if (key === 'NO_COLOR' || (process.platform === 'win32' && key.toUpperCase() === 'NO_COLOR')) delete env[key]
+  }
+
   const term = pty.spawn(shell.path, shell.args, {
     name: 'xterm-256color',
     cols,
     rows,
     cwd: dir,
-    env: {
-      ...process.env,
-      // 让子进程里的 CLI 知道自己是终端、以及终端能力（颜色/宽度由 xterm 决定）
-      TERM: 'xterm-256color',
-      // 应用自己的进程标识，便于用户脚本识别「跑在项目工具里」
-      DEVPM_TERMINAL: '1',
-      DEVPM_PROJECT_ID: String(options.projectId || ''),
-    },
+    env,
     useConpty: process.platform === 'win32',
   })
 
