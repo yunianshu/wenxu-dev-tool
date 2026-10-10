@@ -254,7 +254,7 @@ async function main() {
   assert.strictEqual(genB.ok, true)
   const afterB = projects.list().find((p) => p.id === savedB.id)
   const tB = afterB.targets[0]
-  assert.strictEqual(afterB.deployMode, 'docker', '纯 Compose 项目应生成 Docker 形态')
+  assert.strictEqual(afterB.deployMode, 'auto', '自动项目的 Compose 方案应保留隔离的自动执行器')
   assert.strictEqual(afterB.composeFile, 'docker-compose.yml')
   assert.strictEqual(tB.health.url, 'http://127.0.0.1:8080/', `与脚本项目端口不同: ${tB.health.url}`)
   assert.strictEqual(tB.dataSync.enabled, false, '用户关的同步开关必须保持关闭')
@@ -264,15 +264,15 @@ async function main() {
   const genC = await aiDeploy.generateQuickConfig(savedC.id, savedC.targets[0].id, { log })
   assert.strictEqual(genC.ok, true, '新项目也应能生成配置（缺部署文件由发布检查提示）')
   const afterC = projects.list().find((p) => p.id === savedC.id)
-  assert.strictEqual(afterC.deployMode, 'script', '无编排无脚本的项目按脚本形态给出待办')
-  assert.ok(genC.plan.missingFiles.some((m) => m.path === 'upgrade.sh'), '应提示缺升级脚本')
+  assert.strictEqual(afterC.deployMode, 'auto', '无编排无脚本的项目优先服务器自动容器构建')
+  assert.ok(genC.plan.missingFiles.some((m) => m.path === 'docker-compose.yml'), '应提示缺 Compose 编排')
 
   // ── ③ 生成配置必须让发布前置检查通过（A/B 有版本与部署文件） ──
   for (const p of [afterA, afterB]) {
     const t = p.targets[0]
     const ver = deployService.resolveVersion(p)
     assert.ok(ver.version, `${p.name} 应识别到版本号`)
-    const problems = deployService.preCheckLocal(p, t, ver.version, false)
+    const problems = deployService.preCheckLocal(p, t, ver.version, p.deployMode === 'auto')
     assert.deepStrictEqual(problems, [], `${p.name} 生成后的配置不应被发布检查拦截: ${JSON.stringify(problems)}`)
   }
 
@@ -339,10 +339,10 @@ volumes:
   const genD = await aiDeploy.generateQuickConfig(savedD.id, savedD.targets[0].id, { log })
   assert.strictEqual(genD.ok, true, `体检失败也应生成: ${JSON.stringify(genD)}`)
   const afterD = projects.list().find((p) => p.id === savedD.id)
-  assert.strictEqual(afterD.deployMode, 'docker')
+  assert.strictEqual(afterD.deployMode, 'auto')
   assert.strictEqual(afterD.targets[0].db.enabled, false, '容器名/库名识别不全时应降级关闭备份')
   assert.ok(logs.some(([, text]) => /数据库容器名\/库名识别不全/.test(text)), '降级应写日志')
-  const problemsD = deployService.preCheckLocal(afterD, afterD.targets[0], deployService.resolveVersion(afterD).version, false)
+  const problemsD = deployService.preCheckLocal(afterD, afterD.targets[0], deployService.resolveVersion(afterD).version, afterD.deployMode === 'auto')
   assert.deepStrictEqual(problemsD, [], `体检失败后的生成配置不得卡住发布检查: ${JSON.stringify(problemsD)}`)
   sshFail = false
 
@@ -440,8 +440,7 @@ volumes:
   deployService.setEmitter((channel, payload) => {
     if (channel === 'deploy:log') runLogs.push(payload.text)
   })
-  // 新项目（无打包脚本）：生成应完成并落盘，随后发布链路按生成后的形态继续，
-  // 最终因「缺发布包构建脚本」在检查阶段失败——失败点在生成之后，证明编排顺序正确
+  // 无 AI 的新项目：生成配置完成后，发布检查应明确阻止缺部署文件的项目。
   const rRun = projects.save({
     name: 'quickrun', localPath: projNew, configMode: 'quick', deployMode: 'auto',
     targets: [{
@@ -452,10 +451,10 @@ volumes:
     }],
   })
   const record = await deployService.run(rRun.id, null)
-  assert.strictEqual(record.status, 'failed', `缺打包脚本的极简发布应失败: ${JSON.stringify(record.message)}`)
+  assert.strictEqual(record.status, 'failed', `缺 Compose 的极简发布应失败: ${JSON.stringify(record.message)}`)
   assert.ok(runLogs.some((t) => /已按项目生成部署配置/.test(t)), `发布日志应含生成记录: ${JSON.stringify(runLogs)}`)
   const afterRun = projects.list().find((p) => p.id === rRun.id)
-  assert.strictEqual(afterRun.deployMode, 'script', '发布过程中生成的形态应已落盘')
+  assert.strictEqual(afterRun.deployMode, 'auto', '发布过程中应保留自动容器执行器')
   assert.strictEqual(afterRun.targets[0].remotePath, '/srv/quick-run', '用户填写的项目地址不被发布流程改动')
   // 缺用户输入时发布入口同样给出明确失败（后端兜底，前端守卫之外的防线）
   const rBad = projects.save({

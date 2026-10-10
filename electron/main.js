@@ -825,9 +825,16 @@ function registerIpc() {
       return { ok: false, error: (err && err.message) || String(err) }
     }
   })
-  ipcMain.handle('deploy:ai:writeFiles', (_e, { projectId, files }) => {
+  ipcMain.handle('deploy:ai:writeFiles', (_e, { projectId, files, options }) => {
     try {
-      return { ok: true, ...aiDeploy.writeFiles(projectId, files) }
+      return { ok: true, ...aiDeploy.writeFiles(projectId, files, options) }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) }
+    }
+  })
+  ipcMain.handle('deploy:ai:generateFiles', async (_e, { projectId, targetId, plan }) => {
+    try {
+      return await aiDeploy.generateFiles(projectId, targetId, plan)
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) }
     }

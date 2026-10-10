@@ -272,12 +272,14 @@ async function main() {
   const planC = aiDeploy.buildHeuristicPlan(projectOf(projNew, 'proj-new'), TARGET, localC, { ok: false, error: '未体检' })
   assert.ok(localC.risks.some((r) => /没有 Compose 编排，也没有发布脚本/.test(r)), `新项目风险: ${JSON.stringify(localC.risks)}`)
   const missingC = planC.missingFiles.map((m) => m.path)
-  for (const rel of ['upgrade.sh', 'start.sh', 'package.sh']) {
-    assert.ok(missingC.includes(rel), `新项目应提示缺 ${rel}（实际 ${missingC}）`)
-  }
+  assert.strictEqual(planC.deployMode, 'docker', '新项目应优先容器构建，不要求本地运维脚本')
+  assert.ok(missingC.includes('docker-compose.yml'), '新项目应提示缺 Compose')
+  assert.ok(planC.files.some((file) => file.path === 'Dockerfile'), '新项目应生成容器构建文件')
+  const explicitScript = aiDeploy.buildHeuristicPlan({ ...projectOf(projNew, 'proj-new'), deployMode: 'script' }, TARGET, localC, { ok: false, error: '未体检' })
+  assert.ok(explicitScript.missingFiles.some((file) => file.path === 'upgrade.sh'), '明确选择脚本部署时保留脚本契约')
 
   // ── ⑥ assertWritablePath：只允许部署相关文件 ──
-  for (const ok of ['Dockerfile', '.deployignore', '.env.example', 'docker-compose.yml', 'compose.release.yaml', 'upgrade.sh', 'deploy/bootstrap.sh', 'scripts/build.sh', 'migrations/001-init.sh']) {
+  for (const ok of ['Dockerfile', 'deploy/Dockerfile.server', '.deployignore', '.env.example', 'docker-compose.yml', 'compose.release.yaml', 'upgrade.sh', 'deploy/bootstrap.sh', 'scripts/build.sh', 'migrations/001-init.sh']) {
     assert.strictEqual(aiDeploy.assertWritablePath(ok).ok, true, `应允许生成 ${ok}`)
   }
   for (const bad of ['src/app.js', '../evil.sh', '/etc/passwd', 'package.json', 'tests/a.sh', 'README.md', 'a/../../../b.sh', 'C:/x.sh']) {
@@ -526,7 +528,7 @@ async function main() {
   const auditDir = path.join(tmpRoot, 'audit-project')
   const outside = path.join(tmpRoot, 'outside')
   writeFixture(auditDir, {
-    'compose.yaml': 'services:\n  app:\n    image: demo/app\n    environment:\n      API_TOKEN: audit-fake-token\n      POSTGRES_PASSWORD: ${PASSWORD:-audit-fake-default}\n      PRIVATE_KEY: |\n        audit-fake-multiline\n    volumes:\n      - ./runtime/output:/app/output\n',
+    'compose.yaml': 'services:\n  app:\n    image: demo/app\n    environment:\n      API_TOKEN: audit-fake-token\n      REQUIRED_API_KEY: ${REQUIRED_API_KEY}\n      POSTGRES_PASSWORD: ${PASSWORD:-audit-fake-default}\n      PRIVATE_KEY: |\n        audit-fake-multiline\n    volumes:\n      - ./runtime/output:/app/output\n',
     'start.sh': '#!/bin/bash\nPASSWORD="audit-fake-password"\ncurl -u audit:fake-basic https://example.invalid\necho safe-reference\n',
     'data/seed.txt': 'seed',
     'runtime/output/result.txt': 'local-output',
@@ -550,6 +552,8 @@ async function main() {
   fs.copyFileSync(path.join(auditDir, backup1), path.join(auditDir, 'start.sh'))
   const auditProject = projects.list().find((p) => p.id === auditSaved.id)
   const auditLocal = aiDeploy.scanLocal(auditProject)
+  assert(auditLocal.compose.files[0].requiredEnv.includes('REQUIRED_API_KEY'))
+  assert(!auditLocal.compose.files[0].requiredEnv.includes('PASSWORD'), '默认值变量不得误报为外部必填项')
   const auditPlan = aiDeploy.buildHeuristicPlan(auditProject, {}, auditLocal, { ok: false, error: 'offline' })
   const emptyAi = aiDeploy.mergePlan(auditPlan, { missingFiles: [], prerequisites: [], readyToDeploy: true })
   assert.strictEqual(emptyAi.readyToDeploy, false)

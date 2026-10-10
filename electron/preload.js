@@ -159,8 +159,10 @@ contextBridge.exposeInMainWorld('gitReport', {
   deployAiScanLocal: (projectId) => ipcRenderer.invoke('deploy:ai:scanLocal', { projectId }),
   deployAiScanRemote: (projectId, targetId) => ipcRenderer.invoke('deploy:ai:scanRemote', { projectId, targetId }),
   deployAiDiagnose: (projectId, targetId) => ipcRenderer.invoke('deploy:ai:diagnose', { projectId, targetId }),
-  deployAiWriteFiles: (projectId, files) =>
-    ipcRenderer.invoke('deploy:ai:writeFiles', { projectId, files: toPlain(files) }),
+  deployAiWriteFiles: (projectId, files, options) =>
+    ipcRenderer.invoke('deploy:ai:writeFiles', { projectId, files: toPlain(files), options: toPlain(options) }),
+  deployAiGenerateFiles: (projectId, targetId, plan) =>
+    ipcRenderer.invoke('deploy:ai:generateFiles', { projectId, targetId, plan: toPlain(plan) }),
   deployAiGenerateFile: (projectId, targetId, req) =>
     ipcRenderer.invoke('deploy:ai:generateFile', { projectId, targetId, req: toPlain(req) }),
   deployAiApply: (projectId, targetId, plan) =>

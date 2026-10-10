@@ -9,6 +9,7 @@ const store = require('../store')
 const inspector = require('./ai-deploy')
 const ssh = require('./ssh-service')
 const dataSync = require('./data-sync')
+const projectEvidence = require('./project-evidence')
 
 const COMPOSE = 'compose.onedeploy.yaml'
 const quote = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`
@@ -79,60 +80,14 @@ function envFileEntry(project, item, baseDir = '.') {
   return typeof item === 'string' ? rel : { ...entry, path: rel }
 }
 
-function declaredEnvFiles(project, composeFiles) {
-  const result = new Set()
-  for (const file of composeFiles) {
-    try {
-      const doc = parse(fs.readFileSync(localFile(project.localPath, file.path), 'utf8'), { maxAliasCount: 20 })
-      for (const svc of Object.values(doc?.services || {})) for (const item of [].concat(svc.env_file || [])) {
-        const entry = envFileEntry(project, item, path.posix.dirname(file.path))
-        result.add(pathKey(typeof entry === 'string' ? entry : entry.path))
-      }
-    } catch { /* 无效编排由方案校验报告，不能据此读取项目外文件 */ }
-  }
-  return result
-}
-
 function evidence(project) {
   const sync = synchronizationFor(project)
   const scan = inspector.scanLocal(project, sync ? { skipContent: (rel) => isSynchronizedFile(rel, sync) } : undefined)
   if (!scan.exists) throw new Error('项目目录不存在，请先关联本地项目')
   const composeFiles = scan.compose.files.filter((file) => !isSynchronizedFile(file.path, sync))
-  const stack = scan.stack.filter((item) => !isSynchronizedFile(item.file, sync))
-  const runtimeEnvFiles = declaredEnvFiles(project, composeFiles)
-  const names = new Set(['README.md', '.env.example', ...stack.map((s) => s.file), ...composeFiles.map((c) => c.path)])
-  for (const s of stack) {
-    const dir = path.posix.dirname(s.file)
-    for (const f of ['Dockerfile', 'src/main/resources/application.yml', 'src/main/resources/application.yaml', 'src/main/resources/application.properties', '__main__.py', 'main.py']) {
-      names.add(path.posix.join(dir, f))
-    }
-    if (s.kind === 'python') {
-      const src = path.join(project.localPath, dir, 'src')
-      try { for (const e of fs.readdirSync(src, { withFileTypes: true })) if (e.isDirectory()) {
-        for (const f of ['__main__.py', 'main.py', 'config.py', 'cli.py', 'settings.py']) names.add(path.posix.join(dir, 'src', e.name, f))
-      } } catch { /* 非 src 布局 */ }
-    }
-  }
-  let remaining = 60000
-  const files = []
-  for (const rel of names) {
-    if (remaining <= 0 || isSynchronizedFile(rel, sync) || runtimeEnvFiles.has(pathKey(rel)) || (privateFile(rel) && rel !== '.env.example')) continue
-    try {
-      const file = localFile(project.localPath, rel)
-      if (!fs.statSync(file).isFile()) continue
-      const text = fs.readFileSync(file, 'utf8')
-      const cap = Math.min(10000, remaining)
-      const content = inspector.redactAiText(text.length <= cap ? text : text.slice(0, Math.floor(cap * 0.65)) + '\n…（中段省略）…\n' + text.slice(-Math.floor(cap * 0.35)))
-      remaining -= content.length
-      files.push({ path: rel, content })
-    } catch { /* 只收录可读且在项目内的文件 */ }
-  }
-  const lockFiles = []
-  for (const s of stack) for (const file of ['uv.lock', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'poetry.lock', 'requirements.txt']) {
-    const rel = path.posix.join(path.posix.dirname(s.file), file)
-    if (fs.existsSync(path.join(project.localPath, rel))) lockFiles.push(rel)
-  }
-  return { stack, entries: scan.entries, files, lockFiles: [...new Set(lockFiles)], compose: composeFiles, runtimeEnvFiles: [...runtimeEnvFiles], dataSync: sync }
+  const shared = projectEvidence.collectEvidence(project, { local: scan, redact: inspector.redactAiText,
+    exclude: (rel) => isSynchronizedFile(rel, sync) })
+  return { ...shared, compose: composeFiles, dataSync: sync }
 }
 
 function validateRecipe(project, raw) {
@@ -237,7 +192,7 @@ function validateRecipe(project, raw) {
 
 async function recipeFor(project, { log = () => {}, signal, feedback, previousRecipe } = {}) {
   const info = evidence(project)
-  const fingerprint = hash('runtime-env-data-sync-v3:' + JSON.stringify(info))
+  const fingerprint = hash('project-evidence-v4:' + JSON.stringify(info))
   const cache = path.join(app.getPath('userData'), 'deploy-plans', `${identity(project)}.json`)
   try {
     const saved = JSON.parse(fs.readFileSync(cache, 'utf8'))
@@ -268,7 +223,8 @@ async function recipeFor(project, { log = () => {}, signal, feedback, previousRe
         })
       }
       const port = candidate[1].ports[0]
-      raw = { compose: stringify(doc), files: [], publicService: candidate[0], publicPort: typeof port === 'object' ? port.target : String(port).split(':').pop().split('/')[0] }
+      raw = { compose: stringify(doc), files: [], publicService: candidate[0], publicPort: typeof port === 'object' ? port.target : String(port).split(':').pop().split('/')[0],
+        generatedEnv: doc['x-onedeploy']?.generatedEnv, healthPath: doc['x-onedeploy']?.healthPath }
       try { raw = validateRecipe(project, raw) } catch (error) { existingRecipeError = error; raw = null }
     }
     } catch { log('info', '已有 Compose 无法直接使用，将自动重新生成部署方案') }
@@ -301,10 +257,8 @@ async function recipeFor(project, { log = () => {}, signal, feedback, previousRe
           continue
         }
       }
-      const extra = raw.readFiles.slice(0, 8).map((rel) => {
-        if (isSynchronizedFile(rel, info.dataSync) || privateFile(rel) || info.runtimeEnvFiles.includes(pathKey(rel)) || !/(?:\.(?:py|js|ts|mjs|json|xml|toml|ya?ml|properties|md|txt|sh)|Dockerfile)$/i.test(rel)) return { path: rel, error: '文件不属于可发送的部署证据' }
-        try { return { path: rel, content: inspector.redactAiText(fs.readFileSync(localFile(project.localPath, rel), 'utf8').slice(0, 12000)) } } catch { return { path: rel, error: '文件不存在或不可读取' } }
-      })
+      const extra = projectEvidence.readEvidence(project, raw.readFiles.slice(0, 8), { redact: inspector.redactAiText, maxTotal: 30000,
+        exclude: (rel) => isSynchronizedFile(rel, info.dataSync) })
       log('info', `自动补充 ${extra.length} 份部署证据（${round + 1}/3）…`)
       messages.push({ role: 'assistant', content: JSON.stringify(raw) }, { role: 'user', content: `以下是补充证据。请输出完整部署方案；最多再请求一次必要源文件：${JSON.stringify(extra)}` })
     }

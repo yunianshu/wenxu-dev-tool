@@ -128,7 +128,10 @@ async function main() {
       assert.ok(!prompt.includes(marker))
       assert.ok(prompt.includes('shared/ai-mount') && prompt.includes('localDir'))
       if (calls === 1) return { text: JSON.stringify({ readFiles: ['deploy/payload.json', 'deploy/README.md', 'deploy/package.json'] }), finishReason: 'stop' }
-      assert.ok(prompt.includes('文件不属于可发送的部署证据'))
+      const supplement = messages.at(-1).content
+      const extra = JSON.parse(supplement.slice(supplement.indexOf('[')))
+      assert.strictEqual(extra.length, 3)
+      assert.ok(extra.every((file) => typeof file.error === 'string' && !Object.hasOwn(file, 'content')), '共享补读必须拒绝每个同步数据文件，不能只脱敏后发送')
       return { text: JSON.stringify({ compose: stringify({ services: { app: { image: 'nginx:alpine', volumes: ['./deploy:/app/catalog:ro'] } } }), publicService: 'app', publicPort: 80, files: [] }), finishReason: 'stop' }
     }
     try {
