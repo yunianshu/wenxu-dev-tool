@@ -7,7 +7,7 @@
 const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
-const { spawn } = require('child_process')
+const { spawn, spawnSync } = require('child_process')
 const ssh = require('./ssh-service')
 const packager = require('./packager')
 const projects = require('./deploy-projects')
@@ -399,38 +399,109 @@ function ensureReleaseNotesForPackage(project, ver, gitInfo) {
  * 裸 bash 命令会命中 System32 的 WSL bash——WSL 里跑不了 Windows 的打包工具链
  * （如 uv/maven，bash 的 exec 也不解析 .exe 后缀）。返回 null 表示未装 Git。
  */
-let cachedGitBashDir
-function findGitBashDir() {
+function findGitBashDir(baseEnv = process.env) {
   if (process.platform !== 'win32') return null
-  if (cachedGitBashDir !== undefined) return cachedGitBashDir
   const roots = []
-  for (const raw of String(process.env.PATH || '').split(';')) {
+  for (const raw of String(envValue(baseEnv, 'Path') || '').split(';')) {
     const dir = raw.trim().replace(/[\\/]+$/, '')
-    if (/\\cmd$/i.test(dir)) roots.push(dir.slice(0, -4))
+    if (/[\\/]cmd$/i.test(dir)) roots.push(dir.slice(0, -4))
   }
   for (const key of ['ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA']) {
-    const base = process.env[key]
+    const base = envValue(baseEnv, key)
     if (base) roots.push(key === 'LOCALAPPDATA' ? path.join(base, 'Programs', 'Git') : path.join(base, 'Git'))
   }
-  cachedGitBashDir = null
   for (const root of roots) {
     if (fs.existsSync(path.join(root, 'bin', 'bash.exe'))) {
-      cachedGitBashDir = path.join(root, 'bin')
+      return path.join(root, 'bin')
+    }
+  }
+  return null
+}
+
+/** Windows 环境键忽略大小写，避免同时生成 Path/PATH 后被 spawn 丢弃其中一个。 */
+function envValue(env, name) {
+  const key = Object.keys(env).find((k) => k.toLowerCase() === name.toLowerCase())
+  return key ? env[key] : undefined
+}
+
+/** 只读当前持久构建配置；桌面应用可能早于 Maven 安装启动，不能只依赖旧 process.env。 */
+function readWindowsBuildEnv(baseEnv) {
+  const systemRoot = envValue(baseEnv, 'SystemRoot') || 'C:/Windows'
+  const powershell = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const command = `
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$snapshot = @{}
+foreach ($scope in @('Machine', 'User')) {
+  $key = if ($scope -eq 'Machine') {
+    [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment')
+  } else { [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment') }
+  $values = @{}
+  try {
+    if ($key) { foreach ($name in @('Path', 'JAVA_HOME', 'MAVEN_HOME', 'M2_HOME')) {
+      $value = $key.GetValue($name, '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+      if ($value -is [string]) { $values[$name] = $value }
+    } }
+  } finally { if ($key) { $key.Dispose() } }
+  $snapshot[$scope] = $values
+}
+$snapshot | ConvertTo-Json -Compress
+`
+  try {
+    const result = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', command], {
+      encoding: 'utf8', windowsHide: true, timeout: 5000,
+    })
+    if (result.status === 0) return JSON.parse(result.stdout.trim().replace(/^\uFEFF/, ''))
+  } catch { /* 无法读取时沿用继承配置，不阻断其他工具链。 */ }
+  return {}
+}
+
+/** 只为本次打包补齐工具链与 Git Bash；有效继承 HOME 优先，当前持久 PATH 追加。 */
+function localShellEnv(baseEnv, configuredEnv) {
+  const env = { ...(baseEnv || process.env) }
+  if (process.platform !== 'win32') return env
+  const current = configuredEnv || readWindowsBuildEnv(env)
+  const machine = current.Machine || {}
+  const user = current.User || {}
+  const variables = Object.fromEntries([machine, user, env].flatMap((source) =>
+    Object.entries(source).map(([name, value]) => [name.toLowerCase(), value])))
+  const expand = (value) => {
+    let result = String(value || '').trim().replace(/^"(.*)"$/, '$1')
+    for (let i = 0; i < 5; i++) {
+      const next = result.replace(/%([^%]+)%/g, (match, name) => envValue(variables, name) || match)
+      if (next === result) break
+      result = next
+    }
+    return result
+  }
+  const toolDirs = []
+  for (const name of ['JAVA_HOME', 'MAVEN_HOME', 'M2_HOME']) {
+    const entry = name === 'JAVA_HOME' ? 'java.exe' : 'mvn'
+    for (const source of [env, user, machine]) {
+      const home = expand(envValue(source, name))
+      if (!home || !fs.existsSync(path.join(home, 'bin', entry))) continue
+      for (const key of Object.keys(env)) if (key.toUpperCase() === name) delete env[key]
+      env[name] = home
+      for (const key of Object.keys(variables)) if (key.toUpperCase() === name) delete variables[key]
+      variables[name] = home
+      toolDirs.push(path.join(home, 'bin'))
       break
     }
   }
-  return cachedGitBashDir
-}
-
-/** 本地 shell 命令（打包脚本等）的子进程环境：把 Git Bash 前置到 PATH，
- * 与测试入口 run-selftests.cjs 的处理一致；baseEnv 缺省为 process.env，仅影响本次 spawn。 */
-function localShellEnv(baseEnv) {
-  const env = { ...(baseEnv || process.env) }
-  const bashDir = findGitBashDir()
-  if (bashDir) {
-    const key = Object.keys(env).find((k) => k.toLowerCase() === 'path') || 'Path'
-    env[key] = `${bashDir};${env[key] || ''}`
-  }
+  const pathKeys = Object.keys(env).filter((k) => k.toLowerCase() === 'path')
+  const pathKey = pathKeys[0] || 'Path'
+  const inherited = pathKeys.flatMap((key) => String(env[key] || '').split(';'))
+  const dirs = [...toolDirs, ...inherited, ...String(envValue(machine, 'Path') || '').split(';'),
+    ...String(envValue(user, 'Path') || '').split(';')].map(expand).filter(Boolean)
+  for (const key of pathKeys) delete env[key]
+  env[pathKey] = dirs.join(';')
+  const bashDir = findGitBashDir(env)
+  const seen = new Set()
+  env[pathKey] = [...(bashDir ? [bashDir] : []), ...dirs].filter((dir) => {
+    const normalized = path.normalize(dir).replace(/[\\/]$/, '').toLowerCase()
+    if (seen.has(normalized)) return false
+    seen.add(normalized)
+    return true
+  }).join(';')
   return env
 }
 
