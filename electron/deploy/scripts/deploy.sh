@@ -232,6 +232,25 @@ WRAP
   fi
 }
 
+# 发布包镜像预拉取（非致命）：镜像源偶发 502 会让升级脚本的拉取直接中断发布，
+# 这里先带重试拉取一遍；仍失败只警告，是否沿用本机已有镜像由升级脚本决定。
+prepull_release_images() {
+  local compose_file="$NEW_RELEASE/compose.yml" image attempt
+  [ -f "$compose_file" ] || return 0
+  command -v docker >/dev/null 2>&1 || return 0
+  log "预拉取发布包镜像 ……"
+  grep -E '^[[:space:]]*image:' "$compose_file" | sed 's/^[[:space:]]*image:[[:space:]]*//' | tr -d "\"' \r" \
+    | while read -r image; do
+      case "$image" in ''|*'$'*) continue ;; esac
+      for attempt in 1 2 3; do
+        docker pull --quiet "$image" >/dev/null 2>&1 && break
+        [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+        [ "$attempt" -eq 3 ] && warn "镜像预拉取失败（已重试 3 次）：$image，升级脚本将沿用本机已有镜像"
+      done
+    done
+  return 0
+}
+
 # ───────────────────────── 健康检查 ─────────────────────────
 # HTTP 健康检查：总时长约 HEALTH_TIMEOUT 秒，每 HEALTH_INTERVAL 秒探测一次
 health_http() {
@@ -685,6 +704,7 @@ do_deploy_script() {
   fi
 
   # 备份/停旧/切指针/启动/健康检查/失败回滚 均由项目升级脚本负责
+  prepull_release_images
   stage start
   log "执行升级脚本 $UPGRADE_SCRIPT（INSTALL_ROOT=$APP_HOME）…"
   local uprc=0 cur
