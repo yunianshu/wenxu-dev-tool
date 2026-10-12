@@ -120,14 +120,40 @@ assert_no_file '失败版本未执行 start' "$APP/releases/app-v1.0.0-003/.star
 
 echo "S4 升级成功但 HTTP 健康复查失败 → 自动回滚旧版本"
 P4="$(make_pkg app-v1.0.0-004 success)"
-run_deploy "$P4" --keep-releases 10 --delete-upload \
-  --health-url 'http://127.0.0.1:9/health' --health-timeout 4 --health-interval 1
+# 只在本场景模拟健康接口：旧版本运行时可达，新版本运行时失败。
+# 发布前后始终不可达属于地址配置问题，不能作为自动回滚的前提。
+health_bin="$ROOT/s4-bin"; mkdir -p -- "$health_bin"
+curl_original="$(command -v curl)"
+cat > "$health_bin/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+for argument in "$@"; do
+  if [ "$argument" = 'http://fake-service.invalid/health' ]; then
+    current="$(tr -d '[:space:]' < "$E2E_HEALTH_APP/CURRENT")"
+    if [ "$current" = app-v1.0.0-002 ] && [ -f "$E2E_HEALTH_APP/releases/$current/.started" ]; then
+      printf '%s healthy\n' "$current" >> "$E2E_HEALTH_APP/.health-probes"
+      exit 0
+    fi
+    printf '%s unhealthy\n' "$current" >> "$E2E_HEALTH_APP/.health-probes"
+    exit 22
+  fi
+done
+exec "$E2E_CURL_ORIGINAL" "$@"
+EOF
+chmod +x "$health_bin/curl"
+E2E_HEALTH_APP="$APP" E2E_CURL_ORIGINAL="$curl_original" PATH="$health_bin:$PATH" \
+  run_deploy "$P4" --keep-releases 10 --delete-upload \
+  --health-url 'http://fake-service.invalid/health' --health-timeout 4 --health-interval 1
+assert_has "$OUT" '发布前健康探测可达' '升级前旧版本健康可达'
 assert_eq "$RC" 1 "退出码非 0"
 assert_has "$OUT" '__DEPLOY_FAIL__' '输出失败标记'
 assert_has "$OUT" '已自动回滚到 app-v1.0.0-002' '提示回滚目标'
 current_is app-v1.0.0-002
 assert_no_file '新版本已 stop' "$APP/releases/app-v1.0.0-004/.started"
 assert_file '旧版本已重启' "$APP/releases/app-v1.0.0-002/.started"
+assert_eq "$(head -1 "$APP/.health-probes")" 'app-v1.0.0-002 healthy' '首次健康探测命中运行中的旧版本'
+assert_has "$(cat "$APP/.health-probes")" 'app-v1.0.0-004 unhealthy' '新版本健康探测失败'
+assert_eq "$(tail -1 "$APP/.health-probes")" 'app-v1.0.0-002 healthy' '回滚后旧版本健康恢复'
 
 echo "S5 手动回滚子命令（--mode script rollback）"
 OUT="$(bash "$DEPLOY_SH" rollback --mode script --home "$APP" --version app-v1.0.0-001 2>&1)"; RC=$?

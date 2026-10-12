@@ -232,22 +232,89 @@ WRAP
   fi
 }
 
-# 发布包镜像预拉取（非致命）：镜像源偶发 502 会让升级脚本的拉取直接中断发布，
-# 这里先带重试拉取一遍；仍失败只警告，是否沿用本机已有镜像由升级脚本决定。
+# 只识别发布包内可静态确定的镜像；变量和显式平台留给项目构建解析。
+collect_release_images() {
+  local file
+  for file in "$NEW_RELEASE/compose.yml" "$NEW_RELEASE/compose.yaml" \
+    "$NEW_RELEASE/docker-compose.yml" "$NEW_RELEASE/docker-compose.yaml" "$NEW_RELEASE/$COMPOSE_FILE"; do
+    [ -f "$file" ] || continue
+    awk '/^[[:space:]]*image[[:space:]]*:/ {
+      sub(/^[[:space:]]*image[[:space:]]*:[[:space:]]*/, "")
+      sub(/[[:space:]]+#.*/, "")
+      gsub(/^[[:space:]\042\047]+|[[:space:]\042\047]+$/, "")
+      print
+    }' "$file"
+  done
+  # 运行镜像 image 不包含 Dockerfile 的基础镜像，必须单独处理多阶段 FROM。
+  while IFS= read -r -d '' file; do
+    awk '{ sub(/\r$/, "") } toupper($1) == "FROM" {
+      image = $2
+      if (image !~ /^--/ && tolower(image) != "scratch" && !stages[tolower(image)]) print image
+      for (i = 3; i < NF; i++) if (toupper($i) == "AS") stages[tolower($(i + 1))] = 1
+    }' "$file"
+  done < <(find "$NEW_RELEASE" -type f \( -iname Dockerfile -o -iname 'Dockerfile.*' -o -iname '*.Dockerfile' \) -print0)
+}
+
+# 只对 Docker Hub 的标签引用生成同一官方仓库直连地址，私有仓库和摘要不回标。
+dockerhub_direct_ref() {
+  local image="$1" first
+  case "$image" in
+    *@*) return 1 ;;
+    docker.io/*) image="${image#docker.io/}" ;;
+    index.docker.io/*) image="${image#index.docker.io/}" ;;
+    */*)
+      first="${image%%/*}"
+      case "$first" in *.*|*:*|localhost) return 1 ;; esac
+      ;;
+  esac
+  [[ "$image" == */* ]] || image="library/$image"
+  printf 'registry-1.docker.io/%s\n' "$image"
+}
+
+prepare_release_image() {
+  local image="$1" attempt pull_error="" direct
+  if docker image inspect "$image" >/dev/null 2>&1; then
+    log "复用本机已有镜像: $image"
+    return 0
+  fi
+  for attempt in 1 2 3; do
+    log "准备发布包镜像: $image（$attempt/3）"
+    if pull_error="$(docker pull --quiet "$image" 2>&1)"; then return 0; fi
+    [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+  done
+  # 捕获错误仅作分类，不回显可能含鉴权信息的完整输出；不重跑有状态的升级脚本。
+  if printf '%s' "$pull_error" | grep -Eiq '(^|[^0-9])(502|503|504)([^0-9]|$)|bad gateway|service unavailable|gateway timeout|connection (reset|refused)|timeout|timed out|context deadline exceeded|no such host|network is unreachable'; then
+    if direct="$(dockerhub_direct_ref "$image")"; then
+      warn "镜像源网络异常，尝试 Docker Hub 官方直连: $image"
+      if docker pull --quiet "$direct" >/dev/null 2>&1 \
+        && docker tag "$direct" "$image" >/dev/null 2>&1 \
+        && docker image inspect "$image" >/dev/null 2>&1; then
+        ok "官方直连镜像已就绪: $image"
+        return 0
+      fi
+    fi
+  fi
+  # 拉取期间也可能有其他进程补齐缓存，最终再核对，不能把缺失缓存说成可沿用。
+  if docker image inspect "$image" >/dev/null 2>&1; then
+    warn "镜像拉取失败，复用本机已有镜像: $image"
+  else
+    warn "镜像预拉取失败且本机无缓存: $image；项目升级脚本仍可能失败，请检查镜像源和服务器网络"
+  fi
+  return 0
+}
+
+# 非致命准备：构建和运行镜像都处理，最终发布结果由项目升级脚本与健康检查确认。
 prepull_release_images() {
-  local compose_file="$NEW_RELEASE/compose.yml" image attempt
-  [ -f "$compose_file" ] || return 0
+  local image images
   command -v docker >/dev/null 2>&1 || return 0
+  images="$(collect_release_images | sort -u)"
+  [ -n "$images" ] || return 0
+  stage build
   log "预拉取发布包镜像 ……"
-  grep -E '^[[:space:]]*image:' "$compose_file" | sed 's/^[[:space:]]*image:[[:space:]]*//' | tr -d "\"' \r" \
-    | while read -r image; do
-      case "$image" in ''|*'$'*) continue ;; esac
-      for attempt in 1 2 3; do
-        docker pull --quiet "$image" >/dev/null 2>&1 && break
-        [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
-        [ "$attempt" -eq 3 ] && warn "镜像预拉取失败（已重试 3 次）：$image，升级脚本将沿用本机已有镜像"
-      done
-    done
+  while IFS= read -r image; do
+    [[ "$image" =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]] || continue
+    prepare_release_image "$image"
+  done <<< "$images"
   return 0
 }
 
