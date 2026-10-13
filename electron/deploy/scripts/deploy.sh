@@ -395,6 +395,7 @@ do_rollback() {
   stage rollback
   warn "$reason"
   write_history "failed"
+  cleanup_backups
   if [ "$AUTO_ROLLBACK" != "1" ]; then
     err "自动回滚未启用，保留新版本运行状态，请人工确认或使用客户端「回滚」按钮"
     echo "__DEPLOY_FAIL__:${reason}（自动回滚未启用，新版本保持运行）"
@@ -565,6 +566,7 @@ DB_BACKUP
 # 备份阶段失败：尚未改动运行状态，直接失败退出
 fail_rollback() {
   err "$1"
+  cleanup_backups
   echo "__DEPLOY_FAIL__:$1"
   exit 1
 }
