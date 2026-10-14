@@ -76,7 +76,11 @@ function createRepo(dir, todayMsg, yesterdayMsg) {
  * 「该任务第 N 次提交」分流，模拟「已写入但响应非 JSON」与「真失败」两类现场。
  */
 function startFakeZentao() {
-  const state = { posts: [], efforts: {}, nextId: 900 }
+  const now = new Date()
+  const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  // A 为单人任务，B 已有其他成员的工时；两种任务应走同一提交流程。
+  const peerEffort = { id: 899, account: 'team-member', date, work: '', consumed: 6, left: 6 }
+  const state = { posts: [], efforts: { [TASK_B]: [{ ...peerEffort }] }, nextId: 900, peerEffort }
   const postCount = {}
   const myWorkTasks = [
     { id: String(TASK_A), name: '重提任务A', status: 'doing', consumed: '1', left: '10' },
@@ -104,7 +108,10 @@ function startFakeZentao() {
     if (url.searchParams.get('f') === 'recordEstimate') {
       const taskId = url.searchParams.get('taskID')
       if (req.method !== 'POST') {
-        return send(JSON.stringify({ status: '200', data: JSON.stringify({ efforts: state.efforts[taskId] || [] }) }))
+        const efforts = (state.efforts[taskId] || []).map(row => ({ ...row,
+          work: row.work.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+        }))
+        return send(JSON.stringify({ status: '200', data: JSON.stringify({ efforts }) }))
       }
       let body = ''
       req.on('data', (c) => { body += c })
@@ -121,6 +128,7 @@ function startFakeZentao() {
             const key = k.slice(6, -1)
             return {
               id: Number(key) >= 900 ? Number(key) : (state.nextId += 1),
+              account: 'e2e',
               date: form[`dates[${key}]`],
               work: form[`work[${key}]`],
               consumed: Number(form[`consumed[${key}]`]),
@@ -188,11 +196,13 @@ function startFakeHanprint() {
 function preseed(ztPort, hpPort) {
   fs.mkdirSync(USER_DATA, { recursive: true })
   fs.mkdirSync(SHOT_DIR, { recursive: true })
-  createRepo(REPO_A, 'feat: Alpha 今日提交', 'fix: Alpha 昨日提交')
+  createRepo(REPO_A, 'feat: Alpha 今日提交 List<T> & 字面 &lt;', 'fix: Alpha 昨日提交')
   createRepo(REPO_B, 'feat: Beta 今日提交', 'refactor: Beta 昨日提交')
   const cfg = {
     roots: [SANDBOX],
     identities: [IDENTITY],
+    harness: { autoStart: false },
+    closeAction: 'quit',
     zentao: { baseUrl: `http://127.0.0.1:${ztPort}`, account: 'e2e', pwdEnc: { plain: 'e2e-pwd' } },
     hanprint: { baseUrl: `http://127.0.0.1:${hpPort}`, clientId: '1', account: 'E2E工号', pwdEnc: { plain: 'e2e-pwd' } },
   }
@@ -218,8 +228,8 @@ const helpers = `
     while (Date.now() - t0 < ms) { if (fn()) return true; await sleep(step) }
     return false
   }
-  const viewReady = (ms = 25000) => waitFor(() => q('.fill-page') && q('.fill-page .project-select'), ms, 150)
-  const generateBtn = () => [...document.querySelectorAll('.fill-toolbar button')].find((b) => norm(b.textContent).includes('生成报告'))
+  const viewReady = (ms = 25000) => waitFor(() => q('.fill-page .fill-toolbar') && generateBtn(), ms, 150)
+  const generateBtn = () => [...document.querySelectorAll('#app-topbar-slot button')].find((b) => /生成报告|重新生成/.test(norm(b.textContent)))
   const submitBtn = () => [...document.querySelectorAll('.fill-actions button')].find((b) => norm(b.textContent).includes('一键提交') || norm(b.textContent).includes('已提交'))
   const submitEnabled = () => { const b = submitBtn(); return !!(b && !b.disabled) }
   const rowOf = (name) => [...document.querySelectorAll('.prow')].find((r) => norm(r.textContent).includes(name))
@@ -227,10 +237,29 @@ const helpers = `
   const confirmBtn = () => boxBtn('提交')
   const toasts = () => [...document.querySelectorAll('.el-message')].map((x) => norm(x.textContent))
   const waitToasts = async (ms) => { const seen = new Set(); const t0 = Date.now(); while (Date.now() - t0 < ms) { toasts().forEach((t) => seen.add(t)); await sleep(150) } return [...seen] }
-  const logLines = () => [...document.querySelectorAll('.logline')].map((x) => norm(x.textContent))
-  const logLineEls = () => [...document.querySelectorAll('.logline')]
-  const lineBtn = (el, text) => [...el.querySelectorAll('button')].find((b) => norm(b.textContent).includes(text))
-  const logTime = (el) => norm(el.querySelector('.log-time')?.textContent || '')
+  const logLineEls = () => [...document.querySelectorAll('.fill-log-table .el-table__body-wrapper .el-table__row')]
+  const logLines = () => logLineEls().map((x) => norm(x.textContent))
+  const failedLine = (el) => !!el.querySelector('.log-status.is-error')
+  const closeActions = async () => {
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    await sleep(250)
+  }
+  const lineActions = async (el) => {
+    await closeActions()
+    const trigger = el.querySelector('button[aria-label="提交记录操作"]')
+    if (!trigger) return []
+    trigger.click()
+    // 按触发按钮关联菜单，避免上一个菜单的关闭动画把操作项串到下一行。
+    const items = () => {
+      const menu = [...document.querySelectorAll('.el-dropdown-menu')].find((item) => item.getAttribute('aria-labelledby') === trigger.id)
+      return menu && menu.getClientRects().length > 0 ? [...menu.querySelectorAll('.el-dropdown-menu__item')] : []
+    }
+    await waitFor(() => items().length > 0)
+    return items()
+  }
+  const lineBtn = async (el, text) => (await lineActions(el)).find((item) => norm(item.textContent).includes(text))
+  const logTime = (el) => norm(el.querySelector('td')?.textContent || '')
   const dateShortcuts = () => [...document.querySelectorAll('.el-picker-panel__shortcut')]
   const pickYesterday = async () => {
     const inp = q('.fill-toolbar .el-date-editor input'); if (!inp) return false
@@ -258,7 +287,7 @@ const EVAL = `(async () => {
   ${helpers}
   const r = {}
   if (!await viewReady()) { done(); return { fatal: '一键填报页未就绪' } }
-  await waitFor(submitEnabled, 30000) // 仓库扫描就绪后生成按钮可用
+  await waitFor(() => generateBtn() && !generateBtn().disabled, 30000)
 
   // ── 第 1 轮（今天）：两任务 POST 响应均为空 body 但已写入 → 整体成功
   const gen1 = generateBtn()
@@ -282,10 +311,9 @@ const EVAL = `(async () => {
   r.round2Logs = await waitFor(() => logLines().length >= 2, 20000, 200) ? logLines() : logLines()
 
   // ── 第 3 轮：失败条目「重新提交」→ 补全并整体成功
-  const failLine = [...document.querySelectorAll('.logline')].reverse()
-    .find((l) => l.querySelector('.el-tag--danger'))
+  const failLine = logLineEls().reverse().find(failedLine)
   r.failLineText = failLine ? norm(failLine.textContent) : ''
-  const rebtn = failLine && lineBtn(failLine, '重新提交')
+  const rebtn = failLine && await lineBtn(failLine, '重新提交')
   r.rebtnFound = !!rebtn
   if (rebtn) {
     rebtn.click()
@@ -297,11 +325,17 @@ const EVAL = `(async () => {
 
   // ── R5：只有失败记录显示「重新提交」（成功记录不再提供）
   const lines = logLineEls()
-  r.lineTags = lines.map((l) => (l.querySelector('.el-tag--danger') ? 'fail' : 'ok'))
-  r.successWithResub = lines.filter((l) => l.querySelector('.el-tag--success') && lineBtn(l, '重新提交')).length
-  r.failWithResub = lines.filter((l) => l.querySelector('.el-tag--danger') && lineBtn(l, '重新提交')).length
-  r.successCount = lines.filter((l) => l.querySelector('.el-tag--success')).length
-  r.failCount = lines.filter((l) => l.querySelector('.el-tag--danger')).length
+  r.lineTags = lines.map((l) => failedLine(l) ? 'fail' : 'ok')
+  r.successWithResub = 0
+  r.failWithResub = 0
+  for (const line of lines) {
+    const hasRetry = !!await lineBtn(line, '重新提交')
+    if (hasRetry && failedLine(line)) r.failWithResub++
+    if (hasRetry && !failedLine(line)) r.successWithResub++
+  }
+  await closeActions()
+  r.successCount = lines.filter((l) => !failedLine(l)).length
+  r.failCount = lines.filter(failedLine).length
   const svc = await window.gitReport.fillLog(20)
   r.svcFlags = (svc.entries || []).map((e) => ({
     at: e.at,
@@ -323,9 +357,9 @@ const EVAL = `(async () => {
   r.logsAfterRefuse = logLines()
 
   // ── R6：删除记录（删今天那条成功留痕，昨日两条保留）
-  const delTarget = lines.filter((l) => l.querySelector('.el-tag--success')).pop()
+  const delTarget = lines.filter((l) => !failedLine(l)).pop()
   r.delTargetTime = delTarget ? logTime(delTarget) : ''
-  const dbtn = delTarget && lineBtn(delTarget, '删除')
+  const dbtn = delTarget && await lineBtn(delTarget, '删除')
   r.delBtnFound = !!dbtn
   if (dbtn) {
     dbtn.click()
@@ -335,7 +369,7 @@ const EVAL = `(async () => {
   r.delSettled = await waitFor(() => logLineEls().length === lines.length - 1, 12000, 150)
   r.logsAfterDelete = logLines()
   r.timesAfterDelete = logLineEls().map(logTime)
-  r.failKept = logLineEls().filter((l) => l.querySelector('.el-tag--danger')).length
+  r.failKept = logLineEls().filter(failedLine).length
   done()
   return r
 })()`
@@ -346,7 +380,6 @@ const EXE = process.env.E2E_EXE ? path.resolve(process.env.E2E_EXE) : ''
 function launch(evalScript, shotName) {
   const env = {
     ...process.env,
-    USERPROFILE: SANDBOX,
     PROJECT_MANAGER_USER_DATA: USER_DATA,
     SMOKE_EXIT_MS: '150000',
     SMOKE_VIEW: '一键填报',
@@ -354,6 +387,12 @@ function launch(evalScript, shotName) {
     SMOKE_EVAL_MS: '6000',
     SMOKE_SCREENSHOT_PATH: path.join(SHOT_DIR, shotName),
     SMOKE_SHOT_MS: '5000',
+  }
+  // 与现有桌面回归保持一致：隔离应用目录，不能覆盖 Electron 解析 userData 所需的 USERPROFILE。
+  if (process.platform === 'win32') {
+    env.APPDATA = path.join(SANDBOX, 'roaming')
+    env.LOCALAPPDATA = path.join(SANDBOX, 'local')
+    for (const dir of [env.APPDATA, env.LOCALAPPDATA]) fs.mkdirSync(dir, { recursive: true })
   }
   const bin = EXE || process.execPath
   const args = EXE ? [] : [path.join(ROOT, 'node_modules', 'electron', 'cli.js'), '.']
@@ -394,6 +433,7 @@ async function main() {
     console.log('页面结果:', JSON.stringify(ev, null, 1))
 
     if (!ev || ev.fatal) {
+      if (!ev) console.error(stdout.split('\n').filter(line => /\[SMOKE\]|error|failed/i.test(line)).slice(-12).join('\n'))
       assert('一键填报页就绪并完成四轮交互', false, (ev && ev.fatal) || 'EVAL 未返回结果')
     } else {
       // R1 响应异常不中止：整体成功（按钮变「已提交」），无失败提示
@@ -405,7 +445,7 @@ async function main() {
       // R2 部分失败：错误标明进度、面板出现失败条目
       assert('R2 第 2 轮失败提示标明已写入进度 1/2', ev.round2Toasts.some((t) => t.includes('无法确认') && t.includes('1/2')),
         JSON.stringify(ev.round2Toasts))
-      assert('R2 提交记录面板出现失败条目（禅道 1/2）', ev.round2Logs.some((l) => l.includes('失败') && l.includes('禅道 1/2')),
+      assert('R2 提交记录面板出现失败条目（禅道 1/2）', ev.round2Logs.some((l) => l.includes('失败') && l.includes('1/2')),
         JSON.stringify(ev.round2Logs))
 
       // R3/R4 重新提交：按钮存在且重放后整体成功
@@ -449,8 +489,12 @@ async function main() {
   }
 
   // ── 服务端与留痕断言（应用退出后读 fake 网关状态与 fill-log.json）──
-  const ztA = (zt.state.efforts[String(TASK_A)] || [])
-  const ztB = (zt.state.efforts[String(TASK_B)] || [])
+  const ztA = (zt.state.efforts[String(TASK_A)] || []).filter((row) => row.account === 'e2e')
+  const ztB = (zt.state.efforts[String(TASK_B)] || []).filter((row) => row.account === 'e2e')
+  const peer = (zt.state.efforts[String(TASK_B)] || []).filter((row) => row.account !== 'e2e')
+  assert('多人任务兼容：其他成员的 6 小时记录完整保留，表单不复用其 ID',
+    JSON.stringify(peer) === JSON.stringify([zt.state.peerEffort]) && zt.state.posts.every((post) => !post.keys.includes('dates[899]')),
+    JSON.stringify(peer))
   const today = new Date()
   const pad = (n) => String(n).padStart(2, '0')
   const todayStr = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`

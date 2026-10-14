@@ -48,6 +48,12 @@ function parseJsonPrefix(text) {
   throw new Error(`禅道响应解析失败: ${s.slice(0, 120)}`)
 }
 
+/** 工时接口返回 HTML 转义的说明；只还原一层，保留用户原文中的字面实体。 */
+function decodeEffortWork(text) {
+  const entities = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", '#039': "'", '#39': "'" }
+  return String(text || '').replace(/&(amp|lt|gt|quot|apos|#039|#39);/g, (_, entity) => entities[entity])
+}
+
 class ZentaoClient {
   constructor({ baseUrl, account, password, fetchImpl }) {
     this.base = String(baseUrl || '').replace(/\/+$/, '')
@@ -265,8 +271,8 @@ class ZentaoClient {
   }
 
   /**
-   * 查询任务已有工时记录（recordEstimate 页面数据，魔改版返回结构不定，容错解析）。
-   * 返回 [{ id, date:'YYYY-MM-DD', work, consumed, left }]；查询或解析失败抛错，避免误追加。
+   * 查询当前账号在任务中的已有工时（recordEstimate 页面同时包含其他人的记录）。
+   * 返回 [{ id, date:'YYYY-MM-DD', work, consumed, left }]；查询、归属或解析失败抛错，避免误追加。
    */
   async getTaskEfforts(taskId) {
     const d = await this.getJson(`/index.php?m=task&f=recordEstimate&taskID=${taskId}&t=json`)
@@ -283,12 +289,15 @@ class ZentaoClient {
     if (list.some((x) => !x || !Number.isInteger(Number(x.id)) || Number(x.id) <= 0 || !/^\d{4}-\d{2}-\d{2}/.test(String(x.date || '')) || !Number.isFinite(Number(x.consumed)) || Number(x.consumed) < 0)) {
       throw new Error('禅道已有工时记录不完整，已停止提交')
     }
+    if (list.some((x) => typeof x.account !== 'string' || !x.account.trim())) {
+      throw new Error('禅道已有工时记录缺少账号，无法确认归属，已停止提交')
+    }
     return list
-      .filter((x) => x && x.id !== undefined)
+      .filter((x) => x.account === this.account)
       .map((x) => ({
         id: Number(x.id),
         date: String(x.date || '').slice(0, 10),
-        work: String(x.work || x.workDesc || ''),
+        work: decodeEffortWork(x.work || x.workDesc),
         consumed: Number(x.consumed || 0),
         left: Number(x.left || 0),
       }))
@@ -346,14 +355,22 @@ class ZentaoClient {
   }
 
   /**
-   * 回查核实：当日已有工时记录与本次提交的每一行（work + consumed）均匹配 → 已写入。
-   * work 是当天唯一的编号列表，精确匹配即可；查询失败由调用方按「无法确认」处理。
+   * 回查核实：每一行的说明、工时均匹配独立的当日记录，覆盖时还必须匹配目标 ID。
+   * getTaskEfforts 已还原平台转义，提交原文不做转换；查询失败仍按「无法确认」处理。
    */
   async verifyEfforts(taskId, rows) {
     const date = rows && rows[0] && rows[0].date
     if (!date) return false
     const today = (await this.getTaskEfforts(taskId)).filter((e) => e.date === date)
-    return rows.every((r) => today.some((e) => e.work === r.work && Number(e.consumed) === Number(r.consumed)))
+    const matched = new Set()
+    return rows.every((r) => {
+      const hit = today.find((e) => !matched.has(e.id)
+        && (r.effortId == null || e.id === Number(r.effortId))
+        && e.work === r.work && Number(e.consumed) === Number(r.consumed))
+      if (!hit) return false
+      matched.add(hit.id)
+      return true
+    })
   }
 }
 

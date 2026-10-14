@@ -435,7 +435,7 @@ await test('recordEstimates 带 effortId 时键用已有记录 ID（更新覆盖
 })
 
 await test('getTaskEfforts：容错解析（data 字符串 + efforts dict + 尾部脏数据）', async () => {
-  const inner = JSON.stringify({ efforts: { '501': { id: '501', date: '2026-09-07 00:00:00', work: '旧内容', consumed: '2', left: '1' } } })
+  const inner = JSON.stringify({ efforts: { '501': { id: '501', account: 'wgl', date: '2026-09-07 00:00:00', work: '旧内容', consumed: '2', left: '1' } } })
   const { client } = makeClient((url, opts) => {
     if (url.includes('refreshRandom')) return { body: 'r1' }
     if (opts.method === 'POST' && url.includes('user&f=login')) return { body: '{"result":"success"}' }
@@ -461,6 +461,68 @@ await test('getTaskEfforts：会话失效不再当成空记录', async () => {
   })
   await client.login()
   await assert.rejects(() => client.getTaskEfforts(66), /会话失效/)
+})
+
+await test('getTaskEfforts：工作说明只还原一层 HTML 实体，保留字面实体及换行', async () => {
+  const { client } = makeClient(() => ({ body: JSON.stringify({ data: { efforts: [
+    { id: 501, account: 'wgl', date: '2026-09-07', consumed: 2, work: '1. List&lt;T&gt; &amp; &quot;参数&quot; &#039;字段&#039;\n2. 字面 &amp;lt; &amp;amp;' },
+    { id: 502, account: 'wgl', date: '2026-09-07', consumed: 1, workDesc: '保留 &unknown; 与 &#39;引号&#39;、&apos;别名&apos;' },
+  ] } }) }))
+  const rows = await client.getTaskEfforts(66)
+  assert.strictEqual(rows[0].work, '1. List<T> & "参数" \'字段\'\n2. 字面 &lt; &amp;')
+  assert.strictEqual(rows[1].work, "保留 &unknown; 与 '引号'、'别名'")
+})
+
+await test('recordEfforts：HTML 响应回查已转义的说明后成功，不重复 POST', async () => {
+  const rows = [{ date: '2026-09-07', work: '1. List<T> & 参数\n2. 保留 &lt; 字面量', consumed: 2, left: 8 }]
+  const { client, ff } = makeClient((url, opts) => opts.method === 'POST'
+    ? { body: '<script>parent.parent.ajaxRefresh()</script>' }
+    : { body: JSON.stringify({ data: { efforts: [{ id: 501, account: 'wgl', ...rows[0], work: '1. List&lt;T&gt; &amp; 参数\n2. 保留 &amp;lt; 字面量' }] } }) })
+  assert.strictEqual((await client.recordEfforts(66, rows)).verified, true)
+  assert.strictEqual(ff.calls.filter(c => c.opts.method === 'POST').length, 1)
+  assert.strictEqual(new URLSearchParams(ff.calls[0].opts.body).get('work[1]'), rows[0].work)
+})
+
+await test('recordEfforts：回查内容、日期或工时不一致时仍停止，不把 HTML 响应当成功', async () => {
+  const row = { date: '2026-09-07', work: '1. List<T>', consumed: 2, left: 8 }
+  for (const change of [{ work: '1. List&lt;U&gt;' }, { work: '1. List&amp;lt;T&amp;gt;' }, { consumed: 1 }, { date: '2026-09-06' }]) {
+    const { client, ff } = makeClient((url, opts) => opts.method === 'POST'
+      ? { body: '<script>parent.parent.ajaxRefresh()</script>' }
+      : { body: JSON.stringify({ data: { efforts: [{ id: 501, account: 'wgl', ...row, work: '1. List&lt;T&gt;', ...change }] } }) })
+    await assert.rejects(() => client.recordEfforts(66, [row]), /无法确认禅道提交结果/)
+    assert.strictEqual(ff.calls.filter(c => c.opts.method === 'POST').length, 1)
+  }
+})
+
+await test('verifyEfforts：重复内容需要独立记录，覆盖操作必须匹配目标 ID', async () => {
+  const row = { date: '2026-09-07', account: 'wgl', work: '相同说明', consumed: 2, left: 8 }
+  let saved = [{ id: 501, ...row }]
+  const { client } = makeClient(() => ({ body: JSON.stringify({ data: { efforts: saved } }) }))
+  assert.strictEqual(await client.verifyEfforts(66, [row, row]), false)
+  saved = [{ id: 501, ...row }, { id: 501, ...row }]
+  assert.strictEqual(await client.verifyEfforts(66, [row, row]), false)
+  saved = [{ id: 501, ...row }, { id: 502, ...row }]
+  assert.strictEqual(await client.verifyEfforts(66, [row, row]), true)
+  assert.strictEqual(await client.verifyEfforts(66, [{ ...row, effortId: 503 }]), false)
+  assert.strictEqual(await client.verifyEfforts(66, [{ ...row, effortId: 502 }]), true)
+})
+
+await test('getTaskEfforts：只返回当前账号的记录，他人相同内容不能用来确认本次写入', async () => {
+  const row = { date: '2026-09-07', work: '相同内容', consumed: 2, left: 8 }
+  let saved = [{ id: 501, account: 'colleague', ...row }, { id: 502, account: 'wgl', ...row }]
+  const { client } = makeClient(() => ({ body: JSON.stringify({ data: { efforts: saved } }) }))
+  assert.deepStrictEqual((await client.getTaskEfforts(66)).map(item => item.id), [502])
+  saved = saved.slice(0, 1)
+  assert.strictEqual(await client.verifyEfforts(66, [row]), false)
+})
+
+await test('getTaskEfforts：记录账号缺失或为空时阻止提交，不能推定为本人或空记录', async () => {
+  for (const account of [undefined, null, '', ' ']) {
+    const { client } = makeClient(() => ({ body: JSON.stringify({ data: { efforts: [
+      { id: 501, account, date: '2026-09-07', consumed: 2, work: '工作内容' },
+    ] } }) }))
+    await assert.rejects(() => client.getTaskEfforts(66), /账号.*停止提交/)
+  }
 })
 
 await test('getTaskEfforts：明确空列表可用，未知结构、错误页及网络异常必须抛错', async () => {
@@ -865,6 +927,61 @@ async function withStubClients(fn, overrides = {}) {
   }
 }
 
+await test('submit：转义回查后继续双平台，重提只更新本人，改绑减少行数仍拦截', async () => {
+  const date = '2026-10-14'
+  const peerRow = { id: 499, account: 'colleague', date, consumed: 6, left: 6, work: '' }
+  const saved = new Map([[88, [{ ...peerRow }]]])
+  let nextId = 500
+  let posts = 0
+  const { client } = makeClient((url, opts) => {
+    const taskId = Number(new URL(url).searchParams.get('taskID'))
+    const list = saved.get(taskId) || []
+    if (opts.method === 'POST') {
+      posts += 1
+      const form = new URLSearchParams(opts.body)
+      for (const key of form.keys()) {
+        const match = /^dates\[(\d+)\]$/.exec(key)
+        if (!match) continue
+        const index = match[1]
+        let row = list.find(item => item.id === Number(index))
+        if (!row) { row = { id: ++nextId }; list.push(row) }
+        Object.assign(row, { account: 'wgl', date: form.get(key), work: form.get(`work[${index}]`), consumed: Number(form.get(`consumed[${index}]`)), left: Number(form.get(`left[${index}]`)) })
+      }
+      saved.set(taskId, list)
+      return { body: '<script>parent.parent.ajaxRefresh()</script>' }
+    }
+    return { body: JSON.stringify({ data: { efforts: list.map(row => ({ ...row,
+      work: row.work.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+    })) } }) }
+  })
+  const payload = { date, tasks: [
+    { taskId: 66, rows: [{ date, work: '1. List<T> & 泛型', consumed: 2 }, { date, work: '1. 第二项目', consumed: 1 }] },
+    { taskId: 88, rows: [{ date, work: '1. 后续任务', consumed: 1 }] },
+  ], hp: { items: [{ TaskId: '66', Percent: 75, WorkDate: date }, { TaskId: '88', Percent: 25, WorkDate: date }] } }
+  const { hpAddCalls } = await withStubClients(async () => {
+    const first = await fill.submit(payload)
+    assert.ok(first.results.every(item => item.verified))
+    assert.strictEqual(first.results.length, 2)
+    assert.ok(first.hp)
+    assert.strictEqual(first.results.find(item => item.taskId === 88).updated, 0)
+    assert.strictEqual(saved.get(88).find(row => row.account === 'wgl').left, 9)
+    const ids = [...saved.values()].flat().map(row => row.id)
+    const second = await fill.submit(payload)
+    assert.ok(second.results.every(item => item.verified && item.appended === 0))
+    assert.deepStrictEqual([...saved.values()].flat().map(row => row.id), ids)
+    assert.strictEqual(posts, 4)
+    const changed = { ...payload, tasks: [{ ...payload.tasks[0], rows: payload.tasks[0].rows.slice(0, 1) }, payload.tasks[1]] }
+    await assert.rejects(() => fill.submit(changed), /已有 2 条工时，本次只有 1 条/)
+    assert.strictEqual(posts, 4)
+  }, { zt: {
+    getTaskEfforts: client.getTaskEfforts.bind(client),
+    recordEfforts: client.recordEfforts.bind(client),
+  } })
+  assert.strictEqual(hpAddCalls.length, 2)
+  assert.deepStrictEqual(saved.get(88).find(row => row.id === peerRow.id), peerRow)
+  assert.strictEqual([...saved.values()].flat().filter(row => row.account === 'wgl').reduce((sum, row) => sum + row.consumed, 0), 4)
+})
+
 await test('submit：0% 条目不进汉印提交体，其余占比仍合计 100', async () => {
   const { r, sent } = await withStubClients(() => fill.submit({
     date: '2026-09-07',
@@ -946,7 +1063,7 @@ await test('recordEfforts：响应非 JSON 但回查当日记录逐行匹配 →
     if (opts.method === 'POST' && url.includes('user&f=login')) return { body: '{"result":"success"}' }
     if (opts.method === 'POST') return { body: '' } // 提交响应为空 body：无法解析
     if (url.includes('recordEstimate')) {
-      return { body: JSON.stringify({ data: { efforts: [{ id: '900', date: '2026-09-07', work: '1. 工作A', consumed: '2', left: '8' }] } }) }
+      return { body: JSON.stringify({ data: { efforts: [{ id: '900', account: 'wgl', date: '2026-09-07', work: '1. 工作A', consumed: '2', left: '8' }] } }) }
     }
     return { body: '' }
   })
@@ -1276,7 +1393,8 @@ await test('全新配置（无 config.json）回落公司默认地址与公司 1
   assert.strictEqual(cfg.hanprint.clientId, '1')
 })
 await test('历史配置里地址/公司留空 → 回落默认，不显示空值', () => {
-  store.save({ ai: { baseUrl: '' }, zentao: { baseUrl: '', account: 'wgl' }, hanprint: { baseUrl: '', clientId: '', account: '21290' } })
+  // 直接构造无 profiles 的旧配置；新版 save 会升级数据，不能用来生成历史样本。
+  fs.writeFileSync(path.join(tmpRoot, 'userdata', 'config.json'), JSON.stringify({ ai: { baseUrl: '' }, zentao: { baseUrl: '', account: 'wgl' }, hanprint: { baseUrl: '', clientId: '', account: '21290' } }))
   const cfg = store.load()
   assert.strictEqual(cfg.ai.baseUrl, 'http://ai.sysapp.prttech.com:18080/v1')
   assert.strictEqual(cfg.zentao.baseUrl, 'http://10.11.34.2')
