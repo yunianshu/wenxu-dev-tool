@@ -677,7 +677,7 @@ async function submitFill(preview) {
       const hpPreview = r.hp && r.hp.json ? r.hp.json : hpItems
       previewDialog.value = {
         visible: true,
-        content: `【禅道 recordEstimate】\n${JSON.stringify(r.results, null, 2)}\n\n【汉印 workhour/add】\n${JSON.stringify(hpPreview, null, 2)}`,
+        content: `【禅道工时】\n${JSON.stringify(r.results, null, 2)}\n\n【汉印 workhour/add】\n${JSON.stringify(hpPreview, null, 2)}`,
       }
     } else {
       state.fillReport.plan = { ...p, submittedAt: new Date().toTimeString().slice(0, 5) }

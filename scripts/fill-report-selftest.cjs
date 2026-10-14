@@ -418,7 +418,7 @@ await test('recordEstimates dryRun：表单数组语法构造（无 effortId 时
   assert.strictEqual(r.form['id[1]'], 1)
 })
 
-await test('recordEstimates 带 effortId 时键用已有记录 ID（更新覆盖）', async () => {
+await test('recordEstimates 带 effortId 时使用编辑接口和单条表单，不向新增接口传 ID', async () => {
   const { client } = makeClient((url, opts) => {
     if (url.includes('refreshRandom')) return { body: 'r1' }
     if (opts.method === 'POST' && url.includes('user&f=login')) return { body: '{"result":"success"}' }
@@ -428,10 +428,72 @@ await test('recordEstimates 带 effortId 时键用已有记录 ID（更新覆盖
   const r = await client.recordEfforts(66, [
     { date: '2026-09-07', work: '更新内容', consumed: 3, left: 1, effortId: 502 },
   ], true)
-  assert.strictEqual(r.form['dates[502]'], '2026-09-07')
-  assert.strictEqual(r.form['id[502]'], 502)
-  assert.strictEqual(r.form['consumed[502]'], 3)
-  assert.ok(!r.form['dates[1]'])
+  assert.ok(r.url.includes('f=editEstimate&effortID=502&onlybody=yes'))
+  assert.deepStrictEqual(r.form, { date: '2026-09-07', work: '更新内容', consumed: 3, left: 1 })
+})
+
+await test('recordEfforts：先编辑已有 ID 再追加新增行，新增接口只追加且忽略表单 ID', async () => {
+  const date = '2026-10-14'
+  const saved = [{ id: 501, account: 'wgl', date, work: '旧内容', consumed: 1, left: 9 }]
+  const { client, ff } = makeClient((url, opts) => {
+    const u = new URL(url)
+    if (opts.method !== 'POST') return { body: JSON.stringify({ data: { efforts: saved } }) }
+    const form = new URLSearchParams(opts.body)
+    if (u.searchParams.get('f') === 'editEstimate') {
+      assert.strictEqual(u.searchParams.get('effortID'), '501')
+      Object.assign(saved[0], { date: form.get('date'), work: form.get('work'), consumed: Number(form.get('consumed')), left: Number(form.get('left')) })
+    } else {
+      for (const key of form.keys()) {
+        const match = /^dates\[(\d+)\]$/.exec(key)
+        if (!match) continue
+        const index = match[1]
+        saved.push({ id: 501 + saved.length, account: 'wgl', date: form.get(key), work: form.get(`work[${index}]`), consumed: Number(form.get(`consumed[${index}]`)), left: Number(form.get(`left[${index}]`)) })
+      }
+    }
+    return { body: '<script>parent.parent.ajaxRefresh()</script>' }
+  })
+  const result = await client.recordEfforts(66, [
+    { date, work: '更新内容', consumed: 2, left: 6, effortId: 501 },
+    { date, work: '新增内容', consumed: 2, left: 6 },
+  ])
+  assert.strictEqual(result.verified, true)
+  assert.deepStrictEqual(saved.map(row => [row.id, row.work, row.consumed]), [[501, '更新内容', 2], [502, '新增内容', 2]])
+  assert.deepStrictEqual(ff.calls.filter(c => c.opts.method === 'POST').map(c => new URL(c.url).searchParams.get('f')), ['editEstimate', 'recordEstimate'])
+})
+
+await test('recordEfforts：编辑 ID 必须属于当前账号和目标日期，全部校验后才能开始写入', async () => {
+  for (const existing of [[], [{ id: 501, account: 'colleague', date: '2026-10-14', consumed: 2, work: '同事' }], [{ id: 501, account: 'wgl', date: '2026-10-13', consumed: 2, work: '昨天' }]]) {
+    const { client, ff } = makeClient(() => ({ body: JSON.stringify({ data: { efforts: existing } }) }))
+    await assert.rejects(() => client.recordEfforts(66, [{ date: '2026-10-14', work: '更新', consumed: 2, left: 8, effortId: 501 }]), /记录.*当前账号/)
+    assert.strictEqual(ff.calls.filter(c => c.opts.method === 'POST').length, 0)
+  }
+})
+
+await test('recordEfforts：编辑响应与原 ID 不符时停止，不继续追加或重试', async () => {
+  const row = { id: 501, account: 'wgl', date: '2026-10-14', work: '旧内容', consumed: 1, left: 9 }
+  const { client, ff } = makeClient((url, opts) => opts.method === 'POST'
+    ? { body: '<script>ajaxRefresh()</script>' }
+    : { body: JSON.stringify({ data: { efforts: [row, { ...row, id: 502, work: '更新内容', consumed: 2 }] } }) })
+  await assert.rejects(() => client.recordEfforts(66, [{ ...row, effortId: 501, work: '更新内容', consumed: 2 }, { ...row, work: '新增内容' }]), /无法确认禅道提交结果/)
+  assert.strictEqual(ff.calls.filter(c => c.opts.method === 'POST').length, 1)
+})
+
+await test('recordEfforts：混合提交整体核实，新行不能借用同内容的已编辑记录', async () => {
+  const row = { id: 501, account: 'wgl', date: '2026-10-14', work: '相同内容', consumed: 1, left: 9 }
+  const { client, ff } = makeClient((url, opts) => opts.method === 'POST'
+    ? { body: '<script>ajaxRefresh()</script>' }
+    : { body: JSON.stringify({ data: { efforts: [row] } }) })
+  await assert.rejects(() => client.recordEfforts(66, [{ ...row, effortId: 501 }, row]), /无法确认禅道提交结果/)
+  assert.strictEqual(ff.calls.filter(c => c.opts.method === 'POST').length, 2)
+})
+
+await test('recordEfforts：无效或重复编辑 ID 在查询和写入前拒绝', async () => {
+  const row = { date: '2026-10-14', work: '更新', consumed: 1, left: 9 }
+  for (const ids of [[0], [-1], ['invalid'], [1.5], [501, '501']]) {
+    const { client, ff } = makeClient(() => { throw new Error('不应访问平台') })
+    await assert.rejects(() => client.recordEfforts(66, ids.map(effortId => ({ ...row, effortId }))), /ID 无效或重复/)
+    assert.strictEqual(ff.calls.length, 0)
+  }
 })
 
 await test('getTaskEfforts：容错解析（data 字符串 + efforts dict + 尾部脏数据）', async () => {
@@ -934,17 +996,24 @@ await test('submit：转义回查后继续双平台，重提只更新本人，�
   let nextId = 500
   let posts = 0
   const { client } = makeClient((url, opts) => {
-    const taskId = Number(new URL(url).searchParams.get('taskID'))
+    const u = new URL(url)
+    const taskId = Number(u.searchParams.get('taskID'))
     const list = saved.get(taskId) || []
     if (opts.method === 'POST') {
       posts += 1
       const form = new URLSearchParams(opts.body)
+      if (u.searchParams.get('f') === 'editEstimate') {
+        const row = [...saved.values()].flat().find(item => item.id === Number(u.searchParams.get('effortID')))
+        assert.ok(row && row.account === 'wgl')
+        Object.assign(row, { date: form.get('date'), work: form.get('work'), consumed: Number(form.get('consumed')), left: Number(form.get('left')) })
+        return { body: '<script>parent.parent.ajaxRefresh()</script>' }
+      }
       for (const key of form.keys()) {
         const match = /^dates\[(\d+)\]$/.exec(key)
         if (!match) continue
         const index = match[1]
-        let row = list.find(item => item.id === Number(index))
-        if (!row) { row = { id: ++nextId }; list.push(row) }
+        const row = { id: ++nextId }
+        list.push(row)
         Object.assign(row, { account: 'wgl', date: form.get(key), work: form.get(`work[${index}]`), consumed: Number(form.get(`consumed[${index}]`)), left: Number(form.get(`left[${index}]`)) })
       }
       saved.set(taskId, list)
@@ -969,10 +1038,10 @@ await test('submit：转义回查后继续双平台，重提只更新本人，�
     const second = await fill.submit(payload)
     assert.ok(second.results.every(item => item.verified && item.appended === 0))
     assert.deepStrictEqual([...saved.values()].flat().map(row => row.id), ids)
-    assert.strictEqual(posts, 4)
+    assert.strictEqual(posts, 5)
     const changed = { ...payload, tasks: [{ ...payload.tasks[0], rows: payload.tasks[0].rows.slice(0, 1) }, payload.tasks[1]] }
     await assert.rejects(() => fill.submit(changed), /已有 2 条工时，本次只有 1 条/)
-    assert.strictEqual(posts, 4)
+    assert.strictEqual(posts, 5)
   }, { zt: {
     getTaskEfforts: client.getTaskEfforts.bind(client),
     recordEfforts: client.recordEfforts.bind(client),

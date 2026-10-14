@@ -4,7 +4,8 @@
  * - 登录：GET refreshRandom 取随机数 → md5(md5(pwd)+rand) 加密 → POST 登录（keepLogin）
  * - 我的任务（进行中）：GET /index.php?m=my&f=work&mode=task&t=json
  * - 我的任务（含已完成/已关闭，供绑定任务选择）：GET /index.php?m=my&f=task&t=json
- * - 工时填报：POST /index.php?m=task&f=recordEstimate&taskID=<id>&onlybody=yes（表单数组 dates[i]/work[i]/consumed[i]/left[i]）
+ * - 新增工时：POST recordEstimate&taskID=<id>（表单数组 dates[i]/work[i]/consumed[i]/left[i]）
+ * - 编辑工时：POST editEstimate&effortID=<id>（单条表单 date/work/consumed/left）
  * 凭据：地址/账号在 config.json 的 zentao 节，密码经 safeStorage 加密落盘，明文只存在于主进程内存。
  * fetch 可注入（fetchImpl）以便自测；cookie 手工管理（全局 fetch 无 cookie jar）。
  */
@@ -305,24 +306,61 @@ class ZentaoClient {
 
   /**
    * 工时填报。rows: [{ date:'YYYY-MM-DD', work, consumed, left, effortId? }]
-   * 表单键使用 effortId（任务已有记录的 ID → 更新覆盖）；未提供时退回行号（追加，同 KnowMore）。
+   * recordEstimate 始终追加，传已有 ID 也不会更新；已有记录必须逐条调用 editEstimate。
    * dryRun=true 只构造表单不发请求（预览用）。
    */
   async recordEfforts(taskId, rows, dryRun = false) {
-    const form = {}
     const list = rows || []
-    for (let i = 0; i < list.length; i += 1) {
-      const row = list[i]
-      // eslint-disable-next-line no-nested-ternary
-      const key = row.effortId !== undefined && row.effortId !== null ? row.effortId : i + 1
+    const updates = list.filter((row) => row.effortId != null)
+    const additions = list.filter((row) => row.effortId == null)
+    const ids = updates.map((row) => Number(row.effortId))
+    if (ids.some((id) => !Number.isInteger(id) || id <= 0) || new Set(ids).size !== ids.length) {
+      throw new Error('禅道待编辑记录 ID 无效或重复，已停止提交')
+    }
+    const operations = updates.map((row) => ({
+      path: `/index.php?m=task&f=editEstimate&effortID=${Number(row.effortId)}&onlybody=yes`,
+      form: { date: row.date, work: row.work, consumed: row.consumed, left: row.left },
+      rows: [row],
+    }))
+    const form = {}
+    for (let i = 0; i < additions.length; i += 1) {
+      const row = additions[i]
+      const key = i + 1
       form[`dates[${key}]`] = row.date
       form[`id[${key}]`] = key
       form[`work[${key}]`] = row.work
       form[`consumed[${key}]`] = row.consumed
       form[`left[${key}]`] = row.left
     }
-    const path = `/index.php?m=task&f=recordEstimate&taskID=${taskId}&onlybody=yes`
-    if (dryRun) return { dryRun: true, url: this.base + path, form }
+    if (additions.length) operations.push({ path: `/index.php?m=task&f=recordEstimate&taskID=${taskId}&onlybody=yes`, form, rows: additions })
+    if (!operations.length) throw new Error('没有可提交的禅道工时')
+    if (dryRun) {
+      const requests = operations.map((op) => ({ url: this.base + op.path, form: op.form }))
+      return { dryRun: true, ...requests[0], requests }
+    }
+    // 写入前校验全部编辑对象，不能通过指定 ID 修改别的任务、日期或成员的记录。
+    if (updates.length) {
+      const owned = await this.getTaskEfforts(taskId)
+      if (updates.some((row) => !owned.some((saved) => saved.id === Number(row.effortId) && saved.date === row.date))) {
+        throw new Error('禅道待编辑记录不属于当前账号的目标任务和日期，已停止提交')
+      }
+    }
+    const results = []
+    for (const op of operations) {
+      // 编辑任一行失败即停止，不能继续追加，也不自动重发已执行的请求。
+      results.push(await this.postEffortForm(taskId, op.path, op.form, op.rows)) // eslint-disable-line no-await-in-loop
+    }
+    let verified = results.every((result) => result.verified)
+    if (operations.length > 1) {
+      // 分次写入后再整体匹配，防止新增失败时借用刚编辑的同内容记录确认成功。
+      verified = await this.verifyEfforts(taskId, [...updates, ...additions])
+      if (!verified) throw new Error('无法确认禅道提交结果，请先核对平台记录，避免重复提交')
+    }
+    return { ...results[results.length - 1], verified }
+  }
+
+  /** 新增与编辑共用响应核实；非 JSON 响应必须回查内容和原记录 ID。 */
+  async postEffortForm(taskId, path, form, rows) {
     const resp = await this.request(path, {
       method: 'POST',
       form,

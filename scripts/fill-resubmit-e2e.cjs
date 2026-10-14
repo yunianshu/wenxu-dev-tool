@@ -61,14 +61,18 @@ function git(cwd, args, extraEnv) {
   return r.stdout
 }
 
-/** 真实 Git 仓库：今天的提交（默认时间）+ 昨天的提交（GIT_AUTHOR_DATE/COMMITTER_DATE 定制） */
+/** 固定工作时段内的提交，配合界面显式选择下班时间，避免清晨运行时漏掉昨日提交。 */
 function createRepo(dir, todayMsg, yesterdayMsg) {
   fs.mkdirSync(dir, { recursive: true })
   git(dir, ['init', '-q'])
-  const yesterdayIso = new Date(Date.now() - 86400000).toISOString()
+  const today = new Date()
+  today.setHours(10, 0, 0, 0)
+  const yesterday = new Date(today)
+  yesterday.setDate(yesterday.getDate() - 1)
+  const yesterdayIso = yesterday.toISOString()
   const base = ['-c', `user.name=${IDENTITY.name}`, '-c', `user.email=${IDENTITY.email}`, 'commit', '-q', '--allow-empty']
   git(dir, [...base, '-m', yesterdayMsg], { GIT_AUTHOR_DATE: yesterdayIso, GIT_COMMITTER_DATE: yesterdayIso })
-  git(dir, [...base, '-m', todayMsg])
+  git(dir, [...base, '-m', todayMsg], { GIT_AUTHOR_DATE: today.toISOString(), GIT_COMMITTER_DATE: today.toISOString() })
 }
 
 /**
@@ -105,6 +109,23 @@ function startFakeZentao() {
       const t = myWorkTasks.find((x) => x.id === id) || {}
       return send(JSON.stringify({ status: '200', data: JSON.stringify({ task: t }) }))
     }
+    if (url.searchParams.get('f') === 'editEstimate' && req.method === 'POST') {
+      const effortId = Number(url.searchParams.get('effortID'))
+      const entry = Object.entries(state.efforts).find(([, rows]) => rows.some((row) => row.id === effortId && row.account === 'e2e'))
+      if (!entry) return send('{"result":"fail"}')
+      const [taskId, rows] = entry
+      let body = ''
+      req.on('data', (chunk) => { body += chunk })
+      req.on('end', () => {
+        const form = new URLSearchParams(body)
+        const row = rows.find((item) => item.id === effortId)
+        Object.assign(row, { date: form.get('date'), work: form.get('work'), consumed: Number(form.get('consumed')), left: Number(form.get('left')) })
+        postCount[taskId] = (postCount[taskId] || 0) + 1
+        state.posts.push({ taskId, n: postCount[taskId], action: 'editEstimate', effortId, keys: [] })
+        send('') // 编辑同样可能返回脚本或空正文，须按原 ID 回查。
+      })
+      return undefined
+    }
     if (url.searchParams.get('f') === 'recordEstimate') {
       const taskId = url.searchParams.get('taskID')
       if (req.method !== 'POST') {
@@ -127,7 +148,7 @@ function startFakeZentao() {
           const rows = Object.keys(form).filter((k) => k.startsWith('dates[')).map((k) => {
             const key = k.slice(6, -1)
             return {
-              id: Number(key) >= 900 ? Number(key) : (state.nextId += 1),
+              id: (state.nextId += 1), // 真实新增接口忽略表单 ID，始终生成新记录。
               account: 'e2e',
               date: form[`dates[${key}]`],
               work: form[`work[${key}]`],
@@ -136,14 +157,10 @@ function startFakeZentao() {
             }
           })
           const list = state.efforts[taskId] || []
-          for (const row of rows) {
-            const hit = list.find((x) => x.id === row.id)
-            if (hit) Object.assign(hit, row)
-            else list.push(row)
-          }
+          list.push(...rows)
           state.efforts[taskId] = list
         }
-        state.posts.push({ taskId, n, keys: Object.keys(form).filter((k) => k.startsWith('dates[')) })
+        state.posts.push({ taskId, n, action: 'recordEstimate', keys: Object.keys(form).filter((k) => k.startsWith('dates[')) })
         if (n === 1) {
           apply() // 第 1 轮：已写入但响应为空 body（非 JSON）→ 客户端须回查核实
           return send('')
@@ -203,7 +220,7 @@ function preseed(ztPort, hpPort) {
     identities: [IDENTITY],
     harness: { autoStart: false },
     closeAction: 'quit',
-    zentao: { baseUrl: `http://127.0.0.1:${ztPort}`, account: 'e2e', pwdEnc: { plain: 'e2e-pwd' } },
+    zentao: { baseUrl: `http://127.0.0.1:${ztPort}`, account: 'e2e', pwdEnc: { plain: 'e2e-pwd' }, workStart: '08:30' },
     hanprint: { baseUrl: `http://127.0.0.1:${hpPort}`, clientId: '1', account: 'E2E工号', pwdEnc: { plain: 'e2e-pwd' } },
   }
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2))
@@ -288,6 +305,11 @@ const EVAL = `(async () => {
   const r = {}
   if (!await viewReady()) { done(); return { fatal: '一键填报页未就绪' } }
   await waitFor(() => generateBtn() && !generateBtn().disabled, 30000)
+  q('.fill-end .el-select__wrapper')?.click()
+  const endOption = () => [...document.querySelectorAll('.el-select-dropdown__item')].find((el) => norm(el.textContent) === '18:00' && el.getClientRects().length > 0)
+  if (!await waitFor(() => !!endOption())) { done(); return { fatal: '下班时间选项未就绪' } }
+  endOption().click()
+  if (!await waitFor(() => norm(q('.fill-end')?.textContent).includes('18:00'))) { done(); return { fatal: '未设置固定测试下班时间' } }
 
   // ── 第 1 轮（今天）：两任务 POST 响应均为空 body 但已写入 → 整体成功
   const gen1 = generateBtn()
@@ -493,7 +515,7 @@ async function main() {
   const ztB = (zt.state.efforts[String(TASK_B)] || []).filter((row) => row.account === 'e2e')
   const peer = (zt.state.efforts[String(TASK_B)] || []).filter((row) => row.account !== 'e2e')
   assert('多人任务兼容：其他成员的 6 小时记录完整保留，表单不复用其 ID',
-    JSON.stringify(peer) === JSON.stringify([zt.state.peerEffort]) && zt.state.posts.every((post) => !post.keys.includes('dates[899]')),
+    JSON.stringify(peer) === JSON.stringify([zt.state.peerEffort]) && zt.state.posts.every((post) => post.effortId !== 899 && !post.keys.includes('dates[899]')),
     JSON.stringify(peer))
   const today = new Date()
   const pad = (n) => String(n).padStart(2, '0')
@@ -504,10 +526,13 @@ async function main() {
   assert('R1 两任务当天均有工具写入的工时记录', ztA.some((e) => e.date === todayStr) && ztB.some((e) => e.date === todayStr),
     JSON.stringify({ ztA: ztA.map((e) => e.date), ztB: ztB.map((e) => e.date) }))
   assert('R4 任务 B 补写入昨日工时', ztB.some((e) => e.date === yesterdayStr), JSON.stringify(ztB.map((e) => e.date)))
-  assert('R4 任务 A 昨日记录为更新覆盖（复用已有记录 ID）', (() => {
+  assert('R4 任务 A 昨日记录通过编辑接口更新原 ID', (() => {
     const rec = ztA.find((e) => e.date === yesterdayStr)
-    return !!rec && zt.state.posts.some((p) => p.taskId === String(TASK_A) && p.keys.includes(`dates[${rec.id}]`))
+    return !!rec && zt.state.posts.some((p) => p.taskId === String(TASK_A) && p.action === 'editEstimate' && p.effortId === rec.id)
   })(), JSON.stringify({ ztA, posts: zt.state.posts }))
+  assert('R4 重提后两个任务每天各一条本人记录，没有追加重复项',
+    [ztA, ztB].every((rows) => rows.length === 2 && rows.filter((r) => r.date === todayStr).length === 1 && rows.filter((r) => r.date === yesterdayStr).length === 1),
+    JSON.stringify({ ztA, ztB }))
   assert('R5 拒绝重放成功记录未产生额外平台写入（汉印 add 恰好 2 次：成功轮 + 重放轮）',
     hp.state.addBodies.length === 2, String(hp.state.addBodies.length))
 
