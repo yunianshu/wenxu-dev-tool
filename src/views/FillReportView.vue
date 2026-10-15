@@ -173,7 +173,7 @@
       <el-select v-model="bindStatus" class="bind-status" aria-label="任务状态"><el-option label="全部任务" value="all" /><el-option label="进行中" value="doing" /><el-option label="已完成（近一个月）" value="finished" /></el-select>
       <div v-loading="bindDialog.loading" ref="bindTaskList" class="bind-tasks" role="radiogroup" aria-label="禅道任务" @keydown="moveBindTaskFocus">
         <button v-for="t in filteredBindTasks" :key="t.id" type="button" class="bind-task" :class="{ 'is-selected': bindDialog.taskId === t.id }" role="radio" :aria-checked="bindDialog.taskId === t.id" @click="bindDialog.taskId = t.id">
-          <span class="task-radio" /><span class="task-description"><strong>#{{ t.id }} {{ t.name }}</strong><span>{{ taskMeta(t) }}</span></span>
+          <span class="task-radio" /><span class="task-description"><strong>#{{ t.id }} {{ t.name }}</strong><span class="task-meta"><span class="task-status" :class="`is-${t.status || 'unknown'}`" :title="statusText(t.status)" :aria-label="statusText(t.status)"><el-icon><component :is="statusIcon(t.status)" /></el-icon></span>{{ taskMeta(t) }}</span></span>
         </button>
         <p v-if="!bindDialog.loading && !filteredBindTasks.length" class="collect-hint">{{ bindSearch ? '没有匹配的任务' : '暂无可绑定任务，请检查禅道任务与账号配置。' }}</p>
       </div>
@@ -245,10 +245,20 @@ let pendingRecompute = false
 
 const ZT_STATUS_TEXT = { wait: '未开始', doing: '进行中', done: '已完成', pause: '已暂停', cancel: '已取消', closed: '已关闭' }
 function statusText(s) { return ZT_STATUS_TEXT[s] || s || '-' }
-/** 选项右侧说明：进行中给剩余工时，已完成给完成时间（禅道没记时间时只留状态） */
+/** 任务状态图标：已完成/已关闭的任务仍可补填工时，状态只用小图标表示（悬停看文字），不占说明位置 */
+const ZT_STATUS_ICON = {
+  wait: 'Clock',
+  doing: 'VideoPlay',
+  done: 'CircleCheck',
+  closed: 'CircleCheckFilled',
+  pause: 'VideoPause',
+  cancel: 'CircleClose',
+}
+function statusIcon(s) { return ZT_STATUS_ICON[s] || 'QuestionFilled' }
+/** 选项右侧说明：状态由图标承载，这里只给剩余工时或完成时间 */
 function taskMeta(t) {
-  if (t.finished) return t.finishedAt ? `${statusText(t.status)} · ${t.finishedAt}` : statusText(t.status)
-  return `${statusText(t.status)} · 剩余 ${t.left}h`
+  if (t.finished) return t.finishedAt ? `完成于 ${t.finishedAt}` : ''
+  return `剩余 ${t.left}h`
 }
 
 const dateShortcuts = [
@@ -972,6 +982,13 @@ async function copyReport() {
 .task-description { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .task-description strong { font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
 .task-description > span { font-size: 11px; color: var(--text-muted); }
+.task-meta { display: flex; align-items: center; gap: 6px; min-height: 16px; }
+.task-status { display: inline-flex; align-items: center; color: var(--text-muted); }
+.task-status .el-icon { font-size: 13px; }
+.task-status.is-doing { color: var(--el-color-primary); }
+.task-status.is-done { color: var(--el-color-success); }
+.task-status.is-pause { color: var(--el-color-warning); }
+.task-status.is-cancel { color: var(--danger); }
 .collect-hint { padding: 24px 0; color: var(--text-muted); text-align: center; font-size: 12px; line-height: 1.6; }
 .preview-content { margin: 0; padding: 16px; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--brand-mono, monospace); font-size: 12px; line-height: 1.7; color: var(--brand-text); max-height: 62vh; overflow: auto; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 6px; }
 @media (max-width: 1280px) {
