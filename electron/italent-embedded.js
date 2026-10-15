@@ -172,6 +172,12 @@ class ItalentEmbedded {
   read(options) { return this.evaluate('read', options) }
   prepare(options) { return this.evaluate('prepare', options) }
   apply(options) { return this.evaluate('apply', options) }
+
+  /** 用捕获的签名直登 URL 导航内嵌窗口；登录结果由 probe 轮询确认。 */
+  async seed(url) {
+    await this.ensureServer()
+    await this.host.call('leave-eval', { label: this.label, code: `location.href=${JSON.stringify(url)}` })
+  }
 }
 
 /**

@@ -26,6 +26,7 @@ const { LeaveService, createFileLedger } = require('./leave-service')
 const { ItalentBrowser } = require('./italent-browser')
 const { ItalentEmbedded, ItalentBookmarklet } = require('./italent-embedded')
 const { ItalentAdapter } = require('./italent-adapter')
+const { ChromeSSOWatcher } = require('./italent-history')
 // Tauri 后台下与宿主共用的调用通道（entry.cjs 已加载同一模块实例）；旧 Electron 下未启用。
 const compatHost = require('../backend/electron-compat.cjs').host
 const zentaoService = require('./zentao-service')
@@ -867,12 +868,35 @@ function registerIpc() {
   const leaveAdapter = process.env.PLM_NODE_BACKEND === '1'
     ? new ItalentAdapter({ embedded: new ItalentEmbedded({ host: compatHost }), bookmarklet: new ItalentBookmarklet() })
     : new ItalentBrowser()
+  // 企微捕获登录：内嵌通道未登录时监听 Chrome 历史中新鲜的企业微信签名直登 URL，
+  // 捕获后导航内嵌窗口自动登入（登录结果仍由 probe 轮询核实并自动关窗）。
+  const leaveEmbedded = leaveAdapter.embedded || null
+  let ssoWatcher = null
+  const stopSsoCapture = () => { if (ssoWatcher) { ssoWatcher.stop(); ssoWatcher = null } }
+  const ensureSsoCapture = () => {
+    if (ssoWatcher || !leaveEmbedded) return
+    const watcher = new ChromeSSOWatcher()
+    ssoWatcher = watcher
+    void watcher.wait(async (captured) => {
+      if (ssoWatcher !== watcher) return
+      ssoWatcher = null
+      for (let attempt = 0; attempt < 12; attempt++) {
+        try { await leaveEmbedded.seed(captured.url); return } catch { /* 登录窗口可能尚未打开 */ }
+        await new Promise((resolve) => setTimeout(resolve, 5000))
+      }
+    })
+  }
   let leaveService
   for (const [channel, method] of [['leave:connect', 'connect'], ['leave:plan', 'plan'], ['leave:submit', 'submit'], ['leave:resolve', 'resolve']]) {
     ipcMain.handle(channel, async (_event, payload) => {
       try {
         leaveService ||= new LeaveService({ adapter: leaveAdapter, ledger: createFileLedger(app.getPath('userData')) })
-        return { ok: true, ...(await leaveService[method](payload)) }
+        const result = { ok: true, ...(await leaveService[method](payload)) }
+        if (method === 'connect') {
+          if (result.loggedIn === true) stopSsoCapture()
+          else ensureSsoCapture()
+        }
+        return result
       }
       catch (error) { return { ok: false, error: error.message || String(error) } }
     })

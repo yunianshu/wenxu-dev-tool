@@ -9,6 +9,8 @@ const { italentPage } = require('../electron/italent-page')
 const { ItalentBrowser } = require('../electron/italent-browser')
 const { ItalentEmbedded, ItalentBookmarklet } = require('../electron/italent-embedded')
 const { ItalentAdapter } = require('../electron/italent-adapter')
+const { ChromeSSOWatcher } = require('../electron/italent-history')
+const { DatabaseSync } = require('node:sqlite')
 
 const NOW = Date.parse('2026-10-15T06:00:00Z')
 const OPTIONS = normalizeOptions({}, NOW)
@@ -488,6 +490,30 @@ async function main() {
     assert.equal(chained.bookmarklet, 'javascript:2')
     const bridged = make({ connect: async () => { throw new Error('无法连接浏览器') }, run: async () => { throw new Error('不应执行') } }, { ensureServer: async () => {}, attached: () => true, evaluate: async () => ({ loggedIn: true }), href: () => 'javascript:3' })
     assert.equal((await bridged.connect()).mode, 'bookmarklet')
+  })
+  await test('Chrome 历史捕获：新签名 URL 触发回调，旧的忽略，超时返回空', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'leave-sso-'))
+    try {
+      const historyPath = path.join(directory, 'History')
+      const chromeTime = (unixSeconds) => Math.round((unixSeconds + 11644473600) * 1000000)
+      const now = Date.now() / 1000
+      const db = new DatabaseSync(historyPath)
+      db.exec('CREATE TABLE urls (url TEXT PRIMARY KEY, last_visit_time INTEGER)')
+      db.prepare('INSERT INTO urls VALUES (?, ?)').run('https://www.italent.cn/v1/sso/italent/auth?old=1', chromeTime(now - 7200))
+      db.close()
+      const watcher = new ChromeSSOWatcher({ historyPath, intervalMs: 20, timeoutMs: 3000 })
+      const captured = watcher.wait()
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      const db2 = new DatabaseSync(historyPath)
+      db2.prepare('INSERT INTO urls VALUES (?, ?)').run('https://www.italent.cn/v1/sso/italent/auth?fresh=1', chromeTime(now))
+      db2.close()
+      const result = await captured
+      assert.equal(/fresh=1/.test(result?.url || ''), true)
+      const stale = new ChromeSSOWatcher({ historyPath, intervalMs: 20, timeoutMs: 200 })
+      assert.equal(await stale.wait(), null)
+    } finally {
+      fs.rmSync(fs.realpathSync(directory), { recursive: true, force: true })
+    }
   })
   console.log(`一键请假自测通过：${passed} 组`)
 }

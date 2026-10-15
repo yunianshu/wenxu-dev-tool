@@ -28,7 +28,7 @@
         <el-input id="leave-reason" v-model="options.reason" :disabled="busy" maxlength="1000" placeholder="选填，确认后随申请提交" class="leave-reason" />
       </div>
       <p class="leave-help">{{ isTauri ? '点击「连接北森」打开独立登录窗口，完成登录后自动关闭；登录态保存在本机。' : '通过已登录北森的浏览器读取本人记录。首次使用请开启 Kimi Browser Extension 的本地连接，点击「连接北森」完成登录后再生成。' }}</p>
-      <p v-if="loginWaiting" class="leave-help leave-login-waiting">北森登录窗口已打开，完成登录后自动关闭。</p>
+      <p v-if="loginWaiting" class="leave-help leave-login-waiting">北森登录窗口已打开，完成登录后自动关闭；在企业微信中点开「汉印HR」也可自动登录。</p>
       <div v-if="loginWaiting && bookmarkletHref" class="leave-controls-row leave-bookmarklet-row">
         <label>免登录连接</label>
         <a class="leave-bookmarklet" :href="bookmarkletHref" draggable="true" title="拖到浏览器书签栏" @click.prevent>拖到书签栏</a>
