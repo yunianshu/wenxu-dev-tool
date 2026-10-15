@@ -415,10 +415,16 @@ class ZentaoClient {
 // ─── 模块级共享客户端：凭据变化时重建（等价 KnowMore 的 zt_client） ───
 let shared = null
 let sharedKey = ''
+/** 正在建立的客户端：并发首个调用共享同一次登录，避免把「未登录」的实例发出去 */
+let pending = null
 
 /**
  * 取已登录的共享客户端。overrides 用于「测试连接」（临时输入的地址/账号/密码，
  * 密码为空则使用已保存密文解密值）。
+ *
+ * 建链本身要 await 登录，期间把 sharedKey 先写好会让并发的第二个调用拿到同一实例
+ * 但登录还没完成——那些请求会以未登录身份发出（拿到登录页/结构异常）。
+ * 故建链过程单独用一个 promise 去重，调用方只会在登录完成后拿到客户端。
  */
 async function ensureClient(overrides = {}) {
   const cfg = store.load()
@@ -431,12 +437,21 @@ async function ensureClient(overrides = {}) {
     throw new Error('禅道未配置：请到「设置 → 一键填报」填写禅道地址、账号与密码')
   }
   const key = JSON.stringify([baseUrl, account, password])
-  if (!shared || sharedKey !== key) {
-    shared = new ZentaoClient({ baseUrl, account, password })
+  if (shared && sharedKey === key) return shared
+  if (pending && pending.key === key) return pending.promise
+  const promise = (async () => {
+    const client = new ZentaoClient({ baseUrl, account, password })
+    await client.login()
+    shared = client
     sharedKey = key
-    await shared.login()
+    return client
+  })()
+  pending = { key, promise }
+  try {
+    return await promise
+  } finally {
+    if (pending && pending.key === key) pending = null
   }
-  return shared
 }
 
 /** 渲染层传参规范化：空字符串密码表示「使用已保存密码」 */

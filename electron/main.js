@@ -893,6 +893,14 @@ function registerIpc() {
       return { ok: false, error: (err && err.message) || String(err) }
     }
   })
+  // 工时记录页签：禅道（已绑定任务）/ 汉印（按日）只读查询
+  ipcMain.handle('fill:records', async (_e, payload) => {
+    try {
+      return { ok: true, ...(await fillService.records(payload)) }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) }
+    }
+  })
   ipcMain.handle('fill:ztTasks', async () => {
     try {
       // 绑定任务用：进行中 + 近一个月完成的（完成后仍可能要补填工时）

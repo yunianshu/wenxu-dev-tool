@@ -1900,6 +1900,134 @@ if (gitOk()) {
   console.log('  （git 不可用，跳过真实仓库集成用例）')
 }
 
+// ═══════════ 工时记录页签（禅道按绑定任务 / 汉印按日） ═══════════
+console.log('工时记录页签取数:')
+
+await test('ensureClient：并发首次调用共享同一次登录，调用方都在登录完成后才拿到客户端', async () => {
+  const origFetch = global.fetch
+  const order = []
+  global.fetch = async (url, opts = {}) => {
+    const u = String(url)
+    if (u.includes('refreshRandom')) { order.push('refreshRandom'); return makeResp({ body: '1234567890' }) }
+    if (u.includes('m=user&f=login') && opts.method === 'POST') { order.push('post-login'); return makeResp({ body: '{"result":"success"}' }) }
+    order.push('get')
+    return makeResp({ body: '<html></html>' })
+  }
+  try {
+    store.save({ zentao: { baseUrl: 'http://zt-race.example', account: 'wgl', password: 'p@ss' } })
+    const first = ztSvc.ensureClient().then((c) => { order.push('resolved-1'); return c })
+    const second = ztSvc.ensureClient().then((c) => { order.push('resolved-2'); return c })
+    const [a, b] = await Promise.all([first, second])
+    assert.strictEqual(a, b, '并发调用拿到同一个客户端')
+    assert.strictEqual(order.filter((x) => x === 'refreshRandom').length, 1, '并发首次调用只登录一次')
+    assert.ok(order.indexOf('post-login') < order.indexOf('resolved-1'), '登录完成后才返回客户端')
+    assert.ok(order.indexOf('post-login') < order.indexOf('resolved-2'), '后到的并发调用也要等登录完成')
+  } finally {
+    global.fetch = origFetch
+  }
+})
+store.save({
+  zentao: { baseUrl: 'http://zt-rec.example', account: 'wgl', password: 'p@ss' },
+  hanprint: { baseUrl: 'http://hp-rec.example', clientId: '1', account: '21290', password: 'secret' },
+})
+
+/** 打桩两个平台客户端，并记录本次实际查询的任务与日期 */
+function stubRecordClients({ ztEfforts = {}, hpByDate = {} } = {}) {
+  const ztQueried = []
+  const hpQueried = []
+  ztSvc.ensureClient = async () => ({
+    getTaskEfforts: async (taskId) => {
+      ztQueried.push(Number(taskId))
+      const row = ztEfforts[taskId]
+      if (row instanceof Error) throw row
+      return row || []
+    },
+  })
+  hpSvc.ensureClient = async () => ({
+    getByDate: async (day) => {
+      hpQueried.push(day)
+      const row = hpByDate[day]
+      if (row instanceof Error) throw row
+      return row || []
+    },
+  })
+  return { ztQueried, hpQueried }
+}
+
+await test('records：禅道按绑定任务聚合（日期倒序），汉印近 7 天且跳过删除标记行', async () => {
+  fill.bindProject('recA', 66, '任务A')
+  fill.bindProject('recB', 88, '任务B')
+  const { ztQueried, hpQueried } = stubRecordClients({
+    ztEfforts: {
+      66: [
+        { id: 1, date: '2026-10-13', work: '1. 旧记录', consumed: 2, left: 4 },
+        { id: 2, date: '2026-10-14', work: '1. 今天 <A> & B', consumed: 2.5, left: 1.5 },
+      ],
+      88: [{ id: 3, date: '2026-10-14', work: '1. 另一任务', consumed: 1, left: 3 }],
+    },
+    hpByDate: {
+      '2026-10-14': [
+        { Id: 11, ProjectType: 3, ProjectName: 'P-A', TaskId: '66', TaskName: '任务A', Percent: 60, WorkDate: '2026-10-14' },
+        { Id: 12, ProjectType: -2, ProjectName: 'P-A', TaskId: '66', TaskName: '任务A', Percent: 100, WorkDate: '2026-10-14' },
+      ],
+      '2026-10-12': [{ Id: 13, ProjectType: 3, ProjectName: 'P-B', TaskId: '88', TaskName: '任务B', Percent: 40, WorkDate: '2026-10-12' }],
+    },
+  })
+  const r = await fill.records({ date: '2026-10-14' })
+  assert.strictEqual(r.days, 7)
+  const bound = [...new Set(Object.values(fill.listBindings()).map((b) => b.taskId))].sort((a, b) => a - b)
+  assert.deepStrictEqual([...new Set(ztQueried)].sort((a, b) => a - b), bound, '禅道只查已绑定项目的任务')
+  assert.deepStrictEqual(
+    r.zt.records.map((x) => `${x.date}#${x.taskId}`),
+    ['2026-10-14#88', '2026-10-14#66', '2026-10-13#66'],
+    '按日期倒序，同一天按任务 ID 倒序',
+  )
+  assert.strictEqual(r.zt.records.find((x) => x.date === '2026-10-14' && x.taskId === 66).taskName, '任务A')
+  assert.strictEqual(r.zt.records[2].work, '1. 旧记录')
+  assert.deepStrictEqual(hpQueried, ['2026-10-14', '2026-10-13', '2026-10-12', '2026-10-11', '2026-10-10', '2026-10-09', '2026-10-08'], '汉印按日查近 7 天（含基准日）')
+  assert.deepStrictEqual(r.hp.records.map((x) => `${x.date}#${x.taskId}`), ['2026-10-14#66', '2026-10-12#88'], 'ProjectType=-2 的删除标记行不进列表')
+  assert.strictEqual(r.hp.records[0].projectName, 'P-A')
+  assert.strictEqual(r.hp.records[1].percent, 40)
+  assert.strictEqual(r.zt.error, '')
+  assert.strictEqual(r.hp.error, '')
+  fill.unbindProject('recA')
+  fill.unbindProject('recB')
+})
+
+await test('records：单任务/单日失败不阻断整体，错误按平台回报', async () => {
+  fill.bindProject('recA', 66, '任务A')
+  fill.bindProject('recB', 88, '任务B')
+  stubRecordClients({
+    ztEfforts: {
+      66: [{ id: 1, date: '2026-10-14', work: '1. A', consumed: 1, left: 1 }],
+      88: new Error('禅道会话失效且重登失败'),
+    },
+    hpByDate: { '2026-10-13': new Error('汉印接口错误: token 过期') },
+  })
+  const r = await fill.records({ date: '2026-10-14' })
+  assert.strictEqual(r.zt.records.length, 1, '失败任务不影响其余任务的记录')
+  assert.ok(/1 个任务查询失败/.test(r.zt.error) && /#88/.test(r.zt.error))
+  assert.ok(/1 天查询失败/.test(r.hp.error) && /2026-10-13/.test(r.hp.error))
+  assert.strictEqual(r.hp.records.length, 0)
+  fill.unbindProject('recA')
+  fill.unbindProject('recB')
+})
+
+await test('records：平台未配置时只回报提示，不抛异常也不发起查询', async () => {
+  store.save({
+    zentao: { baseUrl: 'http://zt-rec.example', account: 'wgl', clearPwd: true },
+    hanprint: { baseUrl: 'http://hp-rec.example', clientId: '1', account: '21290', clearPwd: true },
+  })
+  const { ztQueried, hpQueried } = stubRecordClients()
+  const r = await fill.records({ date: '2026-10-14' })
+  assert.strictEqual(r.zt.records.length, 0)
+  assert.strictEqual(r.hp.records.length, 0)
+  assert.ok(/禅道未配置/.test(r.zt.error))
+  assert.ok(/汉印未配置/.test(r.hp.error))
+  assert.deepStrictEqual(ztQueried, [])
+  assert.deepStrictEqual(hpQueried, [])
+})
+
 // ═══════════ 汇总 ═══════════
 console.log(`\n结果: ${passed} 通过, ${failed} 失败`)
 try { fs.rmSync(tmpRoot, { recursive: true, force: true }) } catch { /* 保留临时目录不影响结论 */ }

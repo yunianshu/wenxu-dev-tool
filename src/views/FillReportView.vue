@@ -105,22 +105,57 @@
       </div>
 
       <section class="fill-history">
-        <div class="section-head"><h2>提交记录</h2><span class="history-meta">最近 {{ submitLogs.length }} 条记录</span></div>
-        <el-alert v-if="logsError" type="error" :closable="false" :title="logsError"><el-button text @click="loadLogs">重试</el-button></el-alert>
-        <el-table v-loading="logsLoading" :data="submitLogs" class="fill-log-table" row-key="at" max-height="280">
-          <el-table-column label="提交时间" min-width="180"><template #default="{ row }">{{ (row.at || '').slice(0, 19) }}</template></el-table-column>
-          <el-table-column label="禅道" width="120"><template #default="{ row }">{{ row.tasks?.length || 0 }}/{{ row.ztTotal || 0 }}</template></el-table-column>
-          <el-table-column label="汉印" width="120"><template #default="{ row }">{{ row.hp?.error ? '失败' : row.hp?.sent ? `${row.hp.sent} 条` : '—' }}</template></el-table-column>
-          <el-table-column label="状态" width="120"><template #default="{ row }"><span class="log-status" :class="{ 'is-error': row.failed }">{{ logStatus(row).text }}</span></template></el-table-column>
-          <el-table-column label="备注" min-width="120" show-overflow-tooltip><template #default="{ row }">{{ row.error || row.hp?.error || '—' }}</template></el-table-column>
-          <el-table-column label="操作" width="64" align="center"><template #default="{ row }">
-            <el-dropdown trigger="click" :disabled="state.fillReport.submitting || state.fillReport.running || !!resubmitting || !!deleting" @command="(command) => command === 'retry' ? doResubmit(row) : doDeleteLog(row)">
-              <el-button text aria-label="提交记录操作" :loading="resubmitting === row.at || deleting === row.at"><el-icon><MoreFilled /></el-icon></el-button>
-              <template #dropdown><el-dropdown-menu><el-dropdown-item v-if="row.resubmittable" command="retry">重新提交</el-dropdown-item><el-dropdown-item command="delete" :divided="row.resubmittable">删除本地记录</el-dropdown-item></el-dropdown-menu></template>
-            </el-dropdown>
-          </template></el-table-column>
-          <template #empty><div class="history-empty">暂无提交记录，完成填报后会保存在这里。</div></template>
-        </el-table>
+        <el-tabs v-model="historyTab" class="history-tabs">
+          <el-tab-pane label="提交记录" name="logs">
+            <div class="history-head"><span class="history-meta">最近 {{ submitLogs.length }} 条记录</span></div>
+            <el-alert v-if="logsError" type="error" :closable="false" :title="logsError"><el-button text @click="loadLogs">重试</el-button></el-alert>
+            <el-table v-loading="logsLoading" :data="submitLogs" class="fill-log-table" row-key="at" max-height="280">
+              <el-table-column label="提交时间" min-width="180"><template #default="{ row }">{{ (row.at || '').slice(0, 19) }}</template></el-table-column>
+              <el-table-column label="禅道" width="120"><template #default="{ row }">{{ row.tasks?.length || 0 }}/{{ row.ztTotal || 0 }}</template></el-table-column>
+              <el-table-column label="汉印" width="120"><template #default="{ row }">{{ row.hp?.error ? '失败' : row.hp?.sent ? `${row.hp.sent} 条` : '—' }}</template></el-table-column>
+              <el-table-column label="状态" width="120"><template #default="{ row }"><span class="log-status" :class="row.failed ? 'is-error' : 'is-success'">{{ logStatus(row).text }}</span></template></el-table-column>
+              <el-table-column label="备注" min-width="120" show-overflow-tooltip><template #default="{ row }">{{ row.error || row.hp?.error || '—' }}</template></el-table-column>
+              <el-table-column label="操作" width="64" align="center"><template #default="{ row }">
+                <el-dropdown trigger="click" :disabled="state.fillReport.submitting || state.fillReport.running || !!resubmitting || !!deleting" @command="(command) => command === 'retry' ? doResubmit(row) : doDeleteLog(row)">
+                  <el-button text aria-label="提交记录操作" :loading="resubmitting === row.at || deleting === row.at"><el-icon><MoreFilled /></el-icon></el-button>
+                  <template #dropdown><el-dropdown-menu><el-dropdown-item v-if="row.resubmittable" command="retry">重新提交</el-dropdown-item><el-dropdown-item command="delete" :divided="row.resubmittable">删除本地记录</el-dropdown-item></el-dropdown-menu></template>
+                </el-dropdown>
+              </template></el-table-column>
+              <template #empty><div class="history-empty">暂无提交记录，完成填报后会保存在这里。</div></template>
+            </el-table>
+          </el-tab-pane>
+
+          <el-tab-pane label="禅道工时记录" name="zentao">
+            <div class="history-head">
+              <span class="history-meta">共 {{ ztRecords.length }} 条 · 仅已绑定禅道任务</span>
+              <el-button text :loading="recordsLoading" @click="loadRecords">刷新</el-button>
+            </div>
+            <el-alert v-if="recordsError.zentao" type="error" :closable="false" :title="recordsError.zentao" />
+            <el-table v-loading="recordsLoading" :data="ztRecords" class="fill-log-table" row-key="key" max-height="280">
+              <el-table-column type="expand"><template #default="{ row }"><div class="record-work"><pre class="pwork">{{ row.work }}</pre></div></template></el-table-column>
+              <el-table-column label="日期" width="120"><template #default="{ row }">{{ row.date }}</template></el-table-column>
+              <el-table-column label="任务" min-width="220" show-overflow-tooltip><template #default="{ row }">#{{ row.taskId }} {{ row.taskName }}</template></el-table-column>
+              <el-table-column label="工时" width="100"><template #default="{ row }">{{ Number(row.consumed || 0).toFixed(2) }}h</template></el-table-column>
+              <el-table-column label="说明" min-width="240" show-overflow-tooltip><template #default="{ row }">{{ firstLine(row.work) }}</template></el-table-column>
+              <template #empty><div class="history-empty">暂无禅道工时记录</div></template>
+            </el-table>
+          </el-tab-pane>
+
+          <el-tab-pane label="汉印工时记录" name="hanprint">
+            <div class="history-head">
+              <span class="history-meta">近 {{ recordsDays }} 天 · 共 {{ hpRecords.length }} 条</span>
+              <el-button text :loading="recordsLoading" @click="loadRecords">刷新</el-button>
+            </div>
+            <el-alert v-if="recordsError.hanprint" type="error" :closable="false" :title="recordsError.hanprint" />
+            <el-table v-loading="recordsLoading" :data="hpRecords" class="fill-log-table" :row-key="(row) => `${row.date}-${row.taskId}-${row.percent}`" max-height="280">
+              <el-table-column label="日期" width="120"><template #default="{ row }">{{ row.date }}</template></el-table-column>
+              <el-table-column label="项目" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ row.projectName }}</template></el-table-column>
+              <el-table-column label="任务" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ row.taskName || row.taskId }}</template></el-table-column>
+              <el-table-column label="占比" width="100"><template #default="{ row }">{{ row.percent }}%</template></el-table-column>
+              <template #empty><div class="history-empty">暂无汉印工时记录</div></template>
+            </el-table>
+          </el-tab-pane>
+        </el-tabs>
       </section>
     </div>
 
@@ -197,6 +232,14 @@ const logsLoading = ref(false)
 const logsError = ref('')
 const resubmitting = ref('')
 const deleting = ref('')
+/** 底部区域页签：提交记录（本机留痕）/ 平台侧的禅道、汉印工时记录（只读，懒加载） */
+const historyTab = ref('logs')
+const ztRecords = ref([])
+const hpRecords = ref([])
+const recordsDays = ref(7)
+const recordsLoading = ref(false)
+const recordsError = ref({ zentao: '', hanprint: '' })
+const recordsLoaded = ref(false)
 /** 生成/重算进行中收到的重算请求：结束后补跑一次 */
 let pendingRecompute = false
 
@@ -389,6 +432,48 @@ function logStatus(log) {
   return log.failed ? { type: 'danger', text: '失败' } : { type: 'success', text: '成功' }
 }
 
+/**
+ * 平台侧工时记录（只读）：两个记录页签共用一次查询——禅道按已绑定任务查、汉印按日查。
+ * 首次切到记录页签时拉取，之后用「刷新」手动重取；平台错误按列展示，已取到的记录照常显示。
+ */
+async function loadRecords() {
+  if (recordsLoading.value) return
+  recordsLoading.value = true
+  try {
+    const r = await window.gitReport.fillRecords({ date: fillDate.value })
+    if (!r.ok) {
+      const message = r.error || '工时记录加载失败'
+      recordsError.value = { zentao: message, hanprint: message }
+      return
+    }
+    ztRecords.value = (r.zt?.records || []).map((x, i) => ({ ...x, key: `${x.date}-${x.taskId}-${i}` }))
+    hpRecords.value = r.hp?.records || []
+    recordsDays.value = r.days || recordsDays.value
+    recordsError.value = { zentao: r.zt?.error || '', hanprint: r.hp?.error || '' }
+    recordsLoaded.value = true
+  } catch (e) {
+    const message = `工时记录加载失败：${e?.message || e}`
+    recordsError.value = { zentao: message, hanprint: message }
+  } finally {
+    recordsLoading.value = false
+  }
+}
+
+/** 提交/重新提交成功后平台记录已变化：记录页签可见时重取，否则等下次切换 */
+function refreshRecordsIfActive() {
+  if (historyTab.value !== 'logs') loadRecords()
+}
+
+/** 多行工作说明在表格里只呈现首行，全文在展开行查看 */
+function firstLine(text) {
+  return String(text || '').split('\n').find((line) => line.trim()) || ''
+}
+
+/** 首次切到记录页签才向平台取数：打开页面不额外打平台接口 */
+watch(historyTab, (tab) => {
+  if (tab !== 'logs' && !recordsLoaded.value) loadRecords()
+})
+
 /** 按留痕记录重新提交：重放当时存档的载荷；禅道/汉印已有记录按 ID 复用更新覆盖，不重复写入 */
 async function doResubmit(log) {
   if (state.fillReport.submitting || state.fillReport.running) return
@@ -421,6 +506,7 @@ async function doResubmit(log) {
     if (plan.value && plan.value.date === log.date) {
       state.fillReport.plan = { ...plan.value, submittedAt: new Date().toTimeString().slice(0, 5) }
     }
+    refreshRecordsIfActive()
   } catch (e) {
     ElMessage.error(`重新提交失败：${e?.message || e}`)
   } finally {
@@ -694,6 +780,7 @@ async function submitFill(preview) {
           : ''
         ElMessage.success(`已提交：${ztText}${hpOkText}${hpSkipText}`)
       }
+      refreshRecordsIfActive()
     }
   } catch (e) {
     ElMessage.error(`提交失败：${e?.message || e}`)
@@ -800,13 +887,21 @@ async function copyReport() {
 .summary-empty { margin: 4px 0 0; }
 .submit-hint { margin: 12px 0 0; font-size: 12px; color: var(--el-color-warning); line-height: 1.6; }
 .fill-history { margin: 24px 0 16px; }
+.history-tabs :deep(.el-tabs__header) { margin-bottom: 0; }
+.history-tabs :deep(.el-tabs__item) { height: 40px; font-size: 13px; }
+.history-tabs :deep(.el-tabs__nav-wrap::after) { height: 1px; background: var(--line); }
+.history-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 32px; }
+.history-head .el-button { height: 28px; padding: 4px 8px; }
 .fill-log-table { font-size: 12px; }
 .fill-log-table :deep(.el-table__cell) { height: 40px; padding: 4px 0; }
 .fill-log-table :deep(.el-table__header .el-table__cell) { height: 36px; }
 .fill-log-table :deep(.cell) { padding: 0 16px; }
 .fill-log-table :deep(.el-table__body .el-button) { padding: 4px 8px; height: 28px; }
+.fill-log-table :deep(.el-table__expanded-cell) { padding: 0; }
+.record-work { padding: 12px 16px; }
 .log-status { color: var(--text-muted); }
 .log-status.is-error { color: var(--danger); }
+.log-status.is-success { color: var(--el-color-success); }
 .history-empty { padding: 20px 0; color: var(--text-muted); font-size: 12px; }
 .fill-actions { flex-shrink: 0; display: flex; align-items: center; gap: 8px; min-height: 64px; border-top: 1px solid var(--line); background: var(--surface); }
 .fill-actions .el-button + .el-button { margin-left: 0; }

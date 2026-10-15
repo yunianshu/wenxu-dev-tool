@@ -850,6 +850,101 @@ async function resubmit(at) {
   return submit({ ...entry.payload, dryRun: false })
 }
 
+/** 本机当天日期（YYYY-MM-DD） */
+function todayLocal() {
+  const d = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+/** 汉印报工记录的查询窗口：基准日往前 7 天（协议只支持按日查询） */
+const RECORD_DAYS = 7
+
+/**
+ * 工时记录（只读，供填报页「禅道工时记录 / 汉印工时记录」页签）：
+ * - 禅道：已绑定项目的任务上，当前账号的全部工时（按日期倒序）——本实例无「我的工时」
+ *   列表路由（实测 m=my&f=effort 返回空），只能按任务查询，故范围 = 绑定过的任务。
+ * - 汉印：基准日往前 days 天的报工（GetByDate 只接受单日），跳过 ProjectType=-2 的删除标记行。
+ * 单个任务或单日失败不阻断整体：已取到的记录照常返回，错误按平台汇总回传。
+ */
+async function records({ date, days = RECORD_DAYS } = {}) {
+  const end = /^\d{4}-\d{2}-\d{2}$/.test(String(date || '')) ? String(date) : todayLocal()
+  const span = Math.min(31, Math.max(1, Number(days) || RECORD_DAYS))
+  const cfg = store.load()
+
+  const zt = { error: '', records: [] }
+  const bindings = listBindings()
+  const bound = []
+  const seen = new Set()
+  for (const b of Object.values(bindings)) {
+    const taskId = Number(b && b.taskId)
+    if (!taskId || seen.has(taskId)) continue
+    seen.add(taskId)
+    bound.push({ taskId, taskName: String((b && b.taskName) || '') })
+  }
+  if (cfg.zentao && cfg.zentao.baseUrl && cfg.zentao.account && store.getZentaoPwd()) {
+    const failures = []
+    try {
+      // 先取到已登录的客户端再并发查任务：登录失败按平台报错，不影响汉印那半边
+      const client = await zentao.ensureClient()
+      const lists = await Promise.all(bound.map(async (task) => {
+        try {
+          const efforts = await client.getTaskEfforts(task.taskId)
+          return efforts.map((e) => ({
+            taskId: task.taskId,
+            taskName: task.taskName,
+            date: e.date,
+            work: e.work || '',
+            consumed: e.consumed,
+          }))
+        } catch (e) {
+          failures.push(`#${task.taskId} ${(e && e.message) || e}`)
+          return []
+        }
+      }))
+      zt.records = lists.flat().sort((a, b) => (a.date === b.date ? b.taskId - a.taskId : (a.date < b.date ? 1 : -1)))
+    } catch (e) {
+      zt.error = (e && e.message) || String(e)
+    }
+    if (failures.length) zt.error = `${failures.length} 个任务查询失败：${failures[0]}${failures.length > 1 ? ' 等' : ''}`
+  } else {
+    zt.error = '禅道未配置，无法读取任务工时'
+  }
+
+  const hp = { error: '', records: [] }
+  if (cfg.hanprint && cfg.hanprint.baseUrl && cfg.hanprint.account && store.getHanprintPwd()) {
+    const failures = []
+    try {
+      const client = await hanprint.ensureClient()
+      const perDay = await Promise.all(Array.from({ length: span }, (_, i) => addDaysLocal(end, -i)).map(async (day) => {
+        try {
+          const rows = await client.getByDate(day)
+          return (rows || [])
+            .filter((r) => r && r.ProjectType !== -2)
+            .map((r) => ({
+              date: String(r.WorkDate || day).slice(0, 10),
+              projectName: String(r.ProjectName || ''),
+              taskId: String(r.TaskId || ''),
+              taskName: String(r.TaskName || ''),
+              percent: Number(r.Percent || 0),
+            }))
+        } catch (e) {
+          failures.push(`${day}：${(e && e.message) || e}`)
+          return []
+        }
+      }))
+      hp.records = perDay.flat()
+    } catch (e) {
+      hp.error = (e && e.message) || String(e)
+    }
+    if (failures.length) hp.error = `${failures.length} 天查询失败：${failures[0]}${failures.length > 1 ? ' 等' : ''}`
+  } else {
+    hp.error = '汉印未配置，无法读取报工记录'
+  }
+
+  return { date: end, days: span, zt, hp }
+}
+
 function localStamp() {
   const d = new Date()
   const p = (n) => String(n).padStart(2, '0')
@@ -947,4 +1042,5 @@ module.exports = {
   listLog,
   resubmit,
   removeLog,
+  records,
 }
