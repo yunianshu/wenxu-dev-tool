@@ -74,6 +74,7 @@ const groups = [
     { id: 'harness', label: 'DeepSeek Harness', icon: 'Cpu' },
     { id: 'terminal', label: '终端工作台', icon: 'Monitor' },
     { id: 'fillreport', label: '一键填报', icon: 'Timer' },
+    { id: 'leave', label: '一键请假', icon: 'Calendar' },
     { id: 'deploy', label: '部署', icon: 'Promotion' },
   ] },
   { id: 'system', label: '系统', items: [

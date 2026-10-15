@@ -36,6 +36,7 @@
           <TerminalWorkbenchView v-else-if="view === 'terminal'" key="terminal" />
           <HarnessView v-else-if="view === 'harness'" key="harness" />
           <FillReportView v-else-if="view === 'fillreport'" key="fillreport" @navigate="navigate" />
+          <LeaveView v-else-if="view === 'leave'" key="leave" />
           <DeployView v-else-if="view === 'deploy'" key="deploy" @navigate="navigate" />
           <ExtensionsView v-else-if="view === 'extensions'" key="extensions" />
           <SettingsView v-else key="settings" :initial-section="settingsSection" />
@@ -83,6 +84,7 @@ import ProjectsView from './views/ProjectsView.vue'
 import TerminalWorkbenchView from './views/TerminalWorkbenchView.vue'
 import HarnessView from './views/HarnessView.vue'
 import FillReportView from './views/FillReportView.vue'
+import LeaveView from './views/LeaveView.vue'
 import DeployView from './views/DeployView.vue'
 import ExtensionsView from './views/ExtensionsView.vue'
 import SettingsView from './views/SettingsView.vue'

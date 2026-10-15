@@ -127,6 +127,16 @@ export const state = reactive({
     startedAt: 0, // 本次发布/回滚开始时刻（渲染层计时用；切换项目或换版本时清空）
     finishedAt: 0, // 本次发布/回滚结束时刻（done 事件写入，0 表示尚未结束）
   },
+  /** 北森一键请假：切换视图保留方案、执行状态与提交结果。 */
+  leave: {
+    options: { since: '', until: '', workStart: '08:30', workEnd: '17:30', reason: '' },
+    plan: null,
+    results: [],
+    running: false,
+    submitting: false,
+    consumed: false,
+    error: '',
+  },
   /** 一键填报（禅道工时）状态（跨视图保留，切换 tab 不丢计划） */
   fillReport: {
     plan: null, // 最近一次 fill:plan 结果（planned/tasks/bindings 等）

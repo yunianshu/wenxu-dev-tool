@@ -22,6 +22,11 @@ const deployHistory = require('./deploy/history')
 const releaseNotes = require('./deploy/release-notes')
 const aiDeploy = require('./deploy/ai-deploy')
 const fillService = require('./fill-service')
+const { LeaveService, createFileLedger } = require('./leave-service')
+const { ItalentBrowser } = require('./italent-browser')
+const { ItalentEmbedded } = require('./italent-embedded')
+// Tauri 后台下与宿主共用的调用通道（entry.cjs 已加载同一模块实例）；旧 Electron 下未启用。
+const compatHost = require('../backend/electron-compat.cjs').host
 const zentaoService = require('./zentao-service')
 const hanprintService = require('./hanprint-service')
 const harnessService = require('./harness-service')
@@ -854,6 +859,22 @@ function registerIpc() {
       return { ok: false, error: (err && err.message) || String(err) }
     }
   })
+
+  // 北森一键请假：方案和待核对请求由后台持有，提交必须明确确认。
+  // Tauri 桌面走内嵌 Webview（无浏览器扩展依赖）；旧 Electron 通道保留 Kimi 桥接。
+  const leaveAdapter = process.env.PLM_NODE_BACKEND === '1'
+    ? new ItalentEmbedded({ host: compatHost })
+    : new ItalentBrowser()
+  let leaveService
+  for (const [channel, method] of [['leave:connect', 'connect'], ['leave:plan', 'plan'], ['leave:submit', 'submit'], ['leave:resolve', 'resolve']]) {
+    ipcMain.handle(channel, async (_event, payload) => {
+      try {
+        leaveService ||= new LeaveService({ adapter: leaveAdapter, ledger: createFileLedger(app.getPath('userData')) })
+        return { ok: true, ...(await leaveService[method](payload)) }
+      }
+      catch (error) { return { ok: false, error: error.message || String(error) } }
+    })
+  }
 
   // ─── 一键填报模块（Git 提交 → 工时计划 → 禅道任务工时） ───
   ipcMain.handle('fill:plan', async (_e, payload) => {

@@ -173,6 +173,11 @@ contextBridge.exposeInMainWorld('gitReport', {
   onDeployDone: (cb) => subscribe('deploy:done', cb),
   // 发布历史的更新内容在后台整理完成后推送，界面据此刷新
   onDeployHistoryUpdated: (cb) => subscribe('deploy:history:updated', cb),
+  // 北森请假：生成只读方案，确认后才允许写入。
+  leaveConnect: () => ipcRenderer.invoke('leave:connect'),
+  leavePlan: (payload) => ipcRenderer.invoke('leave:plan', toPlain(payload)),
+  leaveSubmit: (payload) => ipcRenderer.invoke('leave:submit', toPlain(payload)),
+  leaveResolve: (payload) => ipcRenderer.invoke('leave:resolve', toPlain(payload)),
   // ─── 一键填报模块（Git 提交 → 工时计划 → 禅道任务工时） ───
   fillPlan: (payload) => ipcRenderer.invoke('fill:plan', toPlain(payload)),
   fillSubmit: (payload) => ipcRenderer.invoke('fill:submit', toPlain(payload)),

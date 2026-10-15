@@ -52,6 +52,8 @@ const SUITES = [
   'git-client-selftest.cjs',
   'fill-report-selftest.cjs',
   'fill-consistency-selftest.cjs',
+  'leave-selftest.cjs',
+  'leave-ui-selftest.cjs',
   'harness-defaults-selftest.cjs',
   'harness-selftest.cjs',
   'harness-orphan-lock-selftest.cjs',

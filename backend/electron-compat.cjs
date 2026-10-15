@@ -158,4 +158,7 @@ function resolveHost(message) {
   else pending.resolve(message.result)
 }
 
-module.exports = { electron, connect, resolveHost, handlers }
+/** 桌面宿主调用通道：主进程服务（如内嵌北森适配器）经前端代执行并等待回执。 */
+const host = { call: callHost, emit: emitHost }
+
+module.exports = { electron, connect, resolveHost, handlers, host }

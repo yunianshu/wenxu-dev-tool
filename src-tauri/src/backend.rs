@@ -424,3 +424,13 @@ pub fn backend_host_response(
 ) -> Result<(), String> {
     state.send(&json!({ "type": "host-response", "id": id, "result": result, "error": error }))
 }
+
+/// 在指定标签的内嵌 Webview 中执行脚本（一键请假北森页）。
+/// eval 不回传异步结果，脚本自行把结果 POST 回 Node 后台的本机回调。
+#[tauri::command]
+pub fn eval_in_webview(app: tauri::AppHandle, label: String, code: String) -> Result<(), String> {
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| "北森窗口未打开，请先点击连接北森".to_string())?;
+    webview.eval(&code).map_err(|error| error.to_string())
+}

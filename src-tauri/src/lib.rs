@@ -19,7 +19,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             backend::backend_call,
-            backend::backend_host_response
+            backend::backend_host_response,
+            backend::eval_in_webview
         ])
         .setup(|app| {
             // 后台起不来不等于要静默退出：窗口照常显示，由界面提示「后台服务未启动」，

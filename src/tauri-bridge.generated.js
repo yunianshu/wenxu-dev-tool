@@ -50,9 +50,12 @@ listen('backend-host-call', async ({ payload }) => {
       result = { canceled: !file, filePaths: file ? [file] : [] }
     } else if (action === 'save-dialog') {
       const filePath = await save({ title: options?.title, defaultPath: options?.defaultPath, filters: options?.filters })
-      result = { canceled: !filePath, filePath: filePath || '' }
+      result = { canceled: !filePath, filePaths: filePath || '' }
     } else if (action === 'open-external') {
       await openUrl(options)
+    } else if (action === 'leave-eval') {
+      // 一键请假：把北森脚本注入内嵌窗口，结果由页面回传 Node 后台。
+      await invoke('eval_in_webview', { label: options?.label, code: String(options?.code || '') })
     } else {
       throw new Error('未知桌面操作：' + action)
     }
@@ -231,6 +234,11 @@ contextBridge.exposeInMainWorld('gitReport', {
   onDeployDone: (cb) => subscribe('deploy:done', cb),
   // 发布历史的更新内容在后台整理完成后推送，界面据此刷新
   onDeployHistoryUpdated: (cb) => subscribe('deploy:history:updated', cb),
+  // 北森请假：生成只读方案，确认后才允许写入。
+  leaveConnect: () => ipcRenderer.invoke('leave:connect'),
+  leavePlan: (payload) => ipcRenderer.invoke('leave:plan', toPlain(payload)),
+  leaveSubmit: (payload) => ipcRenderer.invoke('leave:submit', toPlain(payload)),
+  leaveResolve: (payload) => ipcRenderer.invoke('leave:resolve', toPlain(payload)),
   // ─── 一键填报模块（Git 提交 → 工时计划 → 禅道任务工时） ───
   fillPlan: (payload) => ipcRenderer.invoke('fill:plan', toPlain(payload)),
   fillSubmit: (payload) => ipcRenderer.invoke('fill:submit', toPlain(payload)),
