@@ -8,6 +8,7 @@ const { LeaveService, createFileLedger, buildPlan, normalizeOptions, stamp } = r
 const { italentPage } = require('../electron/italent-page')
 const { ItalentBrowser } = require('../electron/italent-browser')
 const { ItalentEmbedded } = require('../electron/italent-embedded')
+const { ItalentAdapter } = require('../electron/italent-adapter')
 
 const NOW = Date.parse('2026-10-15T06:00:00Z')
 const OPTIONS = normalizeOptions({}, NOW)
@@ -426,6 +427,28 @@ async function main() {
     leakyFixture.context.fetch = (input, opts) => String(input).startsWith('http://127.0.0.1') ? realFetch(input, opts) : Promise.reject(new Error('请求 https://cloud.italent.cn/api/v2/UI/IndexPage 失败'))
     const leaky = new ItalentEmbedded({ host: { call: async (_action, payload) => { vm.runInContext(payload.code, leakyFixture.context) } }, timeout: 8000 })
     await assert.rejects(leaky.read(OPTIONS), error => !error.message.includes('cloud.italent.cn') && !error.message.includes('http') && /请求地址已隐藏/.test(error.message))
+  })
+  await test('自适应适配器：浏览器桥可达沿用浏览器会话，不可达退回内嵌且选定后保持', async () => {
+    const embeddedStub = () => ({ connect: async () => ({ connected: true }), read: async () => ({ via: 'embedded' }) })
+    const reachable = new ItalentAdapter({
+      browser: { connect: async () => ({ connected: true }), read: async () => ({ via: 'browser' }) },
+      embedded: embeddedStub(),
+    })
+    assert.equal((await reachable.connect()).mode, 'browser')
+    assert.equal((await reachable.read(OPTIONS)).via, 'browser')
+    const offline = new ItalentAdapter({
+      browser: { connect: async () => { throw new Error('无法连接浏览器：请开启 Kimi Browser Extension 的本地连接，并在浏览器登录北森') } },
+      embedded: embeddedStub(),
+    })
+    assert.equal((await offline.connect()).mode, 'embedded')
+    assert.equal((await offline.read(OPTIONS)).via, 'embedded')
+    const forced = new ItalentAdapter({
+      browser: { connect: async () => { throw new Error('不应探测浏览器') } },
+      embedded: embeddedStub(),
+      forceEmbedded: true,
+    })
+    assert.equal((await forced.connect()).mode, 'embedded')
+    assert.equal((await forced.read(OPTIONS)).via, 'embedded')
   })
   console.log(`一键请假自测通过：${passed} 组`)
 }

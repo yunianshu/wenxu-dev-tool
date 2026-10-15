@@ -27,7 +27,7 @@
         <label for="leave-reason">请假事由</label>
         <el-input id="leave-reason" v-model="options.reason" :disabled="busy" maxlength="1000" placeholder="选填，确认后随申请提交" class="leave-reason" />
       </div>
-      <p class="leave-help">{{ isTauri ? '点击「连接北森」打开独立窗口，登录一次后即可生成方案；登录态保存在本机。' : '通过已登录北森的浏览器读取本人记录。首次使用请开启 Kimi Browser Extension 的本地连接，点击「连接北森」完成登录后再生成。' }}</p>
+      <p class="leave-help">{{ isTauri ? '优先使用已登录北森的浏览器会话；没有时点击「连接北森」打开独立窗口登录，登录态保存在本机。' : '通过已登录北森的浏览器读取本人记录。首次使用请开启 Kimi Browser Extension 的本地连接，点击「连接北森」完成登录后再生成。' }}</p>
     </section>
 
     <el-alert v-if="leave.error" :title="leave.error" type="error" show-icon :closable="false" />
@@ -168,10 +168,14 @@ async function connect() {
   if (busy.value) return
   leave.running = true; leave.error = ''; leave.plan = null; leave.results = []
   try {
-    if (isTauri) await openItalentWindow()
-    const result = await window.gitReport.leaveConnect()
+    let result = await window.gitReport.leaveConnect()
+    if (!result?.ok && isTauri && /北森窗口/.test(result?.error || '')) {
+      // 内嵌登录模式且窗口未打开：先打开北森登录窗口再连一次；浏览器会话模式不弹窗。
+      await openItalentWindow()
+      result = await window.gitReport.leaveConnect()
+    }
     if (!result?.ok) throw new Error(result?.error || '连接失败')
-    ElMessage.success(isTauri ? '已打开北森窗口，登录后即可生成方案' : '已打开北森，请在浏览器确认登录后生成方案')
+    ElMessage.success(result.mode === 'browser' ? '已连接北森（浏览器登录态）' : result.mode === 'embedded' ? '已打开北森窗口，登录后即可生成方案' : '已打开北森，请在浏览器确认登录后生成方案')
   } catch (error) { leave.error = error.message }
   finally { leave.running = false }
 }
