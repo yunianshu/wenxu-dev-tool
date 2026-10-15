@@ -84,7 +84,7 @@
           <section class="summary-section">
             <h3>禅道任务</h3>
             <div v-for="t in plan.tasks" :key="t.taskId" class="sumline">
-              <div class="sum-name"><i class="task-dot" :style="{ background: taskColor(t.taskId) }" /><span class="task-color" :style="{ color: taskColor(t.taskId) }">#{{ t.taskId }}</span> {{ t.taskName || '任务已不在「我的任务」列表' }}</div>
+              <div class="sum-name" :style="{ color: taskColor(t.taskId) }"><i class="task-dot" :style="{ background: taskColor(t.taskId) }" /><span class="task-color">#{{ t.taskId }}</span> {{ t.taskName || '任务已不在「我的任务」列表' }}</div>
               <div class="sum-meta"><span>{{ t.consumed }}h</span><span v-if="t.taskLeft !== null">剩余 {{ t.taskLeft }}h → {{ t.left }}h</span></div>
               <span v-if="t.existingToday?.count" class="update-hint">当日已有 {{ t.existingToday.count }} 条（{{ t.existingToday.consumed }}h），将更新</span>
             </div>
@@ -134,7 +134,7 @@
             <el-table v-loading="recordsLoading" :data="ztRecords" class="fill-log-table" row-key="key" max-height="280">
               <el-table-column type="expand"><template #default="{ row }"><div class="record-work"><pre class="pwork">{{ row.work }}</pre></div></template></el-table-column>
               <el-table-column label="日期" width="120"><template #default="{ row }">{{ row.date }}</template></el-table-column>
-              <el-table-column label="任务" min-width="220" show-overflow-tooltip><template #default="{ row }"><span class="task-cell"><i class="task-dot" :style="{ background: taskColor(row.taskId) }" /><span class="task-color" :style="{ color: taskColor(row.taskId) }">#{{ row.taskId }}</span> {{ row.taskName }}</span></template></el-table-column>
+              <el-table-column label="任务" min-width="220" show-overflow-tooltip><template #default="{ row }"><span class="task-cell" :style="{ color: taskColor(row.taskId) }"><i class="task-dot" :style="{ background: taskColor(row.taskId) }" /><span class="task-color">#{{ row.taskId }}</span> {{ row.taskName }}</span></template></el-table-column>
               <el-table-column label="工时" width="100"><template #default="{ row }">{{ Number(row.consumed || 0).toFixed(2) }}h</template></el-table-column>
               <el-table-column label="说明" min-width="240" show-overflow-tooltip><template #default="{ row }">{{ firstLine(row.work) }}</template></el-table-column>
               <template #empty><div class="history-empty">暂无禅道工时记录</div></template>

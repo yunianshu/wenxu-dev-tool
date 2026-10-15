@@ -147,7 +147,7 @@ async function main() {
     checks.push(['禅道页签无错误提示', !!zt && !zt.alert, zt?.alert || ''])
     checks.push(['禅道页签标题给出条数', !!zt && /共 \d+ 条/.test(zt.meta), zt?.meta || ''])
 
-    // 任务配色：同一页签里不同任务颜色不同，跨页签同一任务颜色一致
+    // 任务配色：同一页签里不同任务颜色不同，跨页签同一任务颜色一致，任务名与圆点同色
     const ztTasks = await evaluate(`(() => {
       const pane = ${ACTIVE_PANE}
       const list = []
@@ -155,7 +155,7 @@ async function main() {
         const idText = cell.querySelector('.task-color')?.textContent.trim() || ''
         const name = cell.textContent.replace(/\\s+/g, ' ').trim().slice(idText.length).trim()
         const dot = cell.querySelector('.task-dot')
-        if (idText && dot) list.push({ id: idText, name, color: getComputedStyle(dot).backgroundColor })
+        if (idText && dot) list.push({ id: idText, name, color: getComputedStyle(dot).backgroundColor, textColor: getComputedStyle(cell.querySelector('.task-color')).color })
       }
       return list
     })()`)
@@ -165,6 +165,18 @@ async function main() {
       ztColors.size >= 2 && new Set(ztColors.values()).size === ztColors.size,
       `${ztColors.size} 个任务 / ${new Set(ztColors.values()).size} 种颜色`,
     ])
+    checks.push([
+      '禅道页签：任务标题与圆点同色',
+      ztTasks.length > 0 && ztTasks.every((t) => t.textColor === t.color),
+      ztTasks.map((t) => `${t.id}: ${t.textColor} vs ${t.color}`).slice(0, 2).join(' | '),
+    ])
+    const ztRowCells = await evaluate(`(() => {
+      const pane = ${ACTIVE_PANE}
+      const row = pane ? pane.querySelector('.el-table__body tr') : null
+      if (!row) return []
+      return [...row.querySelectorAll('td .cell')].map((c) => ({ text: c.textContent.trim().slice(0, 10), color: getComputedStyle(c).color }))
+    })()`)
+    console.log('禅道行各列文字色：', JSON.stringify(ztRowCells))
 
     // 汉印工时记录
     await evaluate(`${tabButton('汉印工时记录')}?.click(); true`)
@@ -182,7 +194,7 @@ async function main() {
       for (const cell of pane.querySelectorAll('.task-cell')) {
         const name = cell.querySelector('.task-color')?.textContent.trim() || ''
         const dot = cell.querySelector('.task-dot')
-        if (name && dot) tasks.push({ name, color: getComputedStyle(dot).backgroundColor })
+        if (name && dot) tasks.push({ name, color: getComputedStyle(dot).backgroundColor, textColor: getComputedStyle(cell.querySelector('.task-color')).color })
       }
       return { meta: pane.querySelector('.history-meta')?.textContent.trim() || '', alert: pane.querySelector('.el-alert__title')?.textContent.trim() || '', cells, tasks }
     })()`)
@@ -195,6 +207,11 @@ async function main() {
       '汉印页签：不同任务用不同颜色',
       hpColors.size >= 2 && new Set(hpColors.values()).size === hpColors.size,
       `${hpColors.size} 个任务 / ${new Set(hpColors.values()).size} 种颜色`,
+    ])
+    checks.push([
+      '汉印页签：任务名与圆点同色',
+      (hp?.tasks || []).length > 0 && (hp?.tasks || []).every((t) => t.textColor === t.color),
+      (hp?.tasks || []).map((t) => `${t.name}: ${t.textColor} vs ${t.color}`).slice(0, 2).join(' | '),
     ])
     const sharedTask = ztTasks.find((t) => t.name && hpColors.has(t.name))
     checks.push([
