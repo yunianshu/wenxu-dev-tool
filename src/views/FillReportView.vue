@@ -84,7 +84,7 @@
           <section class="summary-section">
             <h3>禅道任务</h3>
             <div v-for="t in plan.tasks" :key="t.taskId" class="sumline">
-              <div class="sum-name">#{{ t.taskId }} {{ t.taskName || '任务已不在「我的任务」列表' }}</div>
+              <div class="sum-name"><i class="task-dot" :style="{ background: taskColor(t.taskId) }" /><span class="task-color" :style="{ color: taskColor(t.taskId) }">#{{ t.taskId }}</span> {{ t.taskName || '任务已不在「我的任务」列表' }}</div>
               <div class="sum-meta"><span>{{ t.consumed }}h</span><span v-if="t.taskLeft !== null">剩余 {{ t.taskLeft }}h → {{ t.left }}h</span></div>
               <span v-if="t.existingToday?.count" class="update-hint">当日已有 {{ t.existingToday.count }} 条（{{ t.existingToday.consumed }}h），将更新</span>
             </div>
@@ -134,7 +134,7 @@
             <el-table v-loading="recordsLoading" :data="ztRecords" class="fill-log-table" row-key="key" max-height="280">
               <el-table-column type="expand"><template #default="{ row }"><div class="record-work"><pre class="pwork">{{ row.work }}</pre></div></template></el-table-column>
               <el-table-column label="日期" width="120"><template #default="{ row }">{{ row.date }}</template></el-table-column>
-              <el-table-column label="任务" min-width="220" show-overflow-tooltip><template #default="{ row }">#{{ row.taskId }} {{ row.taskName }}</template></el-table-column>
+              <el-table-column label="任务" min-width="220" show-overflow-tooltip><template #default="{ row }"><span class="task-cell"><i class="task-dot" :style="{ background: taskColor(row.taskId) }" /><span class="task-color" :style="{ color: taskColor(row.taskId) }">#{{ row.taskId }}</span> {{ row.taskName }}</span></template></el-table-column>
               <el-table-column label="工时" width="100"><template #default="{ row }">{{ Number(row.consumed || 0).toFixed(2) }}h</template></el-table-column>
               <el-table-column label="说明" min-width="240" show-overflow-tooltip><template #default="{ row }">{{ firstLine(row.work) }}</template></el-table-column>
               <template #empty><div class="history-empty">暂无禅道工时记录</div></template>
@@ -150,7 +150,7 @@
             <el-table v-loading="recordsLoading" :data="hpRecords" class="fill-log-table" :row-key="(row) => `${row.date}-${row.taskId}-${row.percent}`" max-height="280">
               <el-table-column label="日期" width="120"><template #default="{ row }">{{ row.date }}</template></el-table-column>
               <el-table-column label="项目" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ row.projectName }}</template></el-table-column>
-              <el-table-column label="任务" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ row.taskName || row.taskId }}</template></el-table-column>
+              <el-table-column label="任务" min-width="220" show-overflow-tooltip><template #default="{ row }"><span class="task-cell"><i class="task-dot" :style="{ background: taskColor(row.taskId) }" /><span class="task-color" :style="{ color: taskColor(row.taskId) }">{{ row.taskName || row.taskId }}</span></span></template></el-table-column>
               <el-table-column label="占比" width="100"><template #default="{ row }">{{ row.percent }}%</template></el-table-column>
               <template #empty><div class="history-empty">暂无汉印工时记录</div></template>
             </el-table>
@@ -467,6 +467,33 @@ function refreshRecordsIfActive() {
 /** 多行工作说明在表格里只呈现首行，全文在展开行查看 */
 function firstLine(text) {
   return String(text || '').split('\n').find((line) => line.trim()) || ''
+}
+
+/**
+ * 任务配色：同一个禅道任务在提交汇总与两个记录页签里是同一个颜色。
+ * 颜色按当前已知任务 ID 升序分配（绑定任务为主，记录里的任务并入），最多 8 色循环；
+ * 任务集合不变时分配结果稳定，切换页签不会换色。
+ */
+const TASK_COLOR_COUNT = 8
+const taskColorMap = computed(() => {
+  const ids = new Set()
+  const add = (value) => {
+    const id = Number(value)
+    if (Number.isFinite(id) && id > 0) ids.add(id)
+  }
+  for (const b of Object.values(bindings.value || {})) add(b && b.taskId)
+  for (const t of plan.value?.tasks || []) add(t.taskId)
+  for (const p of dayProjects.value) add(p.taskId)
+  for (const r of ztRecords.value) add(r.taskId)
+  for (const r of hpRecords.value) add(r.taskId)
+  const map = new Map()
+  ;[...ids].sort((a, b) => a - b).forEach((id, i) => map.set(id, i % TASK_COLOR_COUNT))
+  return map
+})
+
+function taskColor(taskId) {
+  const index = taskColorMap.value.get(Number(taskId))
+  return `var(--task-c${(index === undefined ? 0 : index) + 1})`
 }
 
 /** 首次切到记录页签才向平台取数：打开页面不额外打平台接口 */
@@ -817,6 +844,29 @@ async function copyReport() {
 
 <style scoped>
 .fill-page { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 0 24px; color: var(--brand-text); }
+/* 任务配色（同一任务同一颜色）；深色主题用更亮的一档，保证表内文字可读 */
+.fill-page {
+  --task-c1: #2f6bd8;
+  --task-c2: #1f8a4c;
+  --task-c3: #a9670f;
+  --task-c4: #8b3fd1;
+  --task-c5: #0d7d8a;
+  --task-c6: #c2410c;
+  --task-c7: #a2135e;
+  --task-c8: #4d6b23;
+}
+:root[data-theme='dark'] .fill-page {
+  --task-c1: #7aa7ff;
+  --task-c2: #6fd39a;
+  --task-c3: #e0b06a;
+  --task-c4: #c79bf5;
+  --task-c5: #5fc9d6;
+  --task-c6: #f0a06a;
+  --task-c7: #f08bbd;
+  --task-c8: #b6d17a;
+}
+.task-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.sum-name .task-dot { margin-right: 8px; }
 .fill-page .topbar-page, .topbar-page { display: flex; align-items: center; gap: 16px; width: 100%; }
 .page-scope { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .page-primary { margin-left: auto; }

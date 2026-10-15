@@ -147,6 +147,25 @@ async function main() {
     checks.push(['禅道页签无错误提示', !!zt && !zt.alert, zt?.alert || ''])
     checks.push(['禅道页签标题给出条数', !!zt && /共 \d+ 条/.test(zt.meta), zt?.meta || ''])
 
+    // 任务配色：同一页签里不同任务颜色不同，跨页签同一任务颜色一致
+    const ztTasks = await evaluate(`(() => {
+      const pane = ${ACTIVE_PANE}
+      const list = []
+      for (const cell of pane ? pane.querySelectorAll('.task-cell') : []) {
+        const idText = cell.querySelector('.task-color')?.textContent.trim() || ''
+        const name = cell.textContent.replace(/\\s+/g, ' ').trim().slice(idText.length).trim()
+        const dot = cell.querySelector('.task-dot')
+        if (idText && dot) list.push({ id: idText, name, color: getComputedStyle(dot).backgroundColor })
+      }
+      return list
+    })()`)
+    const ztColors = new Map(ztTasks.map((t) => [t.id, t.color]))
+    checks.push([
+      '禅道页签：不同任务用不同颜色',
+      ztColors.size >= 2 && new Set(ztColors.values()).size === ztColors.size,
+      `${ztColors.size} 个任务 / ${new Set(ztColors.values()).size} 种颜色`,
+    ])
+
     // 汉印工时记录
     await evaluate(`${tabButton('汉印工时记录')}?.click(); true`)
     const hpLoaded = await waitFor(evaluate, `(() => {
@@ -159,12 +178,30 @@ async function main() {
       if (!pane) return null
       const first = pane.querySelector('.el-table__body tr')
       const cells = first ? [...first.querySelectorAll('td .cell')].map((c) => c.textContent.trim()) : []
-      return { meta: pane.querySelector('.history-meta')?.textContent.trim() || '', alert: pane.querySelector('.el-alert__title')?.textContent.trim() || '', cells }
+      const tasks = []
+      for (const cell of pane.querySelectorAll('.task-cell')) {
+        const name = cell.querySelector('.task-color')?.textContent.trim() || ''
+        const dot = cell.querySelector('.task-dot')
+        if (name && dot) tasks.push({ name, color: getComputedStyle(dot).backgroundColor })
+      }
+      return { meta: pane.querySelector('.history-meta')?.textContent.trim() || '', alert: pane.querySelector('.el-alert__title')?.textContent.trim() || '', cells, tasks }
     })()`)
     checks.push(['汉印工时记录页签取到记录', !!hpLoaded, `行数 ${hpLoaded}`])
     checks.push(['汉印记录字段为 日期/项目/任务/占比', !!hp && /^\d{4}-\d{2}-\d{2}$/.test(hp.cells[0] || '') && /%$/.test(hp.cells[3] || ''), JSON.stringify(hp?.cells)])
     checks.push(['汉印页签无错误提示', !!hp && !hp.alert, hp?.alert || ''])
     checks.push(['汉印页签标题给出窗口与条数', !!hp && /近 \d+ 天 · 共 \d+ 条/.test(hp.meta), hp?.meta || ''])
+    const hpColors = new Map((hp?.tasks || []).map((t) => [t.name, t.color]))
+    checks.push([
+      '汉印页签：不同任务用不同颜色',
+      hpColors.size >= 2 && new Set(hpColors.values()).size === hpColors.size,
+      `${hpColors.size} 个任务 / ${new Set(hpColors.values()).size} 种颜色`,
+    ])
+    const sharedTask = ztTasks.find((t) => t.name && hpColors.has(t.name))
+    checks.push([
+      '同一任务在禅道/汉印两个页签颜色一致',
+      !!sharedTask && sharedTask.color === hpColors.get(sharedTask.name),
+      sharedTask ? `${sharedTask.name}: ${sharedTask.color} vs ${hpColors.get(sharedTask.name)}` : '两页签没有同名任务，无法比对',
+    ])
   })
 
   let pass = 0
