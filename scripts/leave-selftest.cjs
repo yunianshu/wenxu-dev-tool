@@ -7,7 +7,8 @@ const path = require('node:path')
 const { LeaveService, createFileLedger, buildPlan, normalizeOptions, stamp } = require('../electron/leave-service')
 const { italentPage } = require('../electron/italent-page')
 const { ItalentBrowser } = require('../electron/italent-browser')
-const { ItalentEmbedded } = require('../electron/italent-embedded')
+const { ItalentEmbedded, ItalentBookmarklet } = require('../electron/italent-embedded')
+const { ItalentAdapter } = require('../electron/italent-adapter')
 
 const NOW = Date.parse('2026-10-15T06:00:00Z')
 const OPTIONS = normalizeOptions({}, NOW)
@@ -437,6 +438,56 @@ async function main() {
     const loggedOut = await new ItalentEmbedded({ host: { call: async (_action, payload) => { vm.runInContext(payload.code, loginFixture.context) } }, timeout: 8000 }).connect()
     assert.equal(loggedOut.loggedIn, false)
     assert.equal(loggedOut.origin, 'https://www.italent.cn')
+  })
+  await test('书签桥：页面长轮询领取任务执行，结果回传回调；未连接时明确报错', async () => {
+    const fixture = pageFixture()
+    const realFetch = globalThis.fetch.bind(globalThis)
+    const pageFetch = fixture.context.fetch
+    fixture.context.fetch = (input, opts) => String(input).startsWith('http://127.0.0.1') ? realFetch(input, opts) : pageFetch(input, opts)
+    const bridge = new ItalentBookmarklet({ timeout: 8000 })
+    const reading = bridge.read(OPTIONS)
+    const answer = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('未取到任务')), 8000)
+      ;(async () => {
+        for (let i = 0; i < 40; i++) {
+          const response = await realFetch(`http://127.0.0.1:${bridge.port}/bridge/next?b=selftest`, { method: 'GET' }).catch(() => null)
+          if (response && response.status === 200) { clearTimeout(timer); resolve(await response.json()) ; return }
+          await new Promise((r) => setTimeout(r, 100))
+        }
+        clearTimeout(timer); reject(new Error('轮询超时'))
+      })()
+    })
+    assert.equal(typeof answer.code, 'string')
+    assert.equal(bridge.attached(), true)
+    await vm.runInContext(answer.code, fixture.context)
+    const data = await reading
+    assert.equal(data.attendance.length, 2)
+    const script = await (await realFetch(`http://127.0.0.1:${bridge.port}/bridge.js`)).text()
+    assert(script.includes(`127.0.0.1:${bridge.port}/bridge/next`))
+    assert(bridge.href().startsWith('javascript:'))
+    bridge.close()
+    const idle = new ItalentBookmarklet({ timeout: 200 })
+    await assert.rejects(idle.read(OPTIONS), /书签桥未连接/)
+    idle.close()
+  })
+  await test('通道链：已登录浏览器优先，书签桥次之，最后内嵌并附书签地址', async () => {
+    const browserProbe = { loggedIn: true }
+    const embeddedStub = { connect: async () => ({ connected: true, origin: 'https://cloud.italent.cn', loggedIn: false }) }
+    const make = (browser, bookmarklet) => new ItalentAdapter({
+      browser,
+      bookmarklet,
+      embedded: embeddedStub,
+      forced: '',
+    })
+    const reachable = make({ connect: async () => ({ connected: true }), run: async () => browserProbe }, { ensureServer: async () => {}, attached: () => false, href: () => 'javascript:1' })
+    assert.equal((await reachable.connect()).mode, 'browser')
+    const offline = make({ connect: async () => { throw new Error('无法连接浏览器') }, run: async () => { throw new Error('不应执行') } }, { ensureServer: async () => {}, attached: () => false, href: () => 'javascript:2' })
+    const chained = await offline.connect()
+    assert.equal(chained.mode, 'embedded')
+    assert.equal(chained.loggedIn, false)
+    assert.equal(chained.bookmarklet, 'javascript:2')
+    const bridged = make({ connect: async () => { throw new Error('无法连接浏览器') }, run: async () => { throw new Error('不应执行') } }, { ensureServer: async () => {}, attached: () => true, evaluate: async () => ({ loggedIn: true }), href: () => 'javascript:3' })
+    assert.equal((await bridged.connect()).mode, 'bookmarklet')
   })
   console.log(`一键请假自测通过：${passed} 组`)
 }

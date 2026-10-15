@@ -29,6 +29,11 @@
       </div>
       <p class="leave-help">{{ isTauri ? '点击「连接北森」打开独立登录窗口，完成登录后自动关闭；登录态保存在本机。' : '通过已登录北森的浏览器读取本人记录。首次使用请开启 Kimi Browser Extension 的本地连接，点击「连接北森」完成登录后再生成。' }}</p>
       <p v-if="loginWaiting" class="leave-help leave-login-waiting">北森登录窗口已打开，完成登录后自动关闭。</p>
+      <div v-if="loginWaiting && bookmarkletHref" class="leave-controls-row leave-bookmarklet-row">
+        <label>免登录连接</label>
+        <a class="leave-bookmarklet" :href="bookmarkletHref" draggable="true" title="拖到浏览器书签栏" @click.prevent>拖到书签栏</a>
+        <span class="leave-muted">在已登录北森的浏览器标签页上点击该书签，即可免密码连接</span>
+      </div>
     </section>
 
     <el-alert v-if="leave.error" :title="leave.error" type="error" show-icon :closable="false" />
@@ -160,6 +165,7 @@ function statusOf(row) {
 let italentWindow = null
 let loginWatcher = null
 const loginWaiting = ref(false)
+const bookmarkletHref = ref('')
 
 function stopLoginWatcher() {
   loginWaiting.value = false
@@ -184,7 +190,7 @@ async function openItalentWindow() {
   italentWindow = view
 }
 
-// 登录成功后隐藏（不销毁）窗口：页面继续驻留后台执行读取与提交脚本。
+// 等待任一通道就绪：内嵌窗口登录成功（隐藏窗口）、书签桥连接或浏览器会话恢复。
 function startLoginWatcher() {
   stopLoginWatcher()
   loginWaiting.value = true
@@ -193,8 +199,11 @@ function startLoginWatcher() {
     try { result = await window.gitReport.leaveConnect() } catch { return }
     if (result?.ok && result.loggedIn) {
       stopLoginWatcher()
-      try { await italentWindow?.hide() } catch { /* 窗口可能已被关闭 */ }
-      ElMessage.success('北森登录成功，窗口已自动关闭')
+      if (result.mode === 'embedded') {
+        try { await italentWindow?.hide() } catch { /* 窗口可能已被关闭 */ }
+        ElMessage.success('北森登录成功，窗口已自动关闭')
+      } else if (result.mode === 'bookmarklet') ElMessage.success('已通过书签连接北森')
+      else ElMessage.success('已连接北森（浏览器会话）')
       return
     }
     if (!result?.ok && /北森窗口/.test(result?.error || '')) {
@@ -210,13 +219,16 @@ async function connect() {
   leave.running = true; leave.error = ''; leave.plan = null; leave.results = []
   try {
     const first = await window.gitReport.leaveConnect()
-    // 逃生门（浏览器桥）的 connect 不带 loggedIn 字段，视为已连接；只有明确未登录才走登录窗口。
-    if (first?.ok && first.loggedIn !== false) { ElMessage.success('北森已连接'); return }
+    if (first?.ok && first.loggedIn) {
+      ElMessage.success(first.mode === 'bookmarklet' ? '已通过书签连接北森' : '北森已连接')
+      return
+    }
     if (!isTauri) {
       if (!first?.ok) throw new Error(first?.error || '连接失败')
       ElMessage.success('已打开北森，请在浏览器确认登录后生成方案')
       return
     }
+    bookmarkletHref.value = first?.bookmarklet || ''
     await openItalentWindow()
     startLoginWatcher()
     ElMessage.success('已打开北森登录窗口，完成登录后自动关闭')

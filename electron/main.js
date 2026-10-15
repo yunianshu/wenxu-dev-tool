@@ -24,7 +24,8 @@ const aiDeploy = require('./deploy/ai-deploy')
 const fillService = require('./fill-service')
 const { LeaveService, createFileLedger } = require('./leave-service')
 const { ItalentBrowser } = require('./italent-browser')
-const { ItalentEmbedded } = require('./italent-embedded')
+const { ItalentEmbedded, ItalentBookmarklet } = require('./italent-embedded')
+const { ItalentAdapter } = require('./italent-adapter')
 // Tauri 后台下与宿主共用的调用通道（entry.cjs 已加载同一模块实例）；旧 Electron 下未启用。
 const compatHost = require('../backend/electron-compat.cjs').host
 const zentaoService = require('./zentao-service')
@@ -861,10 +862,10 @@ function registerIpc() {
   })
 
   // 北森一键请假：方案和待核对请求由后台持有，提交必须明确确认。
-  // Tauri 桌面固定走应用内嵌窗口（登录后自动隐藏，无浏览器/扩展/账号依赖）；
-  // PLM_LEAVE_ADAPTER=browser 逃生门借用已登录浏览器（Kimi 桥）；旧 Electron 通道即浏览器桥。
-  const leaveAdapter = process.env.PLM_NODE_BACKEND === '1' && process.env.PLM_LEAVE_ADAPTER !== 'browser'
-    ? new ItalentEmbedded({ host: compatHost })
+  // Tauri 桌面走通道链：已登录浏览器（Kimi 桥）> 书签桥（无扩展/账号依赖）> 内嵌登录窗口；
+  // PLM_LEAVE_ADAPTER=browser|embedded 可强制通道；旧 Electron 通道即浏览器桥。
+  const leaveAdapter = process.env.PLM_NODE_BACKEND === '1'
+    ? new ItalentAdapter({ embedded: new ItalentEmbedded({ host: compatHost }), bookmarklet: new ItalentBookmarklet() })
     : new ItalentBrowser()
   let leaveService
   for (const [channel, method] of [['leave:connect', 'connect'], ['leave:plan', 'plan'], ['leave:submit', 'submit'], ['leave:resolve', 'resolve']]) {

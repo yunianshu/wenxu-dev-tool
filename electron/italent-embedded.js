@@ -20,12 +20,17 @@ class ItalentEmbedded {
     this.server = null
     this.port = 0
     this.pending = new Map()
+    this.jobs = []
+    this.lastPoll = 0
   }
 
   async ensureServer() {
     if (this.server) return
     const server = http.createServer((request, response) => {
-      if (request.method !== 'POST' || request.url !== '/leave-callback') { response.writeHead(404); response.end(); return }
+      const url = request.url || ''
+      if (request.method === 'GET' && url.startsWith('/bridge.js')) return this.serveBridgeScript(response)
+      if (request.method === 'GET' && url.startsWith('/bridge/next')) return void this.serveBridgeNext(response)
+      if (request.method !== 'POST' || url !== '/leave-callback') { response.writeHead(404); response.end(); return }
       let body = ''
       request.setEncoding('utf8')
       request.on('data', (chunk) => { body += chunk; if (body.length > MAX_BODY) request.destroy() })
@@ -53,6 +58,48 @@ class ItalentEmbedded {
     this.port = server.address().port
   }
 
+  /** 书签桥注入脚本：在已登录北森的页面里长轮询任务并执行，结果走 /leave-callback 回传。 */
+  serveBridgeScript(response) {
+    const script = `(function(){if(window.__plmLeaveBridge)return;window.__plmLeaveBridge=true;var b=Math.random().toString(36).slice(2);function pump(){fetch('http://127.0.0.1:${this.port}/bridge/next?b='+b,{credentials:'omit'}).then(function(r){if(r.status===204)return pump();if(!r.ok)throw new Error('poll '+r.status);return r.json().then(function(job){if(job&&job.code){try{(0,eval)(job.code)}catch(e){}}pump()})}).catch(function(){setTimeout(pump,2000)})}pump()})()`
+    response.setHeader('Access-Control-Allow-Origin', '*')
+    response.setHeader('Content-Type', 'text/javascript; charset=utf-8')
+    response.writeHead(200)
+    response.end(script)
+  }
+
+  async serveBridgeNext(response) {
+    this.lastPoll = Date.now()
+    const deadline = Date.now() + 20000
+    const timer = setInterval(() => {
+      this.lastPoll = Date.now()
+      const job = this.jobs.find((item) => !item.served)
+      if (job) {
+        job.served = true
+        clearInterval(timer)
+        response.setHeader('Access-Control-Allow-Origin', '*')
+        response.setHeader('Content-Type', 'application/json; charset=utf-8')
+        response.writeHead(200)
+        response.end(JSON.stringify({ code: job.code }))
+      } else if (Date.now() >= deadline) {
+        clearInterval(timer)
+        response.setHeader('Access-Control-Allow-Origin', '*')
+        response.writeHead(204)
+        response.end()
+      }
+    }, 100)
+    timer.unref?.()
+  }
+
+  /** 书签是否已连接（20 秒长轮询周期内有过拉取）。 */
+  attached() {
+    return !!this.server && Date.now() - this.lastPoll < 45000
+  }
+
+  /** 书签地址：拖到浏览器书签栏，在已登录北森的标签页点击。 */
+  href() {
+    return `javascript:void(fetch('http://127.0.0.1:${this.port}/bridge.js').then(function(r){return r.text()}).then(function(t){(0,eval)(t)}))`
+  }
+
   close() {
     const server = this.server
     this.server = null
@@ -73,22 +120,31 @@ class ItalentEmbedded {
     return `(async()=>{${body}})();0`
   }
 
+  waitCallback(id, timeoutMessage) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (!this.pending.delete(id)) return
+        reject(new Error(timeoutMessage))
+      }, this.timeout)
+      this.pending.set(id, { resolve, reject, timer })
+    })
+  }
+
   async evaluate(action, options) {
     await this.ensureServer()
     const id = randomUUID()
-    const payload = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        if (!this.pending.delete(id)) return
-        reject(new Error('北森页面执行超时，请确认北森窗口仍打开且已登录'))
-      }, this.timeout)
-      this.pending.set(id, { resolve, reject, timer })
-      this.host.call('leave-eval', { label: this.label, code: this.buildCode(id, action, options) }).catch((error) => {
-        if (!this.pending.delete(id)) return
-        clearTimeout(timer)
-        const message = String(error?.message || error)
-        reject(new Error(/北森窗口未打开/.test(message) ? '请先点击「连接北森」打开北森窗口' : `北森页面执行失败：${message}`))
-      })
+    const waiting = this.waitCallback(id, '北森页面执行超时，请确认北森窗口仍打开且已登录')
+    this.host.call('leave-eval', { label: this.label, code: this.buildCode(id, action, options) }).catch((error) => {
+      const waiter = this.pending.get(id)
+      if (!waiter) return
+      this.pending.delete(id)
+      clearTimeout(waiter.timer)
+      waiter.reject(new Error(/北森窗口未打开/.test(String(error?.message || error)) ? '请先点击「连接北森」打开北森窗口' : `北森页面执行失败：${error?.message || error}`))
     })
+    return this.unwrap(await waiting)
+  }
+
+  unwrap(payload) {
     if (payload.success !== true) {
       const error = new Error(payload.message || '北森业务数据无法识别')
       if (payload.submissionState === 'notSubmitted') error.submissionState = 'notSubmitted'
@@ -118,4 +174,35 @@ class ItalentEmbedded {
   apply(options) { return this.evaluate('apply', options) }
 }
 
-module.exports = { ItalentEmbedded, LABEL }
+/**
+ * 书签桥：复用内嵌适配器的回传服务，但不经桌面宿主注入脚本——
+ * 用户把书签拖到浏览器书签栏，在已登录北森的标签页点击后，
+ * 页面长轮询 /bridge/next 领取任务执行，结果 POST 回 /leave-callback。
+ * 适用于无浏览器扩展、无北森密码的场景（会话借用自用户已登录的页面）。
+ */
+class ItalentBookmarklet extends ItalentEmbedded {
+  constructor(options = {}) {
+    super({ ...options, host: { call: async () => { throw new Error('书签桥不经桌面宿主执行') } } })
+  }
+
+  async evaluate(action, options) {
+    await this.ensureServer()
+    const id = randomUUID()
+    const job = { code: this.buildCode(id, action, options), served: false }
+    this.jobs.push(job)
+    try {
+      return this.unwrap(await this.waitCallback(id, '书签桥未连接：请在已登录北森的标签页点击书签'))
+    } finally {
+      this.jobs = this.jobs.filter((item) => item !== job)
+    }
+  }
+
+  async connect() {
+    await this.ensureServer()
+    if (!this.attached()) return { connected: true, mode: 'bookmarklet', loggedIn: false }
+    const probe = await this.evaluate('probe', {})
+    return { connected: true, mode: 'bookmarklet', origin: probe.origin || '', loggedIn: probe.loggedIn === true }
+  }
+}
+
+module.exports = { ItalentEmbedded, ItalentBookmarklet, LABEL }
