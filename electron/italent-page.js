@@ -1,8 +1,7 @@
 /** 在北森页面上下文执行；所有接口与字段取自北森当前表单元数据。 */
 async function italentPage(action, options = {}) {
-  // 探测当前页面位置，不要求已登录：内嵌窗口刚打开时可能还在登录页。
-  if (action === 'probe') return { origin: location.origin }
-  if (location.origin !== 'https://cloud.italent.cn') throw new Error('请先在浏览器登录北森，再连接一键请假')
+  // probe 需要在登录页上执行，不能被来源检查拦截。
+  if (action !== 'probe' && location.origin !== 'https://cloud.italent.cn') throw new Error('请先在浏览器登录北森，再连接一键请假')
   const attendance = 'Attendance.AttendanceStatistics'
   const vacation = 'Attendance.AttendanceVacationInfo'
   const formView = 'Attendance.EmployeeVacationFormView'
@@ -89,6 +88,13 @@ async function italentPage(action, options = {}) {
     throw new Error('北森记录过多，未能读取完整列表')
   }
   const formQuery = { metaObjName: vacation, formState: 'create', viewName: formView, method: 'POST', btnMetaObjectName_sa: vacation, btnCode_sa: 'EmployeeVacationBtn', currentViewName: 'Attendance_EmployeeVacationNavView', rootPageType: '1', rootPage: nav, formType: '01', 'PaaS-SourceApp': 'Attendance', 'PaaS-CurrentView': nav }
+  // 探测登录态：未登录时页面停在登录域；已加载页面的会话可能已过期，用一次已认证请求核实。
+  if (action === 'probe') {
+    const origin = location.origin
+    if (origin !== 'https://cloud.italent.cn') return { origin, loggedIn: false }
+    try { await api('/api/v2/UI/IndexPage', { metaObjName: vacation, viewName: nav, excludeDataSource: 'true' }); return { origin, loggedIn: true } }
+    catch { return { origin, loggedIn: false } }
+  }
   async function getForm() {
     const form = await api('/api/v2/UI/FormView', formQuery)
     const data = form.biz_data?.[0]

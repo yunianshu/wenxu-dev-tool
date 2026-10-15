@@ -99,12 +99,13 @@ class ItalentEmbedded {
 
   async connect() {
     await this.ensureServer()
-    // 窗口刚创建时页面可能仍在加载或跳转登录，重试几次探到稳定来源即可，不强制已登录。
+    // 窗口刚创建时页面可能仍在加载或跳转登录，重试几次探到稳定来源即可；
+    // 登录是否有效由 probe 内的一次已认证请求核实，未登录不视为失败。
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt) await this.pause(1000)
       try {
         const probe = await this.evaluate('probe', {})
-        return { connected: true, origin: probe.origin || '' }
+        return { connected: true, origin: probe.origin || '', loggedIn: probe.loggedIn === true }
       } catch (error) {
         if (attempt === 2) throw error
       }

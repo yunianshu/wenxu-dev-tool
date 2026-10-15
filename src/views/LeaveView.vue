@@ -27,7 +27,8 @@
         <label for="leave-reason">请假事由</label>
         <el-input id="leave-reason" v-model="options.reason" :disabled="busy" maxlength="1000" placeholder="选填，确认后随申请提交" class="leave-reason" />
       </div>
-      <p class="leave-help">{{ isTauri ? '优先使用已登录北森的浏览器会话；没有时点击「连接北森」打开独立窗口登录，登录态保存在本机。' : '通过已登录北森的浏览器读取本人记录。首次使用请开启 Kimi Browser Extension 的本地连接，点击「连接北森」完成登录后再生成。' }}</p>
+      <p class="leave-help">{{ isTauri ? '点击「连接北森」打开独立登录窗口，完成登录后自动关闭；登录态保存在本机。' : '通过已登录北森的浏览器读取本人记录。首次使用请开启 Kimi Browser Extension 的本地连接，点击「连接北森」完成登录后再生成。' }}</p>
+      <p v-if="loginWaiting" class="leave-help leave-login-waiting">北森登录窗口已打开，完成登录后自动关闭。</p>
     </section>
 
     <el-alert v-if="leave.error" :title="leave.error" type="error" show-icon :closable="false" />
@@ -114,8 +115,9 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { invoke } from '@tauri-apps/api/core'
 import { WebviewWindow, getAllWebviewWindows } from '@tauri-apps/api/webviewWindow'
 import { state } from '../store'
 import { toPlain } from '../utils/ipc'
@@ -155,27 +157,69 @@ function statusOf(row) {
   }
   return { kind: row.status, text: row.reason }
 }
+let italentWindow = null
+let loginWatcher = null
+const loginWaiting = ref(false)
+
+function stopLoginWatcher() {
+  loginWaiting.value = false
+  if (loginWatcher) { clearInterval(loginWatcher); loginWatcher = null }
+}
+
 async function openItalentWindow() {
   const existing = (await getAllWebviewWindows()).find((view) => view.label === 'leave-italent')
-  if (existing) { await existing.setFocus(); return }
+  if (existing) {
+    italentWindow = existing
+    await existing.show()
+    await existing.setFocus()
+    // 隐藏窗口里的旧会话可能已过期：重新加载让北森自行跳回登录页。
+    try { await invoke('eval_in_webview', { label: 'leave-italent', code: 'location.reload()' }) } catch { /* 重载失败由登录探测兜底 */ }
+    return
+  }
   const view = new WebviewWindow('leave-italent', { url: ITALENT_URL, title: '北森 · 一键请假', width: 1180, height: 800, center: true })
   await new Promise((resolve, reject) => {
     view.once('tauri://created', resolve)
     view.once('tauri://error', (event) => reject(new Error(`北森窗口创建失败：${event?.payload || '未知错误'}`)))
   })
+  italentWindow = view
 }
+
+// 登录成功后隐藏（不销毁）窗口：页面继续驻留后台执行读取与提交脚本。
+function startLoginWatcher() {
+  stopLoginWatcher()
+  loginWaiting.value = true
+  loginWatcher = setInterval(async () => {
+    let result = null
+    try { result = await window.gitReport.leaveConnect() } catch { return }
+    if (result?.ok && result.loggedIn) {
+      stopLoginWatcher()
+      try { await italentWindow?.hide() } catch { /* 窗口可能已被关闭 */ }
+      ElMessage.success('北森登录成功，窗口已自动关闭')
+      return
+    }
+    if (!result?.ok && /北森窗口/.test(result?.error || '')) {
+      stopLoginWatcher()
+      leave.error = '北森登录窗口已关闭，未完成登录'
+    }
+  }, 2500)
+}
+onUnmounted(stopLoginWatcher)
+
 async function connect() {
-  if (busy.value) return
+  if (busy.value || loginWaiting.value) return
   leave.running = true; leave.error = ''; leave.plan = null; leave.results = []
   try {
-    let result = await window.gitReport.leaveConnect()
-    if (!result?.ok && isTauri && /北森窗口/.test(result?.error || '')) {
-      // 内嵌登录模式且窗口未打开：先打开北森登录窗口再连一次；浏览器会话模式不弹窗。
-      await openItalentWindow()
-      result = await window.gitReport.leaveConnect()
+    const first = await window.gitReport.leaveConnect()
+    // 逃生门（浏览器桥）的 connect 不带 loggedIn 字段，视为已连接；只有明确未登录才走登录窗口。
+    if (first?.ok && first.loggedIn !== false) { ElMessage.success('北森已连接'); return }
+    if (!isTauri) {
+      if (!first?.ok) throw new Error(first?.error || '连接失败')
+      ElMessage.success('已打开北森，请在浏览器确认登录后生成方案')
+      return
     }
-    if (!result?.ok) throw new Error(result?.error || '连接失败')
-    ElMessage.success(result.mode === 'browser' ? '已连接北森（浏览器登录态）' : result.mode === 'embedded' ? '已打开北森窗口，登录后即可生成方案' : '已打开北森，请在浏览器确认登录后生成方案')
+    await openItalentWindow()
+    startLoginWatcher()
+    ElMessage.success('已打开北森登录窗口，完成登录后自动关闭')
   } catch (error) { leave.error = error.message }
   finally { leave.running = false }
 }
@@ -186,7 +230,13 @@ async function generate() {
     const result = await window.gitReport.leavePlan(toPlain(options))
     if (!result?.ok) throw new Error(result?.error || '生成请假方案失败')
     leave.plan = result.plan
-  } catch (error) { leave.error = error.message }
+  } catch (error) {
+    leave.error = error.message
+    // 会话过期：自动弹出登录窗口并开始等待，登录成功后重试生成即可。
+    if (isTauri && !loginWaiting.value && /登录/.test(error.message)) {
+      try { await openItalentWindow(); startLoginWatcher() } catch { /* 弹窗失败时保留原错误 */ }
+    }
+  }
   finally { leave.running = false }
 }
 async function submit() {
