@@ -1932,15 +1932,16 @@ store.save({
 })
 
 /** 打桩两个平台客户端，并记录本次实际查询的任务与日期 */
-function stubRecordClients({ ztEfforts = {}, hpByDate = {} } = {}) {
+function stubRecordClients({ ztEfforts = {}, ztMeta = {}, hpByDate = {} } = {}) {
   const ztQueried = []
   const hpQueried = []
   ztSvc.ensureClient = async () => ({
-    getTaskEfforts: async (taskId) => {
+    getTaskEffortsMeta: async (taskId) => {
       ztQueried.push(Number(taskId))
       const row = ztEfforts[taskId]
       if (row instanceof Error) throw row
-      return row || []
+      const meta = ztMeta[taskId] || {}
+      return { status: meta.status || 'doing', taskName: meta.taskName || '', efforts: row || [] }
     },
   })
   hpSvc.ensureClient = async () => ({
@@ -1965,6 +1966,10 @@ await test('records：禅道按绑定任务聚合（日期倒序），汉印近 
       ],
       88: [{ id: 3, date: '2026-10-14', work: '1. 另一任务', consumed: 1, left: 3 }],
     },
+    ztMeta: {
+      66: { status: 'done', taskName: '任务A·平台当前名' },
+      // 88：平台没给名字 → 回落绑定时的名字
+    },
     hpByDate: {
       '2026-10-14': [
         { Id: 11, ProjectType: 3, ProjectName: 'P-A', TaskId: '66', TaskName: '任务A', Percent: 60, WorkDate: '2026-10-14' },
@@ -1982,7 +1987,10 @@ await test('records：禅道按绑定任务聚合（日期倒序），汉印近 
     ['2026-10-14#88', '2026-10-14#66', '2026-10-13#66'],
     '按日期倒序，同一天按任务 ID 倒序',
   )
-  assert.strictEqual(r.zt.records.find((x) => x.date === '2026-10-14' && x.taskId === 66).taskName, '任务A')
+  assert.strictEqual(r.zt.records.find((x) => x.date === '2026-10-14' && x.taskId === 66).taskName, '任务A·平台当前名', '任务名优先用平台当前名')
+  assert.strictEqual(r.zt.records.find((x) => x.date === '2026-10-14' && x.taskId === 66).status, 'done', '每行带任务状态（图标数据源）')
+  assert.strictEqual(r.zt.records.find((x) => x.date === '2026-10-14' && x.taskId === 88).taskName, '任务B', '平台没给名字时回落绑定名')
+  assert.ok(r.zt.records.every((x) => x.status), '所有记录行都有状态')
   assert.strictEqual(r.zt.records[2].work, '1. 旧记录')
   assert.deepStrictEqual(hpQueried, ['2026-10-14', '2026-10-13', '2026-10-12', '2026-10-11', '2026-10-10', '2026-10-09', '2026-10-08'], '汉印按日查近 7 天（含基准日）')
   assert.deepStrictEqual(r.hp.records.map((x) => `${x.date}#${x.taskId}`), ['2026-10-14#66', '2026-10-12#88'], 'ProjectType=-2 的删除标记行不进列表')

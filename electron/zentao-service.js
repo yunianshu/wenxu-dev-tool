@@ -272,10 +272,10 @@ class ZentaoClient {
   }
 
   /**
-   * 查询当前账号在任务中的已有工时（recordEstimate 页面同时包含其他人的记录）。
-   * 返回 [{ id, date:'YYYY-MM-DD', work, consumed, left }]；查询、归属或解析失败抛错，避免误追加。
+   * 拉取 recordEstimate 页并完成结构校验。页面同时带任务对象（status/name），
+   * 供工时记录页签在同一请求里取任务状态，不必再调任务详情接口。
    */
-  async getTaskEfforts(taskId) {
+  async fetchEffortPage(taskId) {
     const d = await this.getJson(`/index.php?m=task&f=recordEstimate&taskID=${taskId}&t=json`)
     let inner = d && d.data
     if (typeof inner === 'string') {
@@ -293,6 +293,20 @@ class ZentaoClient {
     if (list.some((x) => typeof x.account !== 'string' || !x.account.trim())) {
       throw new Error('禅道已有工时记录缺少账号，无法确认归属，已停止提交')
     }
+    const task = inner && inner.task
+    return {
+      list,
+      taskStatus: task && task.status ? String(task.status) : '',
+      taskName: task && task.name ? String(task.name) : '',
+    }
+  }
+
+  /**
+   * 查询当前账号在任务中的已有工时（recordEstimate 页面同时包含其他人的记录）。
+   * 返回 [{ id, date:'YYYY-MM-DD', work, consumed, left }]；查询、归属或解析失败抛错，避免误追加。
+   */
+  async getTaskEfforts(taskId) {
+    const { list } = await this.fetchEffortPage(taskId)
     return list
       .filter((x) => x.account === this.account)
       .map((x) => ({
@@ -302,6 +316,25 @@ class ZentaoClient {
         consumed: Number(x.consumed || 0),
         left: Number(x.left || 0),
       }))
+  }
+
+  /**
+   * 已有工时 + 任务状态/名称（与 getTaskEfforts 同一次请求）。工时记录页签在每行
+   * 任务旁显示状态图标——已完成/已关闭的任务也会有补填的工时记录，状态以任务对象为准；
+   * 任务名优先用平台当前名，平台没给时回落绑定时的名字。
+   */
+  async getTaskEffortsMeta(taskId) {
+    const { list, taskStatus, taskName } = await this.fetchEffortPage(taskId)
+    const efforts = list
+      .filter((x) => x.account === this.account)
+      .map((x) => ({
+        id: Number(x.id),
+        date: String(x.date || '').slice(0, 10),
+        work: decodeEffortWork(x.work || x.workDesc),
+        consumed: Number(x.consumed || 0),
+        left: Number(x.left || 0),
+      }))
+    return { status: taskStatus, taskName, efforts }
   }
 
   /**

@@ -889,10 +889,13 @@ async function records({ date, days = RECORD_DAYS } = {}) {
       const client = await zentao.ensureClient()
       const lists = await Promise.all(bound.map(async (task) => {
         try {
-          const efforts = await client.getTaskEfforts(task.taskId)
+          // 同一次请求带回任务状态/名称：工时记录行要显示状态图标（完成任务也有补填记录）
+          const { status, taskName: platformName, efforts } = await client.getTaskEffortsMeta(task.taskId)
+          const taskName = platformName || task.taskName
           return efforts.map((e) => ({
             taskId: task.taskId,
-            taskName: task.taskName,
+            taskName,
+            status,
             date: e.date,
             work: e.work || '',
             consumed: e.consumed,

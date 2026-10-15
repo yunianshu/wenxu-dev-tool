@@ -178,6 +178,24 @@ async function main() {
     })()`)
     console.log('禅道行各列文字色：', JSON.stringify(ztRowCells))
 
+    // 记录行上的任务状态图标（已完成/已关闭的任务也会出现在工时记录里）
+    const ztStatusIcons = await evaluate(`(() => {
+      const pane = ${ACTIVE_PANE}
+      const icons = [...(pane ? pane.querySelectorAll('.task-cell .task-status') : [])]
+      return { count: icons.length, labels: [...new Set(icons.map((el) => el.getAttribute('aria-label') || ''))], missingTitle: icons.filter((el) => !el.getAttribute('title')).length }
+    })()`)
+    checks.push(['禅道工时记录行带状态图标', ztStatusIcons.count > 0, `图标 ${ztStatusIcons.count} 个`])
+    checks.push([
+      '状态图标标签为已知状态且带悬停提示',
+      ztStatusIcons.labels.length > 0 && ztStatusIcons.labels.every((l) => ['未开始', '进行中', '已完成', '已暂停', '已取消', '已关闭'].includes(l)) && ztStatusIcons.missingTitle === 0,
+      ztStatusIcons.labels.join('/'),
+    ])
+    checks.push([
+      '工时记录里含已完成或已关闭的任务（可补填）',
+      ztStatusIcons.labels.some((l) => l === '已完成' || l === '已关闭'),
+      ztStatusIcons.labels.join('/'),
+    ])
+
     // 汉印工时记录
     await evaluate(`${tabButton('汉印工时记录')}?.click(); true`)
     const hpLoaded = await waitFor(evaluate, `(() => {

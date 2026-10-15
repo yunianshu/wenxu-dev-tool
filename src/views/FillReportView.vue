@@ -134,7 +134,7 @@
             <el-table v-loading="recordsLoading" :data="ztRecords" class="fill-log-table" row-key="key" max-height="280">
               <el-table-column type="expand"><template #default="{ row }"><div class="record-work"><pre class="pwork">{{ row.work }}</pre></div></template></el-table-column>
               <el-table-column label="日期" width="120"><template #default="{ row }">{{ row.date }}</template></el-table-column>
-              <el-table-column label="任务" min-width="220" show-overflow-tooltip><template #default="{ row }"><span class="task-cell" :style="{ color: taskColor(row.taskId) }"><i class="task-dot" :style="{ background: taskColor(row.taskId) }" /><span class="task-color">#{{ row.taskId }}</span> {{ row.taskName }}</span></template></el-table-column>
+              <el-table-column label="任务" min-width="220" show-overflow-tooltip><template #default="{ row }"><span class="task-cell" :style="{ color: taskColor(row.taskId) }"><i class="task-dot" :style="{ background: taskColor(row.taskId) }" /><span class="task-color">#{{ row.taskId }}</span> {{ row.taskName }}<span v-if="row.status" class="task-status" :class="`is-${row.status}`" :title="statusText(row.status)" :aria-label="statusText(row.status)"><el-icon><component :is="statusIcon(row.status)" /></el-icon></span></span></template></el-table-column>
               <el-table-column label="工时" width="100"><template #default="{ row }">{{ Number(row.consumed || 0).toFixed(2) }}h</template></el-table-column>
               <el-table-column label="说明" min-width="240" show-overflow-tooltip><template #default="{ row }">{{ firstLine(row.work) }}</template></el-table-column>
               <template #empty><div class="history-empty">暂无禅道工时记录</div></template>
@@ -984,6 +984,7 @@ async function copyReport() {
 .task-description > span { font-size: 11px; color: var(--text-muted); }
 .task-meta { display: flex; align-items: center; gap: 6px; min-height: 16px; }
 .task-status { display: inline-flex; align-items: center; color: var(--text-muted); }
+.task-cell .task-status { margin-left: 6px; flex-shrink: 0; }
 .task-status .el-icon { font-size: 13px; }
 .task-status.is-doing { color: var(--el-color-primary); }
 .task-status.is-done { color: var(--el-color-success); }
