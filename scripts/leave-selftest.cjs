@@ -24,10 +24,11 @@ async function test(name, run) { await run(); passed++; console.log(`✓ ${name}
 function setupService(data = source(), changes = {}) {
   let stored = []
   const calls = []
+  const preparedReasons = []
   const adapter = {
     connect: async () => ({ connected: true }),
     read: async () => clone(data),
-    prepare: async ({ entry }) => ({ key: `prepared-${calls.length}`, start: entry.start, end: entry.end, hours: entry.hours, typeId: entry.typeId }),
+    prepare: async ({ entry, reason }) => { preparedReasons.push({ date: entry.date, reason }); return { key: `prepared-${calls.length}`, start: entry.start, end: entry.end, hours: entry.hours, typeId: entry.typeId } },
     apply: async ({ key, confirmed }) => {
       assert.equal(confirmed, true)
       calls.push(key)
@@ -39,7 +40,7 @@ function setupService(data = source(), changes = {}) {
   }
   const ledger = { load: () => clone(stored), save: (rows) => { stored = clone(rows) } }
   const service = new LeaveService({ adapter, ledger, now: () => NOW, pause: async () => {} })
-  return { service, adapter, data, calls, changes, ledger }
+  return { service, adapter, data, calls, changes, ledger, preparedReasons }
 }
 
 function pageFixture({ count = 2, balance = '1.5 小时', applyStatus = 200, applyError = '', pageFunction = italentPage } = {}) {
@@ -197,6 +198,20 @@ async function main() {
     assert.equal(env.data.leaves[0].hoursText, '1小时')
     assert.deepEqual(env.ledger.load(), [])
     await assert.rejects(env.service.submit({ planId: plan.id, confirmed: true }), /变化/)
+  })
+  await test('确认时可按条覆盖请假事由，未覆盖与空值回落默认事由', async () => {
+    const env = setupService(source([card('13'), card('15')], 10))
+    const { plan } = await env.service.plan({ reason: '默认事由' })
+    env.changes.appliedEntries = plan.entries
+    env.preparedReasons.length = 0
+    const result = await env.service.submit({ planId: plan.id, confirmed: true, reasons: { [plan.entries[1].id]: ' 家里有事 ', [plan.entries[0].id]: '', unknown: '方案外条目' } })
+    assert.equal(result.completed, true)
+    assert.deepEqual(env.preparedReasons, [{ date: '2026-10-15', reason: '默认事由' }, { date: '2026-10-13', reason: '家里有事' }])
+    const strict = setupService()
+    const next = (await strict.service.plan({ reason: '默认' })).plan
+    await assert.rejects(strict.service.submit({ planId: next.id, confirmed: true, reasons: { [next.entries[0].id]: '长'.repeat(1001) } }), /1000/)
+    await assert.rejects(strict.service.submit({ planId: next.id, confirmed: true, reasons: '整串' }), /格式/)
+    assert.equal(strict.calls.length, 0)
   })
   await test('批量按倒序写入并回查，第二笔失败时保留第一笔成功并停止第三笔', async () => {
     const env = setupService(source([card('13'), card('15'), card('14')], 10))
@@ -486,24 +501,22 @@ async function main() {
     await assert.rejects(idle.read(OPTIONS), /书签桥未连接/)
     idle.close()
   })
-  await test('通道链：已登录浏览器优先，书签桥次之，最后内嵌并附书签地址', async () => {
-    const browserProbe = { loggedIn: true }
+  await test('通道链：默认只走书签桥与内嵌（不碰 Kimi），强制 browser 才用浏览器桥', async () => {
     const embeddedStub = { connect: async () => ({ connected: true, origin: 'https://cloud.italent.cn', loggedIn: false }) }
-    const make = (browser, bookmarklet) => new ItalentAdapter({
-      browser,
-      bookmarklet,
-      embedded: embeddedStub,
-      forced: '',
-    })
-    const reachable = make({ connect: async () => ({ connected: true }), run: async () => browserProbe }, { ensureServer: async () => {}, attached: () => false, href: () => 'javascript:1' })
-    assert.equal((await reachable.connect()).mode, 'browser')
-    const offline = make({ connect: async () => { throw new Error('无法连接浏览器') }, run: async () => { throw new Error('不应执行') } }, { ensureServer: async () => {}, attached: () => false, href: () => 'javascript:2' })
-    const chained = await offline.connect()
+    const make = (browser, bookmarklet, forced = '') => new ItalentAdapter({ browser, bookmarklet, embedded: embeddedStub, forced })
+    // 已登录浏览器存在也不再自动借用：落到内嵌。
+    const reachable = make({ connect: async () => { throw new Error('默认链路不应触碰浏览器桥') }, run: async () => { throw new Error('不应执行') } }, { ensureServer: async () => {}, attached: () => false, href: () => 'javascript:1' })
+    const chained = await reachable.connect()
     assert.equal(chained.mode, 'embedded')
-    assert.equal(chained.loggedIn, false)
-    assert.equal(chained.bookmarklet, 'javascript:2')
-    const bridged = make({ connect: async () => { throw new Error('无法连接浏览器') }, run: async () => { throw new Error('不应执行') } }, { ensureServer: async () => {}, attached: () => true, evaluate: async () => ({ loggedIn: true }), href: () => 'javascript:3' })
+    assert.equal(chained.bookmarklet, 'javascript:1')
+    // 书签桥连接时优先书签桥。
+    const bridged = make({ connect: async () => { throw new Error('不应执行') }, run: async () => { throw new Error('不应执行') } }, { ensureServer: async () => {}, attached: () => true, evaluate: async () => ({ loggedIn: true }), href: () => 'javascript:3' })
     assert.equal((await bridged.connect()).mode, 'bookmarklet')
+    // 强制 browser 逃生门仍可用。
+    const forced = make({ connect: async () => ({ connected: true }), run: async () => { throw new Error('不应执行') } }, { ensureServer: async () => {}, attached: () => true, evaluate: async () => ({ loggedIn: true }), href: () => 'javascript:4' }, 'browser')
+    const forcedResult = await forced.connect()
+    assert.equal(forcedResult.mode, 'browser')
+    assert.equal(forcedResult.loggedIn, true)
   })
   await test('Chrome 历史捕获：新签名 URL 触发回调，旧的忽略，超时返回空', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'leave-sso-'))

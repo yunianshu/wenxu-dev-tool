@@ -2,10 +2,10 @@ const { ItalentBrowser } = require('./italent-browser')
 const { ItalentEmbedded, ItalentBookmarklet } = require('./italent-embedded')
 
 /**
- * 北森通道链：优先借用已登录浏览器（Kimi 桥，需扩展本地连接且会话有效）；
- * 其次书签桥（用户在已登录北森的标签页点击书签，无扩展与账号依赖）；
- * 最后应用内嵌登录窗口（可自助登录的账号使用，登录后自动隐藏）。
- * PLM_LEAVE_ADAPTER=browser|embedded 可强制指定通道（冒烟/逃生用）。
+ * 北森通道链（默认不走 Kimi，无扩展与账号依赖）：
+ * 优先书签桥（用户在已登录北森的标签页点击书签）；
+ * 否则应用内嵌登录窗口（含企微捕获登录，登录核实后自动隐藏）。
+ * PLM_LEAVE_ADAPTER=browser|embedded 可强制指定通道（browser 为 Kimi 桥逃生门）。
  */
 class ItalentAdapter {
   constructor({ browser = new ItalentBrowser(), bookmarklet = new ItalentBookmarklet(), embedded, forced = process.env.PLM_LEAVE_ADAPTER || '' } = {}) {
@@ -14,15 +14,6 @@ class ItalentAdapter {
     this.bookmarklet = bookmarklet
     this.embedded = embedded
     this.forced = forced
-  }
-
-  async tryBrowser() {
-    if (this.forced === 'embedded') return false
-    try {
-      await this.browser.connect()
-      const probe = await this.browser.run('probe', {})
-      return probe?.loggedIn === true
-    } catch { return false }
   }
 
   async tryBookmarklet() {
@@ -38,7 +29,6 @@ class ItalentAdapter {
   async pick() {
     if (this.forced === 'browser') return this.browser
     if (this.forced === 'embedded') return this.embedded
-    if (await this.tryBrowser()) return this.browser
     if (await this.tryBookmarklet()) return this.bookmarklet
     return this.embedded
   }
@@ -50,7 +40,6 @@ class ItalentAdapter {
       const result = await this.browser.connect()
       return { ...result, mode: 'browser', loggedIn: true, bookmarklet }
     }
-    if (await this.tryBrowser()) return { connected: true, mode: 'browser', loggedIn: true, bookmarklet }
     if (await this.tryBookmarklet()) return { connected: true, mode: 'bookmarklet', loggedIn: true, bookmarklet }
     try {
       const probe = await this.embedded.connect()
