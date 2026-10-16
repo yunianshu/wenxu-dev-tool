@@ -21,7 +21,7 @@
         <el-time-select v-model="options.workStart" start="00:00" end="23:30" step="00:30" :clearable="false" :disabled="busy" aria-label="上班时间" class="leave-time" />
         <span class="leave-muted">至</span>
         <el-time-select v-model="options.workEnd" start="00:00" end="23:30" step="00:30" :clearable="false" :disabled="busy" aria-label="下班时间" class="leave-time" />
-        <span class="leave-muted">舍弃秒数，按 0.5 小时进位 · 优先调休，不足再用年假 · 日期倒序</span>
+        <span class="leave-muted">舍弃秒数，按 0.5 小时进位 · 优先调休，不足整天改用年假 · 日期倒序</span>
       </div>
       <div class="leave-controls-row">
         <label for="leave-reason">请假事由</label>

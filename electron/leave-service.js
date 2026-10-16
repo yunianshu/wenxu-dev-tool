@@ -37,7 +37,7 @@ const preparedKey = (entry) => JSON.stringify([entry.typeId, entry.start, entry.
 const markerId = (entry) => createHash('sha256').update(entry.key).digest('hex')
 const matchesMarker = (leave, entry) => activeLeave(leave) && leave.typeId === (entry.typeId || entry.key.split('|')[1]) && leave.start.slice(0, 16) === entry.start && leave.end.slice(0, 16) === entry.end && /^\d+(?:\.\d+)?\s*小时$/.test(leave.hoursText) && Number.parseFloat(leave.hoursText) === entry.hours
 
-function buildPlan(source, options, blocked = {}) {
+function buildPlan(source, options, blocked = {}, banned = new Set()) {
   if (!source?.staffId || !Array.isArray(source.attendance) || !Array.isArray(source.leaves) || !Array.isArray(source.balances)) throw new Error('北森出勤或余额数据不完整')
   const balances = ['调休假', '年假'].map((name) => {
     const item = source.balances.find((row) => row.name === name)
@@ -75,20 +75,14 @@ function buildPlan(source, options, blocked = {}) {
     }
     if (/(?:假|出差|外出|补签)/.test(record.remark || '')) { row.status = 'blocked'; row.reason = '考勤备注已有相关申请，需手动核对'; continue }
     if (blocked[record.date]) { row.status = 'blocked'; row.reason = blocked[record.date]; continue }
-    if (balances.reduce((sum, item) => sum + item.usable - item.used, 0) + 1e-8 < row.hours) { row.status = 'blocked'; row.reason = '调休与年假余额不足以覆盖当天迟到'; continue }
-    let needed = row.hours
-    let cursor = start
-    for (const balance of balances) {
-      const hours = Math.min(needed, balance.usable - balance.used)
-      if (hours <= 0) continue
-      needed -= hours
-      const stop = needed === 0 ? first : cursor + hours * 60 * MINUTE
-      const entry = { id: `${record.id}:${balance.id}`, date: record.date, firstCard: record.firstCard, start: formatStamp(cursor), end: formatStamp(stop), hours, typeId: balance.id, typeName: balance.name }
-      balance.used += hours
-      row.allocations.push(entry)
-      entries.push(entry)
-      cursor = stop
-    }
+    // 整天只用一种假：优先调休假；调休假盖不住整天迟到时整天改用年假；都不够则先不处理。
+    // 平台拒绝过的假种（banned）不参与当天分配，留另一假种兜底。
+    const choice = balances.find((balance) => !banned.has(`${record.date}|${balance.id}`) && balance.usable - balance.used + 1e-8 >= row.hours)
+    if (!choice) { row.status = 'blocked'; row.reason = '调休假与年假都不足以覆盖当天迟到，先不处理'; continue }
+    const entry = { id: `${record.id}:${choice.id}`, date: record.date, firstCard: record.firstCard, start: formatStamp(start), end: formatStamp(first), hours: row.hours, typeId: choice.id, typeName: choice.name }
+    choice.used += row.hours
+    row.allocations.push(entry)
+    entries.push(entry)
     row.status = 'ready'
     row.reason = '待确认'
   }
@@ -155,8 +149,9 @@ class LeaveService {
       }))
       for (const entry of unresolved) blocked[entry.date] = '上次提交结果待核对，请先核查下方记录'
       const prepared = new Map()
+      const banned = new Set()
       let plan = buildPlan(source, options, blocked)
-      // 被平台拒绝的当天释放余额，让较旧记录仍能按倒序分配；每个失败日期只处理一次。
+      // 平台拒绝某假种时当天改用另一假种重算；两个假种都不可用才阻断当天，余额留给较旧日期。
       while (true) {
         const entry = plan.entries.find((item) => !prepared.has(preparedKey(item)))
         if (!entry) break
@@ -165,8 +160,10 @@ class LeaveService {
           this.verifyPrepared(entry, result)
           prepared.set(preparedKey(entry), true)
         } catch (error) {
-          blocked[entry.date] = `北森校验未通过：${error.message}`
-          plan = buildPlan(source, options, blocked)
+          banned.add(`${entry.date}|${entry.typeId}`)
+          plan = buildPlan(source, options, blocked, banned)
+          const row = plan.rows.find((item) => item.date === entry.date)
+          if (row && row.status === 'blocked' && row.reason.includes('先不处理')) row.reason = `北森校验未通过：${error.message}`
         }
       }
       const createdAt = this.now()
