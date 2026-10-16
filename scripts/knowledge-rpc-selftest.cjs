@@ -10,7 +10,7 @@ const { transformSync } = require('esbuild')
 
 const projectRoot = path.resolve(__dirname, '..')
 const methods = ['knowledgeList', 'knowledgeSave', 'knowledgeTrash', 'knowledgeRestore', 'knowledgeImport', 'knowledgeExport', 'knowledgeDelete']
-const channels = ['knowledge:list', 'knowledge:save', 'knowledge:trash', 'knowledge:restore', 'knowledge:import', 'knowledge:export', 'knowledge:delete']
+const channels = ['knowledge:list', 'knowledge:save', 'knowledge:trash', 'knowledge:restore', 'knowledge:import', 'knowledge:export', 'knowledge:delete', 'leave:connect', 'leave:plan', 'leave:submit', 'leave:resolve']
 
 async function startBackend(userData) {
   // 当前主进程读 PROJECT_MANAGER_USER_DATA；同时设置 PLM 名称以兼容宿主后续统一。
@@ -152,6 +152,13 @@ async function main() {
   try {
     backend = await startBackend(userData)
     const electron = electronApi(backend.rpc), tauri = tauriApi(backend.rpc)
+    for (const api of [electron, tauri]) {
+      assert.equal(typeof api.leaveConnect, 'function')
+      assert.match((await api.leavePlan({ since: 'invalid-date' })).error, /日期/)
+      assert.match((await api.leaveSubmit({ confirmed: false })).error, /确认/)
+      assert.match((await api.leaveResolve({ confirmedMissing: false })).error, /确认/)
+    }
+    console.log('  ✓ Electron/Tauri 请假桥接的日期校验与提交确认门（未连接真实平台）')
     const first = await exercise(electron, 'Electron preload', userData)
     const second = await exercise(tauri, 'Tauri bridge', userData)
     const parallel = await Promise.all([
