@@ -23,7 +23,7 @@ const releaseNotes = require('./deploy/release-notes')
 const aiDeploy = require('./deploy/ai-deploy')
 const fillService = require('./fill-service')
 const { LeaveService, createFileLedger } = require('./leave-service')
-const { ItalentBrowser } = require('./italent-browser')
+const { ItalentBrowser, ATTENDANCE_URL } = require('./italent-browser')
 const { ItalentEmbedded, ItalentBookmarklet } = require('./italent-embedded')
 const { ItalentAdapter } = require('./italent-adapter')
 const { ChromeSSOWatcher } = require('./italent-history')
@@ -868,35 +868,32 @@ function registerIpc() {
   const leaveAdapter = process.env.PLM_NODE_BACKEND === '1'
     ? new ItalentAdapter({ embedded: new ItalentEmbedded({ host: compatHost }), bookmarklet: new ItalentBookmarklet() })
     : new ItalentBrowser()
-  // 企微捕获登录：内嵌通道未登录时监听 Chrome 历史中新鲜的企业微信签名直登 URL，
-  // 捕获后导航内嵌窗口自动登入（登录结果仍由 probe 轮询核实并自动关窗）。
+  // 企微捕获登录：后台常驻监听 Chrome 历史中新鲜的企业微信签名直登 URL（用户日常在企微
+  // 点开汉印HR/北森消息即产生），捕获后自动为隐藏的内嵌窗口登入并完成门户→考勤会话迁移，
+  // 由 probe 轮询核实后自动关窗——用户全程无额外操作。
   const leaveEmbedded = leaveAdapter.embedded || null
   let ssoWatcher = null
-  const stopSsoCapture = () => { if (ssoWatcher) { ssoWatcher.stop(); ssoWatcher = null } }
   const ensureSsoCapture = () => {
     if (ssoWatcher || !leaveEmbedded) return
-    const watcher = new ChromeSSOWatcher()
+    const watcher = new ChromeSSOWatcher({ timeoutMs: 0 })
     ssoWatcher = watcher
     void watcher.wait(async (captured) => {
       if (ssoWatcher !== watcher) return
       ssoWatcher = null
-      for (let attempt = 0; attempt < 12; attempt++) {
-        try { await leaveEmbedded.seed(captured.url); return } catch { /* 登录窗口可能尚未打开 */ }
-        await new Promise((resolve) => setTimeout(resolve, 5000))
-      }
+      // 正在执行请假操作时不打断，等下一次自然捕获。
+      if (leaveService?.busy) return
+      try { await leaveEmbedded.seedAndTransfer(captured.url, ATTENDANCE_URL) }
+      catch { /* 静默：登录探测与手动入口兜底 */ }
+      setTimeout(ensureSsoCapture, 15000)
     })
   }
+  ensureSsoCapture()
   let leaveService
   for (const [channel, method] of [['leave:connect', 'connect'], ['leave:plan', 'plan'], ['leave:submit', 'submit'], ['leave:resolve', 'resolve']]) {
     ipcMain.handle(channel, async (_event, payload) => {
       try {
         leaveService ||= new LeaveService({ adapter: leaveAdapter, ledger: createFileLedger(app.getPath('userData')) })
-        const result = { ok: true, ...(await leaveService[method](payload)) }
-        if (method === 'connect') {
-          if (result.loggedIn === true) stopSsoCapture()
-          else ensureSsoCapture()
-        }
-        return result
+        return { ok: true, ...(await leaveService[method](payload)) }
       }
       catch (error) { return { ok: false, error: error.message || String(error) } }
     })

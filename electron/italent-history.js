@@ -47,10 +47,15 @@ class ChromeSSOWatcher {
     const startedAt = Date.now() / 1000
     const seen = this.baseline(tmpFile)
     this.seen = seen
+    let historyMtime = this.historyMtime()
     try {
-      while (this.running && Date.now() / 1000 - startedAt < this.timeoutMs / 1000) {
+      while (this.running && (this.timeoutMs <= 0 || Date.now() / 1000 - startedAt < this.timeoutMs / 1000)) {
         await this.pause(this.intervalMs)
         if (!this.running) break
+        // 历史文件未变化时跳过复制与查询，后台常驻轮询近乎零开销。
+        const mtime = this.historyMtime()
+        if (mtime === historyMtime) continue
+        historyMtime = mtime
         let rows
         try { rows = this.readSnapshot(tmpFile) } catch { continue }
         for (const row of rows) {
@@ -69,6 +74,10 @@ class ChromeSSOWatcher {
       this.running = false
     }
     return null
+  }
+
+  historyMtime() {
+    try { return fs.statSync(this.historyPath).mtimeMs } catch { return 0 }
   }
 
   stop() { this.running = false }

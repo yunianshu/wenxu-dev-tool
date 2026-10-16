@@ -178,6 +178,33 @@ class ItalentEmbedded {
     await this.ensureServer()
     await this.host.call('leave-eval', { label: this.label, code: `location.href=${JSON.stringify(url)}` })
   }
+
+  /**
+   * 捕获后自动登入：跳签名 URL 建立门户会话（cloud 作用域的签名则直接登入 cloud）；
+   * 门户落地后自动点「我的假勤」让门户完成向 cloud.italent.cn 的会话迁移，
+   * 最后回到考勤页，由 probe 轮询核实。用户全程无操作。
+   */
+  async seedAndTransfer(url, landingUrl) {
+    await this.ensureServer()
+    await this.host.call('leave-eval', { label: this.label, code: `location.href=${JSON.stringify(url)}` })
+    await this.pause(5000)
+    const clickTile = `(function(){var w=['\u6211\u7684\u5047\u52e4','\u5047\u52e4','\u8003\u52e4'];var n=document.querySelectorAll('a,div,span,li');for(var i=0;i<w.length;i++){for(var j=0;j<n.length;j++){var e=n[j];if(!e.children.length&&e.textContent.trim()===w[i]&&e.offsetParent!==null){e.click();return w[i]}}}return ''})()`
+    for (let attempt = 0; attempt < 8; attempt++) {
+      let probe = null
+      try { probe = await this.evaluate('probe', {}) } catch { /* 页面仍在加载或跳转 */ }
+      if (probe?.origin === 'https://www.italent.cn') {
+        await this.host.call('leave-eval', { label: this.label, code: clickTile })
+        await this.pause(7000)
+        await this.host.call('leave-eval', { label: this.label, code: `location.href=${JSON.stringify(landingUrl)}` })
+        return
+      }
+      if (probe?.origin === 'https://cloud.italent.cn') {
+        await this.host.call('leave-eval', { label: this.label, code: `location.href=${JSON.stringify(landingUrl)}` })
+        return
+      }
+      await this.pause(2500)
+    }
+  }
 }
 
 /**

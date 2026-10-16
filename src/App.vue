@@ -93,6 +93,7 @@ import { useProjects } from './composables/useProjects'
 import { toPlain } from './utils/ipc'
 import { saveUiPrefs, getTerminalFontRevision, restoreTerminalFontPrefs, getThemeRevision, restoreThemePrefs } from './utils/ui-prefs'
 import { shortPath } from './utils/path'
+import { ITALENT_URL, ITALENT_LABEL } from './italent-url'
 
 const view = ref('dashboard')
 const appVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''
@@ -287,6 +288,17 @@ function showCloseAsk() {
 onMounted(async () => {
   // 外壳已进文档：此后各视图投递页头到顶栏插槽才能找到目标（初始视图挂载时还在文档外）
   state.ui.shellMounted = true
+  // 预建隐藏的北森窗口：后台企微捕获登录的种子可直接注入，用户无感知。
+  if (typeof window.__TAURI_INTERNALS__ !== 'undefined') {
+    import('@tauri-apps/api/webviewWindow').then(async ({ WebviewWindow, getAllWebviewWindows }) => {
+      try {
+        if (!(await getAllWebviewWindows()).some((item) => item.label === ITALENT_LABEL)) {
+          const view = new WebviewWindow(ITALENT_LABEL, { url: ITALENT_URL, title: '北森 · 一键请假', width: 1180, height: 800, center: true, visible: false })
+          view.once('tauri://error', () => { /* 预建失败由「连接北森」兜底重建 */ })
+        }
+      } catch { /* 预建失败不影响主流程 */ }
+    }).catch(() => {})
+  }
   // 沉浸全屏：窗口全屏状态由主进程维护，渲染层只跟随（F11/Esc 等外部改变同样同步）
   window.gitReport.onWinFullscreen((value) => { state.ui.fullscreen = !!value })
   try { state.ui.fullscreen = !!(await window.gitReport.winIsFullScreen()) } catch { /* 主进程未就绪 */ }
