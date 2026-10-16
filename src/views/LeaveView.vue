@@ -305,9 +305,10 @@ async function resolvePending() {
 </script>
 
 <style scoped>
-.leave-page { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.leave-page { display: flex; flex-direction: column; gap: 16px; min-width: 0; padding: 16px 24px 20px; }
 .leave-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 16px 20px; }
-.leave-toolbar { display: flex; align-items: center; gap: 12px 20px; flex-wrap: wrap; padding: 4px 0; }
+/* 工具栏不套卡片，但要与卡片内文字同一条对齐线（左右各 20px，接在页面 24px 内边距之上） */
+.leave-toolbar { display: flex; align-items: center; gap: 12px 20px; flex-wrap: wrap; padding: 4px 20px; }
 .leave-field { display: flex; align-items: center; gap: 8px; }
 .leave-field-label { color: var(--text-muted); font-size: 13px; white-space: nowrap; }
 .leave-field-reason { flex: 1; min-width: 240px; }
