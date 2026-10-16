@@ -37,11 +37,12 @@ async function main() {
   const plan = { id: 'isolated-plan', staffName: '测试员工', totalHours: 1, entries: [{ id: 'entry', date: '2026-10-15', hours: 1 }], rows: [{ date: '2026-10-15', status: 'ready' }], balances: [] }
   let submitCalls = 0
   let resolveCalls = 0
+  const submitPayloads = []
   let finishSubmit
   const originalWindow = global.window
   global.window = { gitReport: {
     leavePlan: async payload => { assert.equal(Object.getPrototypeOf(payload), Object.prototype); return { ok: true, plan: structuredClone(plan) } },
-    leaveSubmit: async payload => { submitCalls++; assert.deepEqual(payload, { planId: 'isolated-plan', confirmed: true }); return new Promise(resolve => { finishSubmit = resolve }) },
+    leaveSubmit: async payload => { submitCalls++; submitPayloads.push(payload); return new Promise(resolve => { finishSubmit = resolve }) },
     leaveResolve: async payload => { resolveCalls++; assert.deepEqual(payload, { planId: 'isolated-plan', markerId: 'isolated-marker', confirmedMissing: true }); return { ok: true, resolved: true } },
   } }
   const renderer = vue.createRenderer({ createComment: () => ({}), insert() {}, remove() {}, parentNode() {}, nextSibling() {} })
@@ -55,10 +56,12 @@ async function main() {
     await setup.submit()
     assert.equal(submitCalls, 0, '确认弹窗未打开时不得提交')
     setup.reviewVisible.value = true
+    setup.entryReasons.value.entry = '家里有事'
     const sending = setup.submit()
     assert.equal(state.leave.submitting, true)
     await setup.submit()
     assert.equal(submitCalls, 1, '重复点击不能重复发起')
+    assert.deepEqual(submitPayloads[0], { planId: 'isolated-plan', confirmed: true, reasons: { entry: '家里有事' } }, '确认时按条携带请假事由')
     app.unmount(); app = mount()
     assert.equal(setup.plan.value.id, plan.id)
     assert.equal(setup.busy.value, true, '切换视图保留执行状态')

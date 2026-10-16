@@ -205,6 +205,16 @@ class LeaveService {
       if (this.now() > pending.publicPlan.expiresAt) { this.pending = null; throw new Error('请假方案已过期，请重新生成并确认') }
       const plan = pending.publicPlan
       if (!plan.entries.length) throw new Error('没有可提交的请假记录')
+      // 确认时可按条覆盖请假事由：只认方案内条目的 ID，空值回落生成时的默认事由。
+      const reasons = {}
+      if (input.reasons != null) {
+        if (typeof input.reasons !== 'object' || Array.isArray(input.reasons)) throw new Error('请假事由格式不正确')
+        for (const entry of plan.entries) {
+          const text = String(input.reasons[entry.id] ?? '').trim()
+          if (text.length > 1000) throw new Error('请假事由不能超过 1000 字')
+          reasons[entry.id] = text
+        }
+      }
       this.pending = null
       const options = { ...plan.options, staffId: plan.staffId }
       const source = await this.adapter.read(options)
@@ -220,7 +230,7 @@ class LeaveService {
           if (current.staffId !== plan.staffId || minuteStamp(current.attendance.find((item) => item.date === result.date)?.firstCard) !== minuteStamp(result.firstCard)) throw new Error('登录账号或首打卡发生变化，请重新生成方案')
           if (current.leaves.some((leave) => activeLeave(leave) && overlap(stamp(result.start), stamp(result.end), stamp(leave.start), stamp(leave.end)))) throw new Error('该时段已有请假申请，请重新生成方案')
           if ((current.balances.find((item) => item.id === result.typeId)?.hours ?? -1) < result.hours) throw new Error('假期余额已不足，请重新生成方案')
-          const prepared = await this.adapter.prepare({ staffId: plan.staffId, entry: result, reason: options.reason })
+          const prepared = await this.adapter.prepare({ staffId: plan.staffId, entry: result, reason: reasons[result.id] || options.reason })
           this.verifyPrepared(result, prepared)
           const marker = { key, staffId: plan.staffId, typeId: result.typeId, date: result.date, typeName: result.typeName, start: result.start, end: result.end, hours: result.hours, at: new Date(this.now()).toISOString() }
           ledger.push(marker)
