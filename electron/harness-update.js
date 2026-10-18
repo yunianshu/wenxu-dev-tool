@@ -31,7 +31,7 @@ const fs = require('fs')
 const path = require('path')
 const harnessPatch = require('./harness-patch')
 const harnessRuntime = require('./harness-runtime')
-const { isValidVersion, isNewer, compareVersions } = require('./version-compare')
+const { isValidVersion, isNewer, compareVersions, parseVersion } = require('./version-compare')
 
 /** dsh 包名与默认源（源可在配置里改：公司内网镜像） */
 const PACKAGE = '@deepseek-ai/dsh'
@@ -349,12 +349,26 @@ function pickLatestVersion(packument) {
 }
 
 /**
- * 按渠道挑目标版本：
- *   stable（正式版）= dist-tags.latest（官方发布线；个别源的 latest 缺失或指向脏值时
- *     回退到全集最大版，正式渠道不至于完全失明）
- *   alpha = 全集版本号最大者（含预发布，即 pickLatestVersion 原口径）
+ * 按渠道挑 npm 源上的目标版本：
+ *   stable（正式版）= 有正式版时取最高正式版（官方稳定线）；
+ *     没有任何正式版时（dsh 目前全部是 alpha/rc）取全集最高版本——npm 的
+ *     dist-tags.latest 会长期落后（实测 0.2.1-rc.2 已发布，latest 仍停在
+ *     0.2.0-rc.2），只认 latest 会在 GitHub 不可达时漏报。
+ *   alpha = 全集版本号最大者（含预发布，即 pickLatestVersion 原口径）。
+ * 个别源的 packument 精简到只带 dist-tags：退回 latest（stable）/ 最大 tag（alpha）。
  */
 function pickChannelVersion(packument, channel) {
+  const versions = Object.keys(((packument || {}).versions) || {})
+  if (versions.length) {
+    if (channel !== 'alpha') {
+      const finals = versions.filter((version) => {
+        const parsed = parseVersion(version)
+        return parsed && parsed.pre.length === 0
+      })
+      if (finals.length) return maxVersion(finals)
+    }
+    return maxVersion(versions) || pickLatestVersion(packument)
+  }
   if (channel !== 'alpha') {
     const tagged = String(((packument || {})['dist-tags'] || {}).latest || '').trim().replace(/^v/, '')
     if (isValidVersion(tagged)) return tagged

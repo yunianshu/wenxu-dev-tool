@@ -13,7 +13,7 @@
  *   U8  打补丁失败 / 版本不符时中止更新，且**保留原有运行时**
  *   U9  非随包形态（DSH_RUNTIME_DIR / 开发态源码目录）拒绝热更新
  *   U13 更新渠道（stable=正式版 / alpha=预发布）：
- *       U13a stable 目标 = dist-tags.latest；alpha 目标 = 全集版本号最大者（含预发布）
+ *       U13a stable 目标 = 最高正式版；alpha 目标 = 全集版本号最大者（含预发布）
  *       U13b 渠道变化忽略 6 小时节流立即重查；切渠道后的新结论重新提示一次
  *       U13c 当前版本高于渠道目标（alpha 版上切回正式版）→ switchAvailable
  *       U13d 「切换」走同一条安装链路：装渠道目标版本（降级）成功
@@ -22,6 +22,7 @@
  *       G2 GitHub 已发、npm 源还没同步的版本不作为目标（装不上）
  *       G3 草稿发布不参与；G4 有正式发布时 stable 不追更新的预发布
  *       G5 GitHub 不可达时退回 npm 源结论
+ *       G6 国内无 VPN（GitHub 不可达）且无正式版时，stable 仍能检测到最新预发布
  *   U12 字节级下载进度（需求「下载总量/当前下载量/下载速度/安装进度」）：
  *       U12a 依赖分析给出精确总包数（lockfile 解析）
  *       U12b 下载总量 = tarball content-length 之和（HEAD 逐个测量）
@@ -48,6 +49,8 @@ const SHIPPED = '0.1.5-alpha.1'
 const LATEST = '0.1.7-rc.1'
 /** dist-tags.latest：官方正式 tag 常年落后于 alpha/rc 迭代（实测真实源即如此） */
 const LATEST_TAG = '0.1.5-rc.3'
+/** 源上唯一的正式版：stable 渠道的目标（有正式版时不追预发布） */
+const STABLE = '0.1.6'
 const PLATFORM = process.platform
 const ARCH = process.arch
 
@@ -55,7 +58,7 @@ const ARCH = process.arch
 const PACKUMENT = {
   'dist-tags': { latest: LATEST_TAG, next: LATEST, alpha: '0.1.7-alpha.2' },
   versions: Object.fromEntries(
-    [SHIPPED, '0.1.5-rc.1', LATEST_TAG, '0.1.7-alpha.2', LATEST].map((v) => [v, {}]),
+    [SHIPPED, '0.1.5-rc.1', LATEST_TAG, STABLE, '0.1.7-alpha.2', LATEST].map((v) => [v, {}]),
   ),
 }
 
@@ -269,13 +272,13 @@ function startGithub(state) {
   update.setEmitter((payload) => events.push(payload))
 
   const first = await update.check({ force: true, registry })
-  check(`U2a 正式渠道发现新版本（${SHIPPED} → ${LATEST_TAG}）`,
-    first.updateAvailable === true && first.latest === LATEST_TAG && first.current === SHIPPED
+  check(`U2a 正式渠道发现新版本（${SHIPPED} → ${STABLE}）`,
+    first.updateAvailable === true && first.latest === STABLE && first.current === SHIPPED
     && first.channel === 'stable',
     `${first.current} → ${first.latest}（${first.channel}）`)
   check('U2b 首次发现新版本时要求提示（notify=true）', events.some((e) => e.notify === true))
   check('U2c 检查结果落盘（下次启动仍能提示）',
-    JSON.parse(fs.readFileSync(path.join(root, 'harness-update.json'), 'utf8')).latestVersion === LATEST_TAG)
+    JSON.parse(fs.readFileSync(path.join(root, 'harness-update.json'), 'utf8')).latestVersion === STABLE)
 
   // ── U13a/b alpha 渠道：目标 = 全集版本号最大者（含预发布） ──
   events.length = 0
@@ -312,7 +315,7 @@ function startGithub(state) {
   const hitsBeforeChannelChange = registryState.hits
   const backToStable = await update.check({ registry }) // 未 force，且刚查过：仅因渠道变化重查
   check('U13c 渠道变化后忽略节流重查',
-    registryState.hits > hitsBeforeChannelChange && backToStable.latest === LATEST_TAG
+    registryState.hits > hitsBeforeChannelChange && backToStable.latest === STABLE
     && JSON.parse(fs.readFileSync(statePath, 'utf8')).channel === 'stable',
     `hits=${registryState.hits} / ${backToStable.latest}`)
 
@@ -333,7 +336,7 @@ function startGithub(state) {
   registryState.empty = true
   const emptyCheck = await update.check({ force: true, registry })
   check('U4c 源上没有有效版本号时如实记录错误（保留上次结论）',
-    /未找到有效的版本号/.test(emptyCheck.error) && emptyCheck.latest === LATEST_TAG, emptyCheck.error)
+    /未找到有效的版本号/.test(emptyCheck.error) && emptyCheck.latest === STABLE, emptyCheck.error)
   registryState.empty = false
 
   // ── U5 应用内热更新（桩 npm 造树） ──
@@ -440,14 +443,15 @@ function startGithub(state) {
   delete process.env.DSH_RUNTIME_DIR
 
   // ── U13d/e 渠道切换：运行时版本高于正式渠道目标 → 切换入口 → 降级安装 ──
+  await update.install({ version: LATEST, registry }) // 回到最高版本，制造「当前高于正式渠道目标」场景
   const switchCheck = await update.check({ force: true, registry })
-  check(`U13d 当前版本高于正式渠道目标（${LATEST_TAG}）时提供切换入口`,
-    switchCheck.channel === 'stable' && switchCheck.latest === LATEST_TAG
+  check(`U13d 当前版本高于正式渠道目标（${STABLE}）时提供切换入口`,
+    switchCheck.channel === 'stable' && switchCheck.latest === STABLE
     && switchCheck.updateAvailable === false && switchCheck.switchAvailable === true,
     `${switchCheck.current} → ${switchCheck.latest}`)
   const switched = await update.install({ registry }) // 不指定版本：装当前渠道目标（降级）
   check('U13e 切换走同一条安装链路装渠道目标版本（降级成功）',
-    switched.ok === true && switched.version === LATEST_TAG && rt.currentRuntimeVersion() === LATEST_TAG,
+    switched.ok === true && switched.version === STABLE && rt.currentRuntimeVersion() === STABLE,
     switched.error || rt.currentRuntimeVersion())
 
   // ── G1~G5 GitHub Releases（官方发布领先于 npm dist-tags） ──
@@ -494,8 +498,17 @@ function startGithub(state) {
   githubState.failWith = 500
   const ghDown = await update.check({ force: true, registry })
   check('G5 GitHub 不可达时退回 npm 源结论且检查不失败',
-    ghDown.latest === LATEST_TAG && ghDown.checking === false && !/GitHub/.test(ghDown.error || ''),
+    ghDown.latest === '0.1.8' && ghDown.checking === false && !/GitHub/.test(ghDown.error || ''),
     `${ghDown.latest} / ${ghDown.error || '无错误'}`)
+
+  // 国内无 VPN（GitHub 不可达）且源上还没有正式版：stable 必须跟上最高预发布，
+  // 不能停在落后的 dist-tags.latest（真实源正是这个形态）
+  delete PACKUMENT.versions[STABLE]
+  delete PACKUMENT.versions['0.1.8']
+  const npmOnly = await update.check({ force: true, registry })
+  check('G6 GitHub 不可达且无正式版时，stable 仍检测到最新预发布',
+    npmOnly.latest === '0.1.9-rc.1' && npmOnly.updateAvailable === true,
+    `${npmOnly.current} → ${npmOnly.latest}`)
   githubState.failWith = 0
 
   // ── U7 随包版本更新时以随包为准 ──
