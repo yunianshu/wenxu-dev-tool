@@ -304,6 +304,19 @@
           </template>
         </template>
               </el-card>
+      <el-card v-if="activeTarget" shadow="never" class="card">
+        <template #header><div class="card-header"><span>OpenClaw 插件与技能</span><el-switch v-model="activeTarget.openclaw.enabled" /></div></template>
+        <p class="f-mini">为当前环境配置。应用健康后同步到同一服务器的 OpenClaw 容器，校验并按需重启；失败恢复文件并按发布策略回滚应用。</p>
+        <template v-if="activeTarget.openclaw.enabled">
+          <div class="f-row"><span class="f-label">容器名称</span><el-input v-model="activeTarget.openclaw.container" placeholder="openclaw-wgl" style="flex: 1; min-width: 0" /></div>
+          <div class="f-row"><span class="f-label">插件目录</span><el-input v-model="activeTarget.openclaw.pluginDir" placeholder="openclaw/plm-data-plugin（可留空）" style="flex: 1; min-width: 0" /></div>
+          <div class="f-row"><span class="f-label">Skill 目录</span><el-input v-model="activeTarget.openclaw.skillDir" placeholder="openclaw/skills/openclaw-plm-data（可留空）" style="flex: 1; min-width: 0" /></div>
+          <p class="f-mini">来源相对当前项目根目录，至少填写一项。插件目录需包含已构建的独立入口；Skill 目录需含 SKILL.md。沿用项目 .deployignore，自动更新插件技能与工作区技能两处副本。</p>
+          <div class="f-row"><span class="f-label">配置根目录</span><el-input v-model="activeTarget.openclaw.home" placeholder="/root/.openclaw" style="flex: 1; min-width: 0" /></div>
+          <div class="f-row"><span class="f-label">工作区目录</span><el-input v-model="activeTarget.openclaw.workspace" placeholder="/root/.openclaw/workspace" style="flex: 1; min-width: 0" /></div>
+          <p class="f-mini">容器内目录。对应插件与技能须已在 OpenClaw 启用；同步不修改授权配置。此功能支持 Docker 和自动 Docker 发布。</p>
+        </template>
+      </el-card>
     </div>
     <template #footer>
       <div class="drawer-footer">

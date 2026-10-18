@@ -248,6 +248,7 @@ assert.strictEqual(head, shaC)
   const shaD = commit('feat: 新增发布说明', 'd.txt')
   const saved = projectsSvc.save({
     id: 'p-run', name: '采集集成项目', localPath: repo,
+    configMode: 'manual', deployMode: 'docker',
     version: { strategy: 'manual', manual: '1.0.2' },
     composeFile: 'docker-compose.yml',
     targets: [{

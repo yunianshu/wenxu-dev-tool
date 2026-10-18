@@ -18,6 +18,7 @@ export function emptyTarget() {
     health: { strategy: 'auto', enabled: true, url: '', timeout: 90, interval: 3 },
     // 数据库备份按环境独立配置：测试/生产是不同实例，容器名与库名必然不同
     db: { strategy: 'auto', enabled: false, type: 'postgres', container: '', name: '', user: '' },
+    openclaw: { enabled: false, container: '', pluginDir: '', skillDir: '', home: '/root/.openclaw', workspace: '/root/.openclaw/workspace' },
     dataSync: {
       enabled: false, localDir: 'data', remoteDir: 'shared/data',
       importMode: 'none', importCommand: '', importUser: '',

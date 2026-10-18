@@ -33,6 +33,8 @@ const SUITES = [
   'deploy-scriptmode-selftest.cjs',
   'deploy-image-prepull-selftest.cjs',
   'deploy-datasync-selftest.cjs',
+  'deploy-openclaw-selftest.cjs',
+  'deploy-openclaw-shell-selftest.cjs',
   'deploy-data-boundary-selftest.cjs',
   'deploy-ai-selftest.cjs',
   'deploy-evidence-selftest.cjs',

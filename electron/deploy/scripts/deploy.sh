@@ -37,6 +37,7 @@ MODE="docker" APP_NAME="" HOME_DIR="" PACKAGE="" SHA256="" VERSION="" COMPOSE_FI
 UPGRADE_SCRIPT="upgrade.sh"
 RELEASE_ID="" PROJECT_NAME=""
 DATA_SYNC_SCRIPT=""
+OPENCLAW_SYNC=0
 BACKUP_CODE=1 BACKUP_DB=0 DB_TYPE="postgres" DB_CONTAINER="" DB_SERVICE="" DB_NAME="" DB_USER=""
 AUTO_ROLLBACK=1 HEALTH_URL="" HEALTH_TIMEOUT=90 HEALTH_INTERVAL=3
 KEEP_RELEASES=10 KEEP_BACKUPS=10 DELETE_UPLOAD=1
@@ -57,6 +58,7 @@ while [ $# -gt 0 ]; do
     --release-id)   RELEASE_ID="$2"; shift 2 ;;
     --project-name) PROJECT_NAME="$2"; shift 2 ;;
     --data-sync-script) DATA_SYNC_SCRIPT="$2"; shift 2 ;;
+    --openclaw-sync) OPENCLAW_SYNC=1; shift ;;
     --backup-code)      BACKUP_CODE=1; shift ;;
     --no-backup-code)   BACKUP_CODE=0; shift ;;
     --backup-db)        BACKUP_DB=1; shift ;;
@@ -389,6 +391,16 @@ link_current() {
 }
 
 # ───────────────────────── 失败回滚 ─────────────────────────
+sync_openclaw() {
+  local release="$1"
+  if [ "$OPENCLAW_SYNC" != 1 ]; then echo '__STAGE_SKIP__:openclaw'; return 0; fi
+  stage openclaw
+  local script="$release/.onedeploy-openclaw/sync.sh"
+  [ -f "$script" ] && [ ! -L "$script" ] || { err '版本缺少 OpenClaw 同步产物'; echo '__STAGE_FAIL__:openclaw'; return 1; }
+  bash "$script" "sync-${TS}-$$" || { echo '__STAGE_FAIL__:openclaw'; return 1; }
+  echo '__STAGE_OK__:openclaw'
+}
+
 do_rollback() {
   trap '' HUP INT TERM
   local reason="$1"
@@ -906,6 +918,7 @@ do_deploy() {
   fi
 
   # 切换 current 软链接 → 新版本生效
+  sync_openclaw "$NEW_RELEASE" || do_rollback 'OpenClaw 插件或 Skill 同步失败'
   link_current "$NEW_RELEASE"
   ok "current -> releases/$VERSION"
 
@@ -932,6 +945,9 @@ do_rollback_cmd() {
   acquire_lock
 
   local target="$RELEASES/$VERSION"
+  if [ "$OPENCLAW_SYNC" = 1 ] && [ ! -f "$target/.onedeploy-openclaw/sync.sh" ]; then
+    fail_now '目标旧版本缺少 OpenClaw 同步产物，无法保证插件和 Skill 一起回滚'
+  fi
   OLD_RELEASE="$(readlink -f "$CURRENT" 2>/dev/null || echo "")"
   # 手动回滚失败也必须恢复操作前的可用服务。
   NEW_RELEASE="$target"
@@ -953,6 +969,7 @@ do_rollback_cmd() {
   else
     health_docker "$target" || do_rollback "回滚后容器状态异常"
   fi
+  sync_openclaw "$target" || do_rollback '目标版本的 OpenClaw 同步失败'
   ok "回滚完成，当前版本: $VERSION"
   write_history "rollback"
 

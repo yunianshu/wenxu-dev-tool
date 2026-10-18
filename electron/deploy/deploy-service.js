@@ -17,6 +17,7 @@ const store = require('../store')
 const automatic = require('./auto-deploy')
 const aiDeploy = require('./ai-deploy')
 const moduleDataSync = require('./data-sync')
+const moduleOpenClaw = require('./openclaw-sync')
 const workspace = require('./build-workspace')
 const { validateArtifact } = require('./artifact-check')
 const { detectVersion, bumpVersionFiles, syncBackVersion } = require('./version-detector')
@@ -34,6 +35,7 @@ const STAGES = [
   { id: 'build', label: 'Docker构建' },
   { id: 'start', label: '启动服务' },
   { id: 'health', label: '健康检查' },
+  { id: 'openclaw', label: 'OpenClaw 同步' },
   { id: 'datasync', label: '数据同步' },
 ]
 
@@ -106,13 +108,18 @@ function parseMarker(line, tracker, resultBox) {
   if (m) {
     const map = {
       'backup-code': 'backup', 'backup-db': 'backup', extract: 'extract',
-      build: 'build', start: 'start', health: 'health', rollback: 'rollback', datasync: 'datasync',
+      build: 'build', start: 'start', health: 'health', rollback: 'rollback', datasync: 'datasync', openclaw: 'openclaw',
     }
     const sid = map[m[1]]
     if (sid === 'rollback') {
       log('warn', '发布失败，正在自动回滚……')
     } else if (sid) {
       if (sid === 'datasync') tracker.end('build', 'success')
+      if (sid === 'openclaw') {
+        for (const id of ['backup', 'extract', 'build', 'start', 'health']) {
+          if (tracker.state[id]?.status === 'running') tracker.end(id, 'success')
+        }
+      }
       tracker.begin(sid)
     }
     return null
@@ -122,6 +129,13 @@ function parseMarker(line, tracker, resultBox) {
     tracker.end('datasync', 'success')
     return null
   }
+  if (line === '__STAGE_OK__:openclaw') {
+    resultBox.openclawSynced = true
+    tracker.end('openclaw', 'success')
+    return null
+  }
+  if (line === '__STAGE_SKIP__:openclaw') { tracker.end('openclaw', 'skipped'); return null }
+  if (line === '__STAGE_FAIL__:openclaw') { tracker.end('openclaw', 'failed'); return null }
   const okM = line.match(/^__DEPLOY_OK__:(.*)$/)
   if (okM) { resultBox.ok = true; resultBox.message = okM[1] || '发布成功'; return null }
   const failM = line.match(/^__DEPLOY_FAIL__:(.*)$/)
@@ -199,6 +213,7 @@ function buildDeployArgs(project, target, pack, version) {
   ]
   if (project.releaseId) args.push('--release-id', project.releaseId)
   if (pack.dataSyncScript) args.push('--data-sync-script', pack.dataSyncScript)
+  if (target.openclaw?.enabled) args.push('--openclaw-sync')
   if (project.composeProjectName) args.push('--project-name', project.composeProjectName)
   if (mode === 'docker') {
     args.push('--compose', resolveCompose(project).file)
@@ -829,6 +844,8 @@ async function run(projectId, targetId) {
       tracker.end('check', 'failed', t0)
       return finish('failed', problems[0])
     }
+    const openclaw = moduleOpenClaw.prepareOpenClaw(project, target)
+    if (openclaw) log('info', `OpenClaw 同步已启用：${openclaw.config.container}，发布包包含已校验的插件与 Skill`)
     // 数据同步前置校验：目录缺失等问题在检查阶段就失败，避免发布到一半才发现
     const dataSyncCfg = getDataSync(target)
     if (dataSyncCfg.enabled) {
@@ -905,7 +922,7 @@ async function run(projectId, targetId) {
         version: ver.version,
         onProgress: (count) => emit('deploy:progress', { kind: 'package', count }),
         includeBuild: true,
-        files: prepared?.files,
+        files: [...(prepared?.files || []), ...(openclaw?.files || [])],
         safeRoot: autoMode,
         exclude: autoMode ? prepared.exclude : undefined,
       })
@@ -1020,7 +1037,7 @@ async function run(projectId, targetId) {
       projects.save(project)
       try { fs.unlinkSync(pack.zipPath) } catch { /* 临时包可能已清理 */ }
       tracker.begin('package')
-      pack = await packager.buildPackage({ projectDir: project.localPath, appName: project.name, version: ver.version, files: fixed.files, includeBuild: true, safeRoot: true, exclude: fixed.exclude })
+      pack = await packager.buildPackage({ projectDir: project.localPath, appName: project.name, version: ver.version, files: [...fixed.files, ...(openclaw?.files || [])], includeBuild: true, safeRoot: true, exclude: fixed.exclude })
       tracker.end('package', 'success')
       tracker.begin('upload')
       const remote = ssh.remoteJoin(remoteHome, 'uploads', pack.fileName)
@@ -1045,6 +1062,8 @@ async function run(projectId, targetId) {
           tracker.end(s, skipped ? 'skipped' : 'success')
         }
       }
+      if (openclaw && !resultBox.openclawSynced) throw new Error('服务器未确认 OpenClaw 同步完成，不能将本次发布视为成功')
+      if (!openclaw) tracker.end('openclaw', 'skipped')
       log('success', `发布成功：${ver.version}`)
       // 成功后删除本地临时 zip（脚本形态的产物包保留）
       if (!pack.keepLocal) {
@@ -1505,6 +1524,7 @@ async function rollback(projectId, version, targetId) {
       'rollback', '--mode', deployModeOf(project),
       '--app', project.name, '--home', home, '--version', version,
     ]
+    if (target.openclaw?.enabled) args.push('--openclaw-sync')
     if (deployModeOf(project) === 'docker') {
       args.push('--compose', resolveCompose(project).file)
       if (project.deployMode === 'auto') args.push('--project-name', automatic.identity(project, target.id))

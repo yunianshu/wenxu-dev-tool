@@ -149,7 +149,10 @@
   ```
 
   自动模式根目录为 SSH 用户目录下 `.onedeploy/apps/<项目目标标识>`，`shared/.env` 以权限受限的副本进入各版本，镜像版本号固定在各自 Compose 中；高级 Compose 模式共享配置保留原软链接行为。
-- **发布流程 9 阶段可视**：检查项目 → 项目打包 → 上传文件 → 备份服务器 → 解压新版本 → Docker 构建 → 启动服务 → 健康检查 → 数据同步（未启用时显示跳过）
+- **OpenClaw 插件与技能（按环境）**：在「部署设置 → OpenClaw 插件与技能」启用，填写同一服务器的容器名、项目内插件目录和/或 Skill 目录，默认根目录 `/root/.openclaw`、工作区 `/root/.openclaw/workspace`。支持 Docker 与自动 Docker 发布；旧配置默认关闭，复制服务器连接不会继承此项。插件目录必须包含 `package.json`、`openclaw.plugin.json` 和已构建的独立入口，声明了 `package.json.files` 时按发布清单收集；Skill 目录必须包含带 `name` 的 `SKILL.md`。来源遵循 `.deployignore`，不发布凭证文件、本机 `node_modules` 或目录链接，也不在容器内自动安装依赖。对应插件和 Skill 须已在 OpenClaw 启用。
+- 应用健康后、发布成功前同步 OpenClaw：更新指定插件、插件 Skill 与工作区 Skill 两处副本，逐文件校验 SHA256；有改动时重启指定容器，检查插件版本、加载诊断和 Skill 对模型可见性。先备份本次覆盖的文件，不改网关授权和其他插件；失败恢复文件并按项目策略回滚应用。恢复记录保存在容器 OpenClaw 根目录的 `.project-tool-sync/` 下。回滚到带 OpenClaw 发布产物的旧版会同步旧产物；启用同步而目标旧版没有对应产物时，会在停服务前拒绝回滚。
+- PlmInsight 配置示例：容器 `openclaw-wgl`，插件目录 `openclaw/plm-data-plugin`，Skill 目录 `openclaw/skills/openclaw-plm-data`。发布前先在项目内重建插件运行文件；Web 发布成功与 OpenClaw 同步成功分别校验，不再依赖项目的 `deploy.sh`。
+- **发布流程 10 阶段可视**：检查项目 → 项目打包 → 上传文件 → 备份服务器 → 解压新版本 → Docker 构建 → 启动服务 → 健康检查 → OpenClaw 同步 → 数据同步（未启用时显示跳过）
 - **安全防护**：发布锁防并发、防重复点击、上传包校验、健康检查失败/连接中断自动回滚
 - **健康检查**：HTTP 探测（如 `/actuator/health`），未配置时检查容器运行状态；可选 PostgreSQL / MySQL 数据库备份
 - **发布历史与回滚**：记录每次发布（状态/耗时/失败原因/完整日志），支持从历史版本一键回滚

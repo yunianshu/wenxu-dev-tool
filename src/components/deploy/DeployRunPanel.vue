@@ -166,6 +166,7 @@ const STAGE_LIST = [
   { id: 'build', label: 'Docker构建' },
   { id: 'start', label: '启动服务' },
   { id: 'health', label: '健康检查' },
+  { id: 'openclaw', label: 'OpenClaw 同步' },
   { id: 'datasync', label: '数据同步' },
 ]
 

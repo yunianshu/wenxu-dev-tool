@@ -111,6 +111,7 @@ function seedProject(dir, dataSync, options = {}) {
   const project = deployProjects.normalizeProject({
     name: '数据同步测试项目',
     localPath: dir,
+    configMode: 'manual', deployMode: 'docker',
     version: { strategy: 'auto', manual: '' },
     targets: [{
       id: 't1',
@@ -270,7 +271,7 @@ async function main() {
     fs.mkdirSync(path.join(importDir, 'data'), { recursive: true })
     fs.writeFileSync(path.join(importDir, 'data', 'en.json'), '{"code":200}', 'utf8')
     const savedImport = deployProjects.save(deployProjects.normalizeProject({
-      name: '导入钩子项目', localPath: importDir, version: { strategy: 'auto' },
+      name: '导入钩子项目', localPath: importDir, configMode: 'manual', deployMode: 'docker', version: { strategy: 'auto' },
       targets: [{
         id: 't1', name: '生产', remotePath: '/srv/app2',
         server: { host: '203.0.113.10', port: 22, username: 'root', authType: 'password' },
@@ -342,7 +343,7 @@ async function main() {
       fs.writeFileSync(path.join(dirR, 'VERSION'), '4.0.0\n', 'utf8')
       fs.writeFileSync(path.join(dirR, 'docker-compose.yml'), 'services: {}\n', 'utf8')
       const savedR = deployProjects.save(deployProjects.normalizeProject({
-        name: '恢复项目', localPath: dirR, version: { strategy: 'auto' },
+        name: '恢复项目', localPath: dirR, configMode: 'manual', deployMode: 'docker', version: { strategy: 'auto' },
         deploy: { backupDatabase: true, dbType: 'postgres', dbContainer: 'pg-c', dbName: 'mydb', dbUser: 'u1' },
         targets: [{ id: 't1', name: '生产', remotePath: '/srv/r',
           server: { host: '203.0.113.10', port: 22, username: 'root', authType: 'password' }, health: { enabled: false },

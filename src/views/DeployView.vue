@@ -224,7 +224,8 @@ function fillForm(p, preferredTargetId = '') {
         // db 显式合并默认值：旧配置（数据库备份在项目级）或字段缺失时保证环境级结构完整，
         // 否则与主进程 normalizeProject 产出的键集不一致，dirty 会恒为真
         const db = { ...et.db, ...(t.db || {}) }
-        return { ...et, ...t, server, health: { ...et.health, ...(t.health || {}) }, db, dataSync }
+        return { ...et, ...t, server, health: { ...et.health, ...(t.health || {}) }, db, dataSync,
+          openclaw: { ...et.openclaw, ...(t.openclaw || {}) } }
       })
     : base.targets
   Object.assign(form, merged)

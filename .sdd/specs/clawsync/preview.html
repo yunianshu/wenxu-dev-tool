@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><title>OpenClaw 部署配置核验</title><div id="app"></div>
+<script type="module">
+import {createApp, reactive, h} from 'vue';
+import ElementPlus from 'element-plus';
+import 'element-plus/dist/index.css';
+import '/src/styles.css';
+import '/src/desktop-v2.css';
+import Drawer from '/src/components/deploy/DeployConfigDrawer.vue';
+import {emptyProject} from '/src/components/deploy/deploy-form.js';
+import {Check,Folder,CopyDocument} from '@element-plus/icons-vue';
+const form=reactive({...emptyProject(),name:'PlmInsight',localPath:'D:/AiProject/AINeed/PlmInsight'});
+Object.assign(form.targets[0].openclaw,{enabled:true,container:'openclaw-wgl',pluginDir:'openclaw/plm-data-plugin',skillDir:'openclaw/skills/openclaw-plm-data'});
+createApp({setup(){return ()=>h(Drawer,{modelValue:true,form})}}).use(ElementPlus).component('Check',Check).component('Folder',Folder).component('CopyDocument',CopyDocument).mount('#app');
+</script>
+</html>

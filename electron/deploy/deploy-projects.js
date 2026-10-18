@@ -10,6 +10,7 @@ const fs = require('fs')
 const path = require('path')
 const { app } = require('electron')
 const store = require('../store')
+const { normalizeOpenClaw } = require('./openclaw-sync')
 
 function file() {
   return path.join(app.getPath('userData'), 'deploy-projects.json')
@@ -92,6 +93,7 @@ function defaultTarget() {
     health: normalizeHealth(),
     db: normalizeDb(),
     dataSync: normalizeDataSync(),
+    openclaw: normalizeOpenClaw(),
   }
 }
 
@@ -223,6 +225,7 @@ function normalizeProject(p) {
     // 不能用真值判断「是否自带配置」——显式判所属键，缺失时迁移 legacy 值
     db: normalizeDb(Object.prototype.hasOwnProperty.call(t, 'db') ? t.db : legacyDb),
     dataSync: normalizeDataSync(t.dataSync),
+    openclaw: normalizeOpenClaw(t.openclaw),
   }))
   delete c.server
   delete c.health
