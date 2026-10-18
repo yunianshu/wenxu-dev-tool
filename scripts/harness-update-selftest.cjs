@@ -17,6 +17,11 @@
  *       U13b 渠道变化忽略 6 小时节流立即重查；切渠道后的新结论重新提示一次
  *       U13c 当前版本高于渠道目标（alpha 版上切回正式版）→ switchAvailable
  *       U13d 「切换」走同一条安装链路：装渠道目标版本（降级）成功
+ *   G  GitHub Releases 是官方发布渠道，npm 的 dist-tags 可能落后：
+ *       G1 stable 渠道采用 GitHub 上更新的发布（不被落后的 latest tag 挡住）
+ *       G2 GitHub 已发、npm 源还没同步的版本不作为目标（装不上）
+ *       G3 草稿发布不参与；G4 有正式发布时 stable 不追更新的预发布
+ *       G5 GitHub 不可达时退回 npm 源结论
  *   U12 字节级下载进度（需求「下载总量/当前下载量/下载速度/安装进度」）：
  *       U12a 依赖分析给出精确总包数（lockfile 解析）
  *       U12b 下载总量 = tarball content-length 之和（HEAD 逐个测量）
@@ -167,6 +172,26 @@ function startRegistry(packument, state) {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)))
 }
 
+/** 假 GitHub Releases：state.releases 为发布对象数组；failWith 模拟接口不可达 */
+function startGithub(state) {
+  const server = http.createServer((req, res) => {
+    state.hits += 1
+    if (state.failWith) {
+      res.writeHead(state.failWith, { 'content-type': 'application/json' })
+      res.end('{}')
+      return
+    }
+    if (!req.url.startsWith('/repos/deepseek-ai/deepseek-harness/releases')) {
+      res.writeHead(404, { 'content-type': 'application/json' })
+      res.end('{}')
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(state.releases))
+  })
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)))
+}
+
 ;(async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-harness-update-'))
   const resDir = path.join(root, 'resources')
@@ -195,6 +220,11 @@ function startRegistry(packument, state) {
   process.env.DSH_RUNTIME_CACHE = cacheDir
   delete process.env.DSH_RUNTIME_DIR
   delete process.env.STUB_NPM_MODE
+
+  // 检查链路的 GitHub 接口指向本地假服务（默认空发布列表：不改变既有 npm 口径断言）
+  const githubState = { hits: 0, failWith: 0, releases: [] }
+  const githubServer = await startGithub(githubState)
+  process.env.HARNESS_UPDATE_GITHUB_API = `http://127.0.0.1:${githubServer.address().port}`
 
   const rt = require('../electron/harness-runtime')
   const update = require('../electron/harness-update')
@@ -420,6 +450,54 @@ function startRegistry(packument, state) {
     switched.ok === true && switched.version === LATEST_TAG && rt.currentRuntimeVersion() === LATEST_TAG,
     switched.error || rt.currentRuntimeVersion())
 
+  // ── G1~G5 GitHub Releases（官方发布领先于 npm dist-tags） ──
+  // 场景同真实源：0.2.1-rc.2 已发布，但 npm 的 latest 标签仍停在旧版
+  const GH_NEW = '0.1.8-rc.1'
+  PACKUMENT.versions[GH_NEW] = {}
+  githubState.releases = [{ tag_name: `dsh-v${GH_NEW}`, prerelease: true, draft: false }]
+  const ghCheck = await update.check({ force: true, registry })
+  check('G1 stable 渠道采用 GitHub 上更新的官方发布（不被落后的 latest tag 挡住）',
+    ghCheck.latest === GH_NEW && ghCheck.updateAvailable === true && ghCheck.channel === 'stable',
+    `${ghCheck.current} → ${ghCheck.latest}（${ghCheck.channel}）`)
+
+  // GitHub 已发但 npm 源还没同步：装上必然失败，不能当更新目标
+  githubState.releases = [
+    { tag_name: 'dsh-v0.1.9-rc.1', prerelease: true, draft: false },
+    { tag_name: `dsh-v${GH_NEW}`, prerelease: true, draft: false },
+  ]
+  const ghUnpublished = await update.check({ force: true, registry })
+  check('G2 GitHub 已发、npm 源还没同步的版本不作为更新目标',
+    ghUnpublished.latest === GH_NEW, ghUnpublished.latest)
+
+  // 草稿发布不参与
+  PACKUMENT.versions['0.1.9-rc.1'] = {}
+  githubState.releases = [
+    { tag_name: 'dsh-v0.1.9-rc.1', prerelease: true, draft: true },
+    { tag_name: `dsh-v${GH_NEW}`, prerelease: true, draft: false },
+  ]
+  const ghDraft = await update.check({ force: true, registry })
+  check('G3 草稿发布不参与更新', ghDraft.latest === GH_NEW, ghDraft.latest)
+
+  // 有正式发布时 stable 不追更新的预发布；alpha 照常追最新预发布
+  PACKUMENT.versions['0.1.8'] = {}
+  githubState.releases = [
+    { tag_name: 'dsh-v0.1.9-rc.1', prerelease: true, draft: false },
+    { tag_name: 'dsh-v0.1.8', prerelease: false, draft: false },
+  ]
+  const ghFinal = await update.check({ force: true, registry })
+  const ghAlpha = await update.check({ force: true, registry, channel: 'alpha' })
+  check('G4 有正式发布时 stable 选正式版，alpha 仍追最新预发布',
+    ghFinal.latest === '0.1.8' && ghAlpha.latest === '0.1.9-rc.1',
+    `stable=${ghFinal.latest} alpha=${ghAlpha.latest}`)
+
+  // GitHub 不可达：退回 npm 结论，检查本身仍成功（内网机器照常按镜像更新）
+  githubState.failWith = 500
+  const ghDown = await update.check({ force: true, registry })
+  check('G5 GitHub 不可达时退回 npm 源结论且检查不失败',
+    ghDown.latest === LATEST_TAG && ghDown.checking === false && !/GitHub/.test(ghDown.error || ''),
+    `${ghDown.latest} / ${ghDown.error || '无错误'}`)
+  githubState.failWith = 0
+
   // ── U7 随包版本更新时以随包为准 ──
   writeJson(path.join(resDir, 'harness-runtime.json'), { ...shippedMarker, dshVersion: '9.9.9' })
   check('U7a 随包版本更新后热更新标记不再生效', rt.reusableHotRuntime(cacheDir) === false)
@@ -446,6 +524,8 @@ function startRegistry(packument, state) {
     /未找到 dsh-win32-process/.test(missingMsg), missingMsg)
 
   server.close()
+  githubServer.close()
+  delete process.env.HARNESS_UPDATE_GITHUB_API
   const resolvedRoot = fs.realpathSync(root)
   if (path.dirname(resolvedRoot) !== fs.realpathSync(os.tmpdir()) || !path.basename(resolvedRoot).startsWith('pm-harness-update-')) {
     throw new Error('拒绝清理非本测试目录')

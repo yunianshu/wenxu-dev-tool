@@ -43,8 +43,17 @@ const DEFAULT_CHANNEL = 'stable'
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 /** 检查口径标记：口径本身变化时（如从只认 dist-tags.latest 改为含预发布的最新版），
  *  上次落盘的 lastCheckAt 不能把首次重查推后 6 小时——否则升级应用后界面仍显示旧结论 */
-const CHECK_POLICY = 'any-version-1'
+const CHECK_POLICY = 'github-releases-1'
 const CHECK_TIMEOUT_MS = 20000
+/**
+ * 官方发布仓库。npm 与 GitHub Releases 同源发布，但 npm 的 dist-tags.latest 可能
+ * 长期落后（实测 0.2.1-rc.2 已在 GitHub 与 npm 上发布，latest 仍停在 0.2.0-rc.2），
+ * 只看 npm tag 会让正式渠道误判「已是最新」。检查时同时读 GitHub 发布列表，
+ * 取两边可安装的更高版本。
+ */
+const GITHUB_REPO = 'deepseek-ai/deepseek-harness'
+const GITHUB_RELEASES_PAGE = 100
+const GITHUB_TIMEOUT_MS = 10000
 /** 随包更新组件（npm 官方包） */
 const UPDATER_ARCHIVE = 'harness-updater.tar.gz'
 const UPDATER_MARKER = 'harness-updater.json'
@@ -237,18 +246,21 @@ function fetchImpl() {
 
 /** GET JSON：网络错误重试 2 次：本机安全软件对新生成的二进制首连可能瞬时掐断（实测
  *  ERR_CONNECTION_CLOSED，重试即过），源本身 4xx/5xx 不重试。 */
-async function httpJson(url) {
+async function httpJson(url, options = {}) {
   const fetchFn = fetchImpl()
   if (typeof fetchFn !== 'function') throw new Error('当前环境不支持网络请求')
+  const attempts = options.attempts || 3
+  const timeoutMs = options.timeoutMs || CHECK_TIMEOUT_MS
+  const headers = options.headers || { accept: 'application/vnd.npm.install-v1+json, application/json' }
 
   let lastError = null
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (attempt) await sleep(attempt * 2000)
     try {
       const response = await fetchFn(url, {
-        headers: { accept: 'application/vnd.npm.install-v1+json, application/json' },
+        headers,
         redirect: 'follow',
-        signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       })
       if (!response.ok) throw new Error(`源返回 HTTP ${response.status}`)
       return JSON.parse(await response.text())
@@ -369,11 +381,84 @@ function effectiveChannel(override) {
   return normalizeChannel(override) || configChannel()
 }
 
-/** 查询源上指定渠道的目标版本（scoped 包名需转义斜杠） */
+/** GitHub API 根地址（自测指向本地假服务；生产走官方接口） */
+function githubApiBase() {
+  return String(process.env.HARNESS_UPDATE_GITHUB_API || 'https://api.github.com').trim().replace(/\/+$/, '')
+}
+
+/** 一组版本里的最大值（非法值忽略；没有合法值返回空串） */
+function maxVersion(versions) {
+  let best = ''
+  for (const version of versions) {
+    if (!isValidVersion(version)) continue
+    if (!best || compareVersions(version, best) > 0) best = version
+  }
+  return best
+}
+
+/**
+ * GitHub 发布列表 → [{ version, prerelease }]。
+ * 标签形如 dsh-v0.2.1-rc.2（也兼容 v 前缀）；草稿发布忽略。
+ */
+async function fetchGithubReleases() {
+  const url = `${githubApiBase()}/repos/${GITHUB_REPO}/releases?per_page=${GITHUB_RELEASES_PAGE}`
+  const list = await httpJson(url, {
+    attempts: 2,
+    timeoutMs: GITHUB_TIMEOUT_MS,
+    headers: {
+      accept: 'application/vnd.github+json',
+      'user-agent': 'personnel-plm-harness-updater',
+    },
+  })
+  if (!Array.isArray(list)) throw new Error('GitHub 返回的不是发布列表')
+  return list
+    .filter((release) => release && release.draft !== true)
+    .map((release) => ({
+      version: String(release.tag_name || '').trim().replace(/^dsh-v/i, '').replace(/^v/i, ''),
+      prerelease: release.prerelease === true,
+    }))
+    .filter((release) => isValidVersion(release.version))
+}
+
+/**
+ * 按渠道挑 GitHub 发布目标：
+ *   stable = 优先最新正式发布（prerelease=false）；官方尚未发正式版时（dsh 目前全部
+ *     是预发布）退回最新预发布——否则正式渠道会对 GitHub 上新发布的 rc 完全失明。
+ *   alpha  = 版本号最大的发布（含预发布）。
+ * installable 过滤掉 npm 源上还不存在的发布：GitHub 已发但镜像未同步的版本装上必然失败。
+ */
+function pickGithubVersion(releases, channel, installable) {
+  const usable = (releases || []).filter((release) => (!installable || installable(release.version)))
+  if (!usable.length) return ''
+  if (channel !== 'alpha') {
+    const finals = usable.filter((release) => !release.prerelease)
+    if (finals.length) return maxVersion(finals.map((release) => release.version))
+  }
+  return maxVersion(usable.map((release) => release.version))
+}
+
+/**
+ * 查询源上指定渠道的目标版本（scoped 包名需转义斜杠）。
+ * npm 的 dist-tags 与 GitHub Releases 同源但可能不同步：取两边按渠道可安装的更高版本。
+ * GitHub 不可达时（内网/无外网）退回 npm 结论，不影响镜像源更新。
+ */
 async function fetchLatest(registry, channel) {
   const url = `${registry}/${PACKAGE.replace('/', '%2f')}`
   const packument = await httpJson(url)
-  const latest = pickChannelVersion(packument, effectiveChannel(channel))
+  const targetChannel = effectiveChannel(channel)
+  let latest = pickChannelVersion(packument, targetChannel)
+  const versions = Object.keys((packument && packument.versions) || {})
+  const installable = (version) => !versions.length || versions.includes(version)
+  try {
+    const releases = await fetchGithubReleases()
+    const githubLatest = pickGithubVersion(releases, targetChannel, installable)
+    if (githubLatest) {
+      log(`GitHub 最新发布（${targetChannel}）：${githubLatest}`)
+      latest = maxVersion([latest, githubLatest]) || latest
+    }
+  } catch (err) {
+    log('GitHub 发布检查失败（退回 npm 源结论）：', (err && err.message) || String(err))
+  }
   if (!isValidVersion(latest)) throw new Error('源上未找到有效的版本号')
   return { latest, distTags: packument['dist-tags'] || {} }
 }
@@ -914,10 +999,13 @@ module.exports = {
   updateGuard,
   registryUrl,
   fetchLatest,
+  fetchGithubReleases,
   pickLatestVersion,
   pickChannelVersion,
+  pickGithubVersion,
   effectiveChannel,
   DEFAULT_CHANNEL,
+  GITHUB_REPO,
   ensureUpdater,
   countPackages,
   dirSizeBytes,
