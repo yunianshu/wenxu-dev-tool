@@ -22,7 +22,9 @@
  * npm 官方包自带全部依赖，压缩后约 3MB，用 Electron 自带的 Node 执行即可。
  *
  * 幂等：已存在且版本标记一致时直接跳过；可用 DSH_RUNTIME_FORCE=1 强制重建。
- * 版本可用环境变量覆盖：DSH_VERSION / HARNESS_NPM_VERSION。
+ * 版本默认随发布取源上最新（有正式版取最高正式版，否则取最高版本，与运行时
+ * 更新检查同口径）；可用 DSH_VERSION 固定（可复现构建），HARNESS_NPM_VERSION
+ * 固定随包 npm 版本。
  * 用法：node scripts/prepare-harness-runtime.cjs [--platform win32 --arch x64]
  */
 const { spawnSync } = require('child_process')
@@ -30,14 +32,16 @@ const https = require('https')
 const fs = require('fs')
 const path = require('path')
 const harnessPatch = require('../electron/harness-patch')
+const { isValidVersion, compareVersions } = require('../electron/version-compare')
 
 const ROOT = path.resolve(__dirname, '..')
 const BUILD_DIR = path.join(ROOT, 'build')
 const OUT_DIR = path.join(BUILD_DIR, 'harness-runtime')
 const ARCHIVE = path.join(BUILD_DIR, 'harness-runtime.tar.gz')
 const SHIPPED_MARKER = path.join(BUILD_DIR, 'harness-runtime.json')
-/** dsh 需要 Node ≥22.5 的 node:sqlite 与 ≥22.18 的 import.meta.main（Electron 40+ 内置 Node 24） */
-const DSH_VERSION = process.env.DSH_VERSION || '0.1.5-alpha.1'
+/** 源不可用且没有上次构建记录时的回退版本（需已发布到 npm）。
+ *  dsh 需要 Node ≥22.5 的 node:sqlite 与 ≥22.18 的 import.meta.main（Electron 40+ 内置 Node 24）。 */
+const FALLBACK_DSH_VERSION = '0.2.1-rc.2'
 /** 随包 npm 组件（应用内热更新用）的产物路径 */
 const UPDATER_DIR = path.join(BUILD_DIR, 'harness-updater')
 const UPDATER_ARCHIVE = path.join(BUILD_DIR, 'harness-updater.tar.gz')
@@ -79,22 +83,79 @@ function dirSizeMB(dir) {
   return (total / 1048576).toFixed(0)
 }
 
-function installDsh() {
+/** 依赖树里 dsh 的真实版本（磁盘事实，不以标记为准） */
+function installedDshVersion() {
+  try {
+    const pkg = path.join(OUT_DIR, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
+    return String(JSON.parse(fs.readFileSync(pkg, 'utf8')).version || '')
+  } catch { return '' }
+}
+
+/** 一组版本里的最大值（非法值忽略） */
+function maxVersion(versions) {
+  let best = ''
+  for (const version of versions) {
+    if (!isValidVersion(version)) continue
+    if (!best || compareVersions(version, best) > 0) best = version
+  }
+  return best
+}
+
+/**
+ * 解析随包分发的 dsh 版本：源上最新（有正式版取最高正式版，否则取最高版本，
+ * 与运行时更新检查同口径）。源不可用时回退上次构建记录 / 内置回退版本，
+ * 离线构建不至于直接失败。
+ */
+async function resolveDshVersion() {
+  const pinned = String(process.env.DSH_VERSION || '').trim()
+  if (pinned) {
+    log(`使用指定 dsh 版本：${pinned}`)
+    return pinned
+  }
+  try {
+    const packument = await fetchJson(`${REGISTRY}/@deepseek-ai%2fdsh`)
+    const versions = Object.keys((packument && packument.versions) || {}).filter(isValidVersion)
+    const finals = versions.filter((version) => !String(version).includes('-'))
+    const latest = maxVersion(finals.length ? finals : versions)
+    if (latest) {
+      log(`源上最新 dsh 版本：${latest}`)
+      return latest
+    }
+    throw new Error('源上未找到有效版本号')
+  } catch (err) {
+    log(`解析源上 dsh 版本失败（${(err && err.message) || String(err)}）`)
+  }
+  let previous = ''
+  try { previous = String(JSON.parse(fs.readFileSync(MARKER, 'utf8')).dshVersion || '') } catch { /* 无历史标记 */ }
+  if (isValidVersion(previous)) {
+    log(`回退到上次构建版本：${previous}`)
+    return previous
+  }
+  log(`回退到内置回退版本：${FALLBACK_DSH_VERSION}`)
+  return FALLBACK_DSH_VERSION
+}
+
+function installDsh(version, force) {
   const dshDir = path.join(OUT_DIR, 'dsh')
   const entry = path.join(dshDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
-  if (fs.existsSync(entry)) {
-    log(`dsh 依赖树已存在：${entry}`)
+  const installed = installedDshVersion()
+  if (!force && fs.existsSync(entry) && installed === version) {
+    log(`dsh 依赖树已存在且版本一致：${installed}`)
     return entry
+  }
+  if (fs.existsSync(dshDir)) {
+    log(`dsh 依赖树版本不符或需强制重建（现有 ${installed || '未知'}，目标 ${version}）`)
+    fs.rmSync(dshDir, { recursive: true, force: true })
   }
   fs.mkdirSync(dshDir, { recursive: true })
   fs.writeFileSync(path.join(dshDir, 'package.json'), JSON.stringify({ name: 'harness-runtime', private: true }, null, 2))
-  log(`安装 @deepseek-ai/dsh@${DSH_VERSION}（约 260MB，首次较慢）`)
-  const npmArgs = ['install', '--prefix', dshDir, '--omit=dev', '--no-audit', '--no-fund', '--loglevel=error', `@deepseek-ai/dsh@${DSH_VERSION}`]
+  log(`安装 @deepseek-ai/dsh@${version}（约 260MB，首次较慢）`)
+  const npmArgs = ['install', '--prefix', dshDir, '--omit=dev', '--no-audit', '--no-fund', '--loglevel=error', `@deepseek-ai/dsh@${version}`]
   const command = PLATFORM === 'win32' ? (process.env.ComSpec || 'cmd.exe') : 'npm'
   const args = PLATFORM === 'win32' ? ['/d', '/s', '/c', `npm ${npmArgs.join(' ')}`] : npmArgs
   const result = spawnSync(command, args, { cwd: dshDir, stdio: 'inherit', windowsHide: true })
   if (result.status !== 0 || !fs.existsSync(entry)) {
-    throw new Error(`安装 @deepseek-ai/dsh@${DSH_VERSION} 失败（exit=${result.status}）`)
+    throw new Error(`安装 @deepseek-ai/dsh@${version} 失败（exit=${result.status}）`)
   }
   log(`dsh 依赖树就绪：${entry}`)
   return entry
@@ -242,20 +303,23 @@ async function prepareUpdater() {
 }
 
 async function main() {
-  const expected = { dshVersion: DSH_VERSION, platform: PLATFORM, arch: ARCH, win32NoWindowPatch: WIN32_NO_WINDOW_PATCH }
+  const dshVersion = await resolveDshVersion()
+  const force = !!process.env.DSH_RUNTIME_FORCE
+  const expected = { dshVersion, platform: PLATFORM, arch: ARCH, win32NoWindowPatch: WIN32_NO_WINDOW_PATCH }
   let needInstall = true
-  if (!process.env.DSH_RUNTIME_FORCE && fs.existsSync(MARKER)) {
+  if (!force && fs.existsSync(MARKER)) {
     try {
       const current = JSON.parse(fs.readFileSync(MARKER, 'utf8'))
-      if (JSON.stringify(current) === JSON.stringify(expected)) {
+      // 标记与磁盘版本都要对得上才跳过：旧版脚本可能只改了标记没重装依赖树
+      if (JSON.stringify(current) === JSON.stringify(expected) && installedDshVersion() === dshVersion) {
         log('内置依赖树已是目标版本，跳过安装')
         needInstall = false
       }
     } catch { /* 标记损坏则重建 */ }
   }
   if (needInstall) {
-    log(`准备内置依赖树：platform=${PLATFORM} arch=${ARCH} dsh=${DSH_VERSION}`)
-    installDsh()
+    log(`准备内置依赖树：platform=${PLATFORM} arch=${ARCH} dsh=${dshVersion}`)
+    installDsh(dshVersion, force)
     fs.writeFileSync(MARKER, JSON.stringify(expected, null, 2))
     log(`依赖树完成：${OUT_DIR}（约 ${dirSizeMB(OUT_DIR)} MB）`)
   }
