@@ -5,6 +5,7 @@
  *       项目绑定持久化、提交汇总（left 扣减）、git 提交收集（真实 git 仓库集成）
  */
 const assert = require('assert')
+const crypto = require('crypto')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
@@ -1955,7 +1956,31 @@ function stubRecordClients({ ztEfforts = {}, ztMeta = {}, hpByDate = {} } = {}) 
   return { ztQueried, hpQueried }
 }
 
-await test('records：禅道按绑定任务聚合（日期倒序），汉印近 7 天且跳过删除标记行', async () => {
+/** 追加一条提交留痕：模拟历史绑定任务（当前绑定表里已不存在） */
+function appendHistoryEntry(taskId, taskName, baseUrl = 'http://zt-rec.example') {
+  const file = path.join(tmpRoot, 'userdata', 'fill-log.json')
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  let list = []
+  try { list = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { /* 首次写入 */ }
+  const platformScope = {
+    zentao: crypto.createHash('sha256')
+      .update(JSON.stringify([String(baseUrl).replace(/\/+$/, ''), 'wgl', '']))
+      .digest('hex'),
+  }
+  list.push({
+    at: `2026-10-13 18:00:00.${String(taskId).padStart(3, '0')}`,
+    platformScope,
+    date: '2026-10-13',
+    dryRun: false,
+    tasks: [{ taskId, taskName, consumed: 3, verified: true }],
+    payload: { date: '2026-10-13', tasks: [{ taskId, taskName, rows: [{ date: '2026-10-13', work: '1. 历史记录', consumed: 3 }] }] },
+  })
+  fs.writeFileSync(file, JSON.stringify(list))
+}
+appendHistoryEntry(99, '历史任务')
+appendHistoryEntry(98, '他账号任务', 'http://other-zt.example')
+
+await test('records：禅道按绑定 + 历史任务聚合（日期倒序），汉印近 7 天且跳过删除标记行', async () => {
   fill.bindProject('recA', 66, '任务A')
   fill.bindProject('recB', 88, '任务B')
   const { ztQueried, hpQueried } = stubRecordClients({
@@ -1981,7 +2006,12 @@ await test('records：禅道按绑定任务聚合（日期倒序），汉印近 
   const r = await fill.records({ date: '2026-10-14' })
   assert.strictEqual(r.days, 7)
   const bound = [...new Set(Object.values(fill.listBindings()).map((b) => b.taskId))].sort((a, b) => a - b)
-  assert.deepStrictEqual([...new Set(ztQueried)].sort((a, b) => a - b), bound, '禅道只查已绑定项目的任务')
+  assert.deepStrictEqual(
+    [...new Set(ztQueried)].sort((a, b) => a - b),
+    [...new Set([...bound, 99])].sort((a, b) => a - b),
+    '禅道查询当前绑定 + 提交留痕历史任务',
+  )
+  assert.ok(!ztQueried.includes(98), '其他禅道账号的历史任务不查询')
   assert.deepStrictEqual(
     r.zt.records.map((x) => `${x.date}#${x.taskId}`),
     ['2026-10-14#88', '2026-10-14#66', '2026-10-13#66'],
@@ -2000,6 +2030,21 @@ await test('records：禅道按绑定任务聚合（日期倒序），汉印近 
   assert.strictEqual(r.hp.error, '')
   fill.unbindProject('recA')
   fill.unbindProject('recB')
+})
+
+await test('records：已完成且已解绑的历史任务仍显示工时记录', async () => {
+  const { ztQueried } = stubRecordClients({
+    ztEfforts: { 99: [{ id: 7, date: '2026-10-14', work: '1. 已完成的活', consumed: 3, left: 0 }] },
+    ztMeta: { 99: { status: 'done', taskName: '历史任务·平台名' } },
+  })
+  const r = await fill.records({ date: '2026-10-14' })
+  assert.ok(!Object.values(fill.listBindings()).some((b) => Number(b.taskId) === 99), '99 当前未绑定')
+  assert.ok(ztQueried.includes(99), '已解绑的历史任务也要查询')
+  const row = r.zt.records.find((x) => x.taskId === 99 && x.date === '2026-10-14')
+  assert.ok(row, '已完成/已解绑任务的记录必须显示')
+  assert.strictEqual(row.consumed, 3)
+  assert.strictEqual(row.status, 'done')
+  assert.strictEqual(row.taskName, '历史任务·平台名')
 })
 
 await test('records：单任务/单日失败不阻断整体，错误按平台回报', async () => {

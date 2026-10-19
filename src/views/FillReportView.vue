@@ -127,7 +127,7 @@
 
           <el-tab-pane label="禅道工时记录" name="zentao">
             <div class="history-head">
-              <span class="history-meta">共 {{ ztRecords.length }} 条 · 仅已绑定禅道任务</span>
+              <span class="history-meta">共 {{ ztRecords.length }} 条 · 绑定与历史任务</span>
               <el-button text :loading="recordsLoading" @click="loadRecords">刷新</el-button>
             </div>
             <el-alert v-if="recordsError.zentao" type="error" :closable="false" :title="recordsError.zentao" />

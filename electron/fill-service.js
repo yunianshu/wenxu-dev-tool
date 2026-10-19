@@ -862,8 +862,9 @@ const RECORD_DAYS = 7
 
 /**
  * 工时记录（只读，供填报页「禅道工时记录 / 汉印工时记录」页签）：
- * - 禅道：已绑定项目的任务上，当前账号的全部工时（按日期倒序）——本实例无「我的工时」
- *   列表路由（实测 m=my&f=effort 返回空），只能按任务查询，故范围 = 绑定过的任务。
+ * - 禅道：当前绑定任务 + 提交留痕中出现过的任务（含已完成/已改绑）上，当前账号的全部
+ *   工时（按日期倒序）——本实例无「我的工时」列表路由（实测 m=my&f=effort 返回空），
+ *   只能按任务查询；只看当前绑定会让解绑/改绑前的记录整条消失。
  * - 汉印：基准日往前 days 天的报工（GetByDate 只接受单日），跳过 ProjectType=-2 的删除标记行。
  * 单个任务或单日失败不阻断整体：已取到的记录照常返回，错误按平台汇总回传。
  */
@@ -873,21 +874,33 @@ async function records({ date, days = RECORD_DAYS } = {}) {
   const cfg = store.load()
 
   const zt = { error: '', records: [] }
-  const bindings = listBindings()
-  const bound = []
+  const targets = []
   const seen = new Set()
-  for (const b of Object.values(bindings)) {
+  for (const b of Object.values(listBindings())) {
     const taskId = Number(b && b.taskId)
     if (!taskId || seen.has(taskId)) continue
     seen.add(taskId)
-    bound.push({ taskId, taskName: String((b && b.taskName) || '') })
+    targets.push({ taskId, taskName: String((b && b.taskName) || '') })
+  }
+  // 历史任务来自提交留痕：项目改绑/解绑或任务完成后绑定表里已查不到它们，
+  // 但这些任务上的工时记录仍是本工具填过的历史。跨禅道账号的旧记录不纳入。
+  const scope = submissionScope(cfg)
+  for (const entry of readFillLog()) {
+    if (!entry || entry.dryRun || !entry.payload || !Array.isArray(entry.payload.tasks)) continue
+    if (entry.platformScope && entry.platformScope.zentao !== scope.zentao) continue
+    for (const t of entry.payload.tasks) {
+      const taskId = Number(t && t.taskId)
+      if (!taskId || seen.has(taskId)) continue
+      seen.add(taskId)
+      targets.push({ taskId, taskName: String(t.taskName || '') })
+    }
   }
   if (cfg.zentao && cfg.zentao.baseUrl && cfg.zentao.account && store.getZentaoPwd()) {
     const failures = []
     try {
       // 先取到已登录的客户端再并发查任务：登录失败按平台报错，不影响汉印那半边
       const client = await zentao.ensureClient()
-      const lists = await Promise.all(bound.map(async (task) => {
+      const lists = await runPool(targets, async (task) => {
         try {
           // 同一次请求带回任务状态/名称：工时记录行要显示状态图标（完成任务也有补填记录）
           const { status, taskName: platformName, efforts } = await client.getTaskEffortsMeta(task.taskId)
@@ -904,7 +917,7 @@ async function records({ date, days = RECORD_DAYS } = {}) {
           failures.push(`#${task.taskId} ${(e && e.message) || e}`)
           return []
         }
-      }))
+      })
       zt.records = lists.flat().sort((a, b) => (a.date === b.date ? b.taskId - a.taskId : (a.date < b.date ? 1 : -1)))
     } catch (e) {
       zt.error = (e && e.message) || String(e)
@@ -957,8 +970,7 @@ function localStamp() {
 }
 
 /** 留痕只保存平台和账号的摘要，不包含密码、令牌，避免切换平台后误用旧记录。 */
-function submissionScope() {
-  const cfg = store.load()
+function submissionScope(cfg = store.load()) {
   const scope = (key) => {
     const platform = cfg[key] || {}
     return createHash('sha256').update(JSON.stringify([String(platform.baseUrl || '').replace(/\/+$/, ''), platform.account || '', platform.clientId || ''])).digest('hex')
