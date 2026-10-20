@@ -1117,7 +1117,15 @@ const DEPLOY_CONTRACT = `本工具的服务器端部署契约（生成的文件�
 【Docker 编排 docker】
 1. 客户端把整个项目（按 .deployignore 过滤）打成 ZIP 上传解压到 <安装根>/releases/<版本>/；
 2. 执行 docker compose -f <composeFile> build 与 up -d，健康检查通过后 <安装根>/current 软链指向该版本；
-3. Compose 依赖的 .env 由 <安装根>/shared/.env 软链进版本目录。`
+3. Compose 依赖的 .env 由 <安装根>/shared/.env 软链进版本目录。
+
+【Docker 网段避让 —— 公司内网保留段，所有生成/改写的 Compose 必须遵守】
+1. 禁止把任何自定义网络（含 default）的子网落在：10.0.0.0/13、10.10.0.0/15、172.16.0.0/16、
+   192.168.110.0/24、192.168.111.0/24、192.168.112.0/24、192.168.128.0/17 —— 落进去会让容器访问内网被网桥截走；
+2. 生成的 Compose 里每个网络都必须用 ipam 显式固定子网，从 10.200.0.0/14 取互不重叠的 /24；
+   已占用：10.200.10.0/24 与 10.200.11.0/24（ShopMetrics）、10.200.20.0/24（SecWatch）、
+   10.200.50.0/24（PrinterManager）、10.200.60.0/24（PlmInsight）—— 新部署从 10.200.70.0/24 起顺延；
+3. external 网络的子网不受本文件控制，须在方案 risks 里提示「上线前在服务器 docker network inspect 核对子网避让」。`
 
 /** 生成 AI 提示词（含部署契约，保证产出的文件能被本工具直接使用） */
 function buildPrompt({ project, target, local, remote, heuristic, compressed, omitFiles, evidence }) {
