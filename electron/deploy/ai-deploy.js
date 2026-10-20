@@ -1123,9 +1123,13 @@ const DEPLOY_CONTRACT = `本工具的服务器端部署契约（生成的文件�
 1. 禁止把任何自定义网络（含 default）的子网落在：10.0.0.0/13、10.10.0.0/15、172.16.0.0/16、
    192.168.110.0/24、192.168.111.0/24、192.168.112.0/24、192.168.128.0/17 —— 落进去会让容器访问内网被网桥截走；
 2. 生成的 Compose 里每个网络都必须用 ipam 显式固定子网，从 10.200.0.0/14 取互不重叠的 /24；
-   已占用：10.200.10.0/24 与 10.200.11.0/24（ShopMetrics）、10.200.20.0/24（SecWatch）、
-   10.200.50.0/24（PrinterManager）、10.200.60.0/24（PlmInsight）—— 新部署从 10.200.70.0/24 起顺延；
-3. external 网络的子网不受本文件控制，须在方案 risks 里提示「上线前在服务器 docker network inspect 核对子网避让」。`
+   已被其他栈占用的段：10.200.1.0/24、10.200.2.0/24、10.200.3.0/24、10.200.6.0/24、10.200.7.0/24，
+   以及本项目已分配：10.200.10.0/24（PrinterManager）、10.200.11.0/24（SecWatch）、
+   10.200.12.0/24（zentao-server）、10.200.20.0/24（ShopMetrics）、10.200.60.0/24（PlmInsight）——
+   新部署从 10.200.70.0/24 起顺延；
+3. 被其他栈以 external 方式共用的网络（如 ShopMetrics 的 shopmetrics-admin、PlmInsight 的
+   openclaw-shared）不得改子网：重建会因 active endpoints 失败，须保持原状并在 risks 里说明；
+4. external 网络的子网不受本文件控制，须在方案 risks 里提示「上线前在服务器 docker network inspect 核对子网避让」。`
 
 /** 生成 AI 提示词（含部署契约，保证产出的文件能被本工具直接使用） */
 function buildPrompt({ project, target, local, remote, heuristic, compressed, omitFiles, evidence }) {
