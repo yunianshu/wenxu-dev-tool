@@ -55,13 +55,13 @@ async function main() {
     assert.equal(submitCalls, 0, '生成方案不得提交')
     await setup.submit()
     assert.equal(submitCalls, 0, '确认弹窗未打开时不得提交')
-    setup.reviewVisible.value = true
+    setup.openReview()
     setup.entryReasons.value.entry = '家里有事'
     const sending = setup.submit()
     assert.equal(state.leave.submitting, true)
     await setup.submit()
     assert.equal(submitCalls, 1, '重复点击不能重复发起')
-    assert.deepEqual(submitPayloads[0], { planId: 'isolated-plan', confirmed: true, reasons: { entry: '家里有事' } }, '确认时按条携带请假事由')
+    assert.deepEqual(submitPayloads[0], { planId: 'isolated-plan', confirmed: true, dates: ['2026-10-15'], reasons: { entry: '家里有事' } }, '确认时按条携带请假事由与所选日期')
     app.unmount(); app = mount()
     assert.equal(setup.plan.value.id, plan.id)
     assert.equal(setup.busy.value, true, '切换视图保留执行状态')

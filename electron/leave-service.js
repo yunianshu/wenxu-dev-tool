@@ -324,11 +324,21 @@ class LeaveService {
       if (this.now() > pending.publicPlan.expiresAt) { this.pending = null; throw new Error('请假方案已过期，请重新生成并确认') }
       const plan = pending.publicPlan
       if (!plan.entries.length) throw new Error('没有可提交的请假记录')
+      // 可只提交部分日期：按天整选（同一天的调休+年假分段必须一起提交），只认方案内日期。
+      let chosen = plan.entries
+      if (input.dates !== undefined) {
+        if (!Array.isArray(input.dates) || input.dates.some((date) => typeof date !== 'string')) throw new Error('请选择要提交的日期')
+        const wanted = new Set(input.dates)
+        const known = new Set(plan.entries.map((entry) => entry.date))
+        if (input.dates.some((date) => !known.has(date))) throw new Error('所选日期不在本次方案中，请重新生成')
+        chosen = plan.entries.filter((entry) => wanted.has(entry.date))
+        if (!chosen.length) throw new Error('请至少选择一天提交')
+      }
       // 确认时可按条覆盖请假事由：只认方案内条目的 ID，空值回落生成时的默认事由。
       const reasons = {}
       if (input.reasons != null) {
         if (typeof input.reasons !== 'object' || Array.isArray(input.reasons)) throw new Error('请假事由格式不正确')
-        for (const entry of plan.entries) {
+        for (const entry of chosen) {
           const text = String(input.reasons[entry.id] ?? '').trim()
           if (text.length > 1000) throw new Error('请假事由不能超过 1000 字')
           reasons[entry.id] = text
@@ -338,7 +348,7 @@ class LeaveService {
       const options = { ...plan.options, staffId: plan.staffId }
       const source = await this.adapter.read(options)
       if (fingerprint(source) !== pending.fingerprint) throw new Error('出勤、已有请假或余额发生变化，请重新生成并确认方案')
-      const results = plan.entries.map((entry) => ({ ...entry, status: 'notSubmitted', message: '尚未提交' }))
+      const results = chosen.map((entry) => ({ ...entry, status: 'notSubmitted', message: '尚未提交' }))
       let ledger = this.ledger.load()
       for (const result of results) {
         const key = entryKey(plan.staffId, result)

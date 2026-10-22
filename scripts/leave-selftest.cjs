@@ -257,6 +257,24 @@ async function main() {
     const again = await env.service.plan({})
     assert.equal(again.plan.rows.find(item => item.date === '2026-10-14').status, 'blocked')
   })
+  await test('可只提交勾选的日期：按天整选、未知或空日期拒绝，提交后方案失效', async () => {
+    const env = setupService(source([card('13'), card('15'), card('14')], 10))
+    const { plan } = await env.service.plan({})
+    assert.equal(plan.entries.length, 3)
+    await assert.rejects(env.service.submit({ planId: plan.id, confirmed: true, dates: ['2026-10-01'] }), /不在本次方案/)
+    await assert.rejects(env.service.submit({ planId: plan.id, confirmed: true, dates: [] }), /至少选择一天/)
+    await assert.rejects(env.service.submit({ planId: plan.id, confirmed: true, dates: '2026-10-15' }), /日期/)
+    assert.equal(env.calls.length, 0)
+    const chosen = plan.entries.filter(item => ['2026-10-15', '2026-10-13'].includes(item.date))
+    env.changes.appliedEntries = chosen
+    const result = await env.service.submit({ planId: plan.id, confirmed: true, dates: ['2026-10-13', '2026-10-15'] })
+    assert.deepEqual(result.results.map(item => [item.date, item.status]), [['2026-10-15', 'success'], ['2026-10-13', 'success']])
+    assert.equal(env.calls.length, 2)
+    assert.equal(env.data.leaves.some(item => item.start.startsWith('2026-10-14')), false, '未勾选的日期不写入北森')
+    await assert.rejects(env.service.submit({ planId: plan.id, confirmed: true, dates: ['2026-10-14'] }), /确认/)
+    const next = (await env.service.plan({})).plan
+    assert.deepEqual(next.entries.map(item => item.date), ['2026-10-14'], '未提交的日期仍可在重新生成后提交')
+  })
   await test('HTTP 接受后未能回查属于待核对，不能标记成功或自动重发', async () => {
     const env = setupService(); env.adapter.apply = async () => { env.calls.push('sent'); return { sent: true } }
     const { plan } = await env.service.plan({})

@@ -104,8 +104,11 @@
 
     <el-dialog v-model="reviewVisible" title="确认请假方案" width="860px" :close-on-click-modal="false" :close-on-press-escape="!leave.submitting" :show-close="!leave.submitting">
       <template v-if="plan">
-        <p>将为 {{ plan.staffName?.split('(')[0] }} 提交以下 {{ plan.entries.length }} 笔申请、共 {{ plan.totalHours }} 小时，写入北森审批流程。</p>
+        <p>{{ plan.staffName?.split('(')[0] }} · 已选 {{ selectedEntries.length }} 笔、{{ selectedHours }} 小时</p>
         <el-table :data="plan.entries" row-key="id" max-height="380" class="leave-review-table">
+          <el-table-column width="56"><template #default="{ row }">
+            <el-checkbox :model-value="selectedDates.includes(row.date)" :disabled="leave.submitting" :aria-label="`选择 ${row.date}`" @change="toggleDate(row.date)" />
+          </template></el-table-column>
           <el-table-column prop="date" label="日期" width="110" />
           <el-table-column prop="typeName" label="假种" width="90" />
           <el-table-column label="起止时刻" width="150"><template #default="{ row }">{{ row.start.slice(11) }}–{{ row.end.slice(11) }}</template></el-table-column>
@@ -116,7 +119,7 @@
         </el-table>
         <p class="leave-muted">{{ shownBalances.map(b => b.unlimited ? `${b.name} 本次 ${b.used} 小时（不限）` : `${b.name} ${b.hours} → ${b.remaining} 小时`).join('；') }}</p>
       </template>
-      <template #footer><el-button :disabled="leave.submitting" @click="reviewVisible = false">返回核对</el-button><el-button type="primary" :loading="leave.submitting" :disabled="busy || leave.consumed" @click="submit">确认提交</el-button></template>
+      <template #footer><el-button :disabled="leave.submitting" @click="reviewVisible = false">返回核对</el-button><el-button type="primary" :loading="leave.submitting" :disabled="busy || leave.consumed || !selectedEntries.length" @click="submit">确认提交 {{ selectedEntries.length }} 笔</el-button></template>
     </el-dialog>
 
     <el-dialog :model-value="!!resolveTarget" title="核对上次提交结果" width="560px" :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy" @close="resolveTarget = null">
@@ -154,6 +157,13 @@ const plan = computed(() => leave.plan)
 const shownBalances = computed(() => (plan.value?.balances || []).filter(balance => balance.available !== false))
 const busy = computed(() => leave.running || leave.submitting)
 const reviewVisible = ref(false)
+// 确认弹窗里勾选要提交的日期；同一天的分段（调休+年假）整体提交。
+const selectedDates = ref([])
+const selectedEntries = computed(() => (plan.value?.entries || []).filter(entry => selectedDates.value.includes(entry.date)))
+const selectedHours = computed(() => selectedEntries.value.reduce((sum, entry) => sum + entry.hours, 0))
+function toggleDate(date) {
+  selectedDates.value = selectedDates.value.includes(date) ? selectedDates.value.filter(item => item !== date) : [...selectedDates.value, date]
+}
 // 确认弹窗里按条覆盖的请假事由；空值回落「默认事由」。
 const entryReasons = ref({})
 const reasonPlaceholder = computed(() => (plan.value?.options.reason ? `默认：${plan.value.options.reason}` : '默认事由选填'))
@@ -271,15 +281,16 @@ async function generate() {
 function openReview() {
   if (busy.value || leave.consumed || !plan.value?.entries.length) return
   entryReasons.value = Object.fromEntries(plan.value.entries.map(entry => [entry.id, entryReasons.value[entry.id] ?? '']))
+  selectedDates.value = [...new Set(plan.value.entries.map(entry => entry.date))]
   reviewVisible.value = true
 }
 async function submit() {
-  if (!reviewVisible.value || busy.value || leave.consumed || !plan.value?.entries.length) return
+  if (!reviewVisible.value || busy.value || leave.consumed || !selectedEntries.value.length) return
   leave.submitting = true; leave.error = ''; leave.consumed = true
   try {
     const reasons = {}
-    for (const entry of plan.value.entries) reasons[entry.id] = String(entryReasons.value[entry.id] ?? '').trim()
-    const result = await window.gitReport.leaveSubmit({ planId: plan.value.id, confirmed: true, reasons })
+    for (const entry of selectedEntries.value) reasons[entry.id] = String(entryReasons.value[entry.id] ?? '').trim()
+    const result = await window.gitReport.leaveSubmit({ planId: plan.value.id, confirmed: true, dates: [...selectedDates.value], reasons })
     if (!result?.ok) throw new Error(result?.error || '提交失败，请核对北森记录')
     leave.results = result.results
   } catch (error) { leave.error = error.message }
