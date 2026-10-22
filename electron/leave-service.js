@@ -5,13 +5,14 @@ const { randomUUID, createHash } = require('node:crypto')
 const MINUTE = 60000
 const PLAN_TTL = 10 * MINUTE
 // 迟到请假口径：08:30–08:45 的迟到优先走每月 5 次/50 分钟额度，额度不够才请 0.5 小时；
-// 08:45–09:00 请上班后 0.5 小时；09:00 后最多再迟到 15 分钟并计入额度；到岗不得晚于 10:00。
+// 超过 08:45 必须请假：08:46–09:15 请上班后 0.5 小时（09:00 后余量计入额度，不足升级 1 小时），
+// 09:16 起按到达时刻向上取整到半小时请假；请假最多到 10:00，10:00 后的到岗分钟计入迟到额度。
 const LEAVE_BLOCK = 30 * MINUTE
 const EARLY_TOLERANCE = 15 * MINUTE
 const LATE_GRACE = 15 * MINUTE
 const MAX_TOLERATED_DAYS_PER_MONTH = 5
 const MAX_TOLERATED_MINUTES_PER_MONTH = 50
-const LATEST_ARRIVAL = '10:00'
+const LEAVE_CAP = '10:00'
 const stamp = (s) => {
   const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(String(s || ''))
   if (!match) return NaN
@@ -91,19 +92,22 @@ function buildPlan(source, options, blocked = {}, banned = new Set()) {
     }
     if (/(?:假|出差|外出|补签)/.test(record.remark || '')) { row.status = 'blocked'; row.reason = '考勤备注已有相关申请，需手动核对'; continue }
     if (blocked[record.date]) { row.status = 'blocked'; row.reason = blocked[record.date]; continue }
-    // 08:30–08:45 优先走每月迟到额度；08:45–09:00 请 0.5 小时；
-    // 09:00–09:15 请 0.5 小时且余量计入额度；09:15 之后按到达时刻请 1/1.5 小时。
-    const latest = stamp(`${record.date} ${LATEST_ARRIVAL}`)
-    if (first > latest) { row.status = 'blocked'; row.reason = `到岗超过 ${LATEST_ARRIVAL}，需手动核对`; continue }
+    // 08:30–08:45 优先走每月迟到额度；08:46–09:15 请 0.5 小时（09:00 后余量计入额度）；
+    // 09:16 起按到达时刻向上取整到半小时请假；请假封顶 10:00，之后的到岗分钟计入迟到额度。
+    const cap = stamp(`${record.date} ${LEAVE_CAP}`)
+    const capped = first > cap
     const firstWindowEnd = start + EARLY_TOLERANCE
     const mandatory = first > firstWindowEnd
     const longLeave = first > graceEnd
-    const hours = longLeave ? Math.ceil((first - start) / LEAVE_BLOCK) / 2 : 0.5
+    const hours = capped ? Math.max(0.5, (cap - start) / LEAVE_BLOCK / 2) : longLeave ? Math.ceil((first - start) / LEAVE_BLOCK) / 2 : 0.5
     row.leaveStart = formatStamp(start)
-    row.leaveEnd = formatStamp(longLeave ? start + hours * 60 * MINUTE : leaveEnd)
+    row.leaveEnd = formatStamp(capped ? cap : longLeave ? start + hours * 60 * MINUTE : leaveEnd)
     row.hours = hours
     row.mandatory = mandatory
-    row.graceMinutes = mandatory && !longLeave ? Math.max(0, (first - leaveEnd) / MINUTE) : 0
+    row.capped = capped
+    row.graceMinutes = capped ? (first - cap) / MINUTE : (mandatory && !longLeave ? Math.max(0, (first - leaveEnd) / MINUTE) : 0)
+    // 10:00 后的余量同样不能超过 15 分钟；超过则额度也计不下，留人工核对。
+    if (row.graceMinutes > LATE_GRACE / MINUTE) { row.status = 'blocked'; row.reason = `到岗超过 ${LEAVE_CAP} 仍多于 15 分钟，需手动核对`; continue }
     row.status = 'candidate'
     candidates.push(row)
   }
@@ -119,9 +123,11 @@ function buildPlan(source, options, blocked = {}, banned = new Set()) {
     months.set(month, used)
     return true
   }
-  // 09:00–09:15 的余量优先占用额度；额度不足时升级为覆盖到岗时刻的整段请假。
+  // 09:00–09:15 与 10:00 后的余量优先占用额度；额度不足时，10:00 前可升级为
+  // 覆盖到岗时刻的整段请假，已封顶 10:00 的只能阻断（不能再延长请假）。
   for (const row of candidates.filter((item) => item.mandatory && item.graceMinutes > 0)) {
     if (spend(row, row.graceMinutes)) { row.requiresLeave = true; continue }
+    if (row.capped) { row.status = 'blocked'; row.reason = '本月迟到额度不足，且请假最多到 10:00，需手动核对'; continue }
     const start = stamp(`${row.date} ${options.workStart}`)
     const first = minuteStamp(row.firstCard)
     row.hours = Math.ceil((first - start) / LEAVE_BLOCK) / 2
@@ -154,8 +160,8 @@ function buildPlan(source, options, blocked = {}, banned = new Set()) {
     row.allocations.push(entry)
     row.status = 'ready'
     row.reason = row.upgraded ? `本月迟到额度不足，改请 ${row.hours} 小时`
-      : row.hours > 0.5 ? `${row.leaveStart.slice(11)}–${row.leaveEnd.slice(11)} 请 ${row.hours} 小时`
-        : row.graceMinutes ? `${row.leaveEnd.slice(11)} 后仍有 ${row.graceMinutes} 分钟迟到，计入本月额度`
+      : row.graceMinutes ? `${row.leaveEnd.slice(11)} 后仍有 ${row.graceMinutes} 分钟迟到，计入本月额度`
+        : row.hours > 0.5 ? `${row.leaveStart.slice(11)}–${row.leaveEnd.slice(11)} 请 ${row.hours} 小时`
           : '待确认'
   }
   for (const row of [...leaveRows].sort((a, b) => b.lateMinutes - a.lateMinutes || b.date.localeCompare(a.date))) {

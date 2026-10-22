@@ -135,11 +135,17 @@ async function main() {
       assert.equal(plan.rows[0].reason, '待确认', time)
     }
     assert.match(buildPlan(source([card('15', '09:10:00')]), OPTIONS).rows[0].reason, /09:00 后仍有 10 分钟迟到，计入本月额度/)
-    for (const [time, hours, end] of [['09:15:59', 0.5, '09:00'], ['09:16:00', 1, '09:30'], ['09:29:59', 1, '09:30'], ['09:31:00', 1.5, '10:00'], ['10:00:00', 1.5, '10:00']]) {
+    for (const [time, hours, end] of [['09:15:59', 0.5, '09:00'], ['09:16:00', 1, '09:30'], ['09:29:59', 1, '09:30'], ['09:31:00', 1.5, '10:00'], ['09:59:00', 1.5, '10:00'], ['10:00:00', 1.5, '10:00']]) {
       const plan = buildPlan(source([card('15', time)]), OPTIONS)
       assert.deepEqual([plan.totalHours, plan.entries[0].end.slice(11)], [hours, end], time)
     }
-    assert.equal(buildPlan(source([card('15', '10:01:00')]), OPTIONS).rows[0].status, 'blocked')
+    // 请假封顶 10:00：10:05 只请 1.5 小时，超出的 5 分钟计入迟到额度。
+    const capped = buildPlan(source([card('15', '10:05:00')]), OPTIONS)
+    assert.deepEqual([capped.totalHours, capped.entries[0].end.slice(11)], [1.5, '10:00'])
+    assert.match(capped.rows[0].reason, /10:00 后仍有 5 分钟迟到，计入本月额度/)
+    assert.equal(buildPlan(source([card('15', '10:16:00')]), OPTIONS).rows[0].status, 'blocked')
+    const drained = buildPlan(source([...['11', '12', '13', '14', '15'].map(day => card(day, '09:01:00')), card('10', '10:05:00')], 10), OPTIONS)
+    assert.equal(drained.rows.find(item => item.date === '2026-10-10').status, 'blocked')
   })
   await test('重复覆盖按请假块终点判断，部分覆盖阻断', () => {
     const data = source([card('15', '09:00:59')], 0.5, 0)
