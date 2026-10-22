@@ -10,7 +10,7 @@ const { transformSync } = require('esbuild')
 
 const projectRoot = path.resolve(__dirname, '..')
 const methods = ['knowledgeList', 'knowledgeSave', 'knowledgeTrash', 'knowledgeRestore', 'knowledgeImport', 'knowledgeExport', 'knowledgeDelete']
-const channels = ['knowledge:list', 'knowledge:save', 'knowledge:trash', 'knowledge:restore', 'knowledge:import', 'knowledge:export', 'knowledge:delete', 'leave:connect', 'leave:plan', 'leave:submit', 'leave:resolve']
+const channels = ['knowledge:list', 'knowledge:save', 'knowledge:trash', 'knowledge:restore', 'knowledge:import', 'knowledge:export', 'knowledge:delete', 'leave:connect', 'leave:plan', 'leave:replan', 'leave:submit', 'leave:resolve']
 
 async function startBackend(userData) {
   // 当前主进程读 PROJECT_MANAGER_USER_DATA；同时设置 PLM 名称以兼容宿主后续统一。
@@ -155,6 +155,7 @@ async function main() {
     for (const api of [electron, tauri]) {
       assert.equal(typeof api.leaveConnect, 'function')
       assert.match((await api.leavePlan({ since: 'invalid-date' })).error, /日期/)
+      assert.match((await api.leaveReplan({ planId: 'none', overrides: {} })).error, /方案/)
       assert.match((await api.leaveSubmit({ confirmed: false })).error, /确认/)
       assert.match((await api.leaveResolve({ confirmedMissing: false })).error, /确认/)
     }

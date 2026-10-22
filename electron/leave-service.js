@@ -59,7 +59,7 @@ const preparedKey = (entry) => JSON.stringify([entry.typeId, entry.start, entry.
 const markerId = (entry) => createHash('sha256').update(entry.key).digest('hex')
 const matchesMarker = (leave, entry) => activeLeave(leave) && leave.typeId === (entry.typeId || entry.key.split('|')[1]) && leave.start.slice(0, 16) === entry.start && leave.end.slice(0, 16) === entry.end && /^\d+(?:\.\d+)?\s*小时$/.test(leave.hoursText) && Number.parseFloat(leave.hoursText) === entry.hours
 
-function buildPlan(source, options, blocked = {}, banned = new Set()) {
+function buildPlan(source, options, blocked = {}, banned = new Set(), overrides = {}) {
   if (!source?.staffId || !Array.isArray(source.attendance) || !Array.isArray(source.leaves) || !Array.isArray(source.balances)) throw new Error('北森出勤或余额数据不完整')
   const balances = source.balances.map((item) => {
     if (item.unlimited) {
@@ -105,111 +105,165 @@ function buildPlan(source, options, blocked = {}, banned = new Set()) {
     }
     if (/(?:假|出差|外出|补签)/.test(record.remark || '')) { row.status = 'blocked'; row.reason = '考勤备注已有相关申请，需手动核对'; continue }
     if (blocked[record.date]) { row.status = 'blocked'; row.reason = blocked[record.date]; continue }
-    // 08:30–08:45 优先走每月迟到额度；08:46–09:15 请 0.5 小时（09:00 后余量计入额度）；
-    // 09:16 起按有效迟到（扣除午休）向上取整到半小时请假，一天最多 8 小时。
+    // 基础请假：08:30–08:45 为 0（可只计迟到）；08:46–09:15 为 0.5 小时；
+    // 09:16 起按有效迟到（扣除午休）向上取整。是否计算迟到由额度或用户选择决定：
+    // 计算迟到用基础请假并把余量计入额度；不计算则多请 0.5 小时覆盖余量。
     const ls = stamp(`${record.date} ${LUNCH[0]}`)
     const le = stamp(`${record.date} ${LUNCH[1]}`)
     const firstWindowEnd = start + EARLY_TOLERANCE
-    const mandatory = first > firstWindowEnd
     const longLeave = first > graceEnd
-    const rawHours = longLeave ? Math.ceil(effectiveMs(start, first, ls, le) / LEAVE_BLOCK) / 2 : 0.5
+    const baseHours = longLeave ? Math.ceil(effectiveMs(start, first, ls, le) / LEAVE_BLOCK) / 2 : first <= firstWindowEnd ? 0 : 0.5
+    const residualLate = longLeave ? 0 : first <= firstWindowEnd ? row.lateMinutes : Math.max(0, (first - leaveEnd) / MINUTE)
     row.leaveStart = formatStamp(start)
-    row.hours = Math.min(rawHours, MAX_LEAVE_HOURS_PER_DAY)
-    row.cappedDay = rawHours > MAX_LEAVE_HOURS_PER_DAY
-    row.leaveEnd = formatStamp(advanceMs(start, row.hours * 60 * MINUTE, ls, le))
-    row.mandatory = mandatory
-    row.graceMinutes = mandatory && !longLeave ? Math.max(0, (first - leaveEnd) / MINUTE) : 0
+    row.baseHours = baseHours
+    row.residualLate = residualLate
+    row.residualKind = first <= firstWindowEnd ? 'early' : residualLate > 0 ? 'grace' : ''
+    row.mandatory = first > firstWindowEnd
     row.status = 'candidate'
     candidates.push(row)
   }
-  // 每月迟到额度：最多 5 次、合计不超过 50 分钟；只约束不请假的余量。
-  const months = new Map()
-  const spend = (row, minutes) => {
+  // 每月迟到额度：最多 5 次、合计 50 分钟。默认额度够就计算迟到（少请假），
+  // 不够就多请 0.5 小时覆盖；用户显式选择“计算迟到”时不自动改，只标记超额。
+  const quota = new Map()
+  const quotaFor = (month) => quota.get(month) || { days: 0, minutes: 0, exceeded: false }
+  const tryConsume = (row, warn) => {
     const month = row.date.slice(0, 7)
-    const used = months.get(month) || { days: 0, minutes: 0 }
-    if (used.days + 1 > MAX_TOLERATED_DAYS_PER_MONTH) return false
-    if (used.minutes + minutes > MAX_TOLERATED_MINUTES_PER_MONTH) return false
+    const used = quotaFor(month)
+    if (used.days + 1 > MAX_TOLERATED_DAYS_PER_MONTH || used.minutes + row.residualLate > MAX_TOLERATED_MINUTES_PER_MONTH) {
+      if (warn) { used.exceeded = true; row.quotaExceeded = true; quota.set(month, used) }
+      return false
+    }
     used.days += 1
-    used.minutes += minutes
-    months.set(month, used)
+    used.minutes += row.residualLate
+    quota.set(month, used)
     return true
   }
-  // 09:00–09:15 的余量优先占用额度；额度不足时升级为覆盖到岗时刻的整段请假。
-  for (const row of candidates.filter((item) => item.mandatory && item.graceMinutes > 0)) {
-    if (spend(row, row.graceMinutes)) { row.requiresLeave = true; continue }
-    const start = stamp(`${row.date} ${options.workStart}`)
-    const first = minuteStamp(row.firstCard)
-    row.hours = Math.ceil((first - start) / LEAVE_BLOCK) / 2
-    row.leaveEnd = formatStamp(start + row.hours * 60 * MINUTE)
-    row.graceMinutes = 0
-    row.upgraded = true
-    row.requiresLeave = true
+  const residualRows = candidates.filter((row) => row.residualLate > 0)
+  const explicit = (row) => typeof overrides[row.date]?.countLate === 'boolean'
+  const byDate = (a, b) => b.date.localeCompare(a.date)
+  const explicitRows = residualRows.filter(explicit).sort(byDate)
+  const graceRows = residualRows.filter((row) => !explicit(row) && row.residualKind === 'grace').sort(byDate)
+  const earlyRows = residualRows.filter((row) => !explicit(row) && row.residualKind === 'early').sort(byDate)
+  for (const row of explicitRows) {
+    row.countLate = overrides[row.date].countLate
+    if (row.countLate) tryConsume(row, true)
   }
-  // 08:30–08:45 的迟到先用额度；额度不足再请 0.5 小时。
-  for (const row of candidates.filter((item) => !item.mandatory)) {
-    if (spend(row, row.lateMinutes)) {
-      row.tolerated = true
-      row.hours = 0
-      row.requiresLeave = false
+  for (const row of [...graceRows, ...earlyRows]) row.countLate = tryConsume(row, false)
+  for (const row of candidates) {
+    if (typeof overrides[row.date]?.countLate === 'boolean') row.countLate = overrides[row.date].countLate
+    else if (typeof row.countLate !== 'boolean') row.countLate = true
+  }
+  const startOf = (row) => stamp(`${row.date} ${options.workStart}`)
+  const lunchOf = (row) => [stamp(`${row.date} ${LUNCH[0]}`), stamp(`${row.date} ${LUNCH[1]}`)]
+  for (const row of candidates) {
+    const rawHours = row.baseHours + (row.countLate ? 0 : 0.5)
+    row.hours = Math.min(rawHours, MAX_LEAVE_HOURS_PER_DAY)
+    row.cappedDay = rawHours > MAX_LEAVE_HOURS_PER_DAY
+    row.remainingLate = row.countLate ? row.residualLate : 0
+    if (row.hours > 0) row.leaveEnd = formatStamp(advanceMs(startOf(row), row.hours * 60 * MINUTE, ...lunchOf(row)))
+    if (row.hours === 0) {
       row.status = 'tolerated'
       row.reason = `15 分钟内迟到 ${row.lateMinutes} 分钟，计入本月迟到额度，不申请`
-      continue
     }
-    row.requiresLeave = true
   }
-  for (const row of candidates.filter((item) => item.mandatory && item.graceMinutes === 0)) row.requiresLeave = true
-  // 假种按天级联：整段调休 → 整段年假 → 调休+年假按时间分段拼够；合计不足该日先不处理。
-  // 分段按半小时边界切（余额可用量向下取整到 0.5 小时），段与段首尾相接。
+  const quotaExceeded = [...quota.values()].some((item) => item.exceeded)
+  // 假种按天级联：整段调休 → 整段年假 → 调休+年假拼够 → 事假补差额；
+  // 用户可在 overrides 里指定单日假种（余额不足则阻断）。分段按有效工时首尾相接。
   const comp = balances.find((item) => item.name === '调休假')
   const annual = balances.find((item) => item.name === '年假')
-  const leaveRows = candidates.filter((row) => row.requiresLeave && row.status === 'candidate')
-  const strategies = [
-    [comp], [annual], [comp, annual],
-  ]
-  const allocate = (row) => {
-    const ls = stamp(`${row.date} ${LUNCH[0]}`)
-    const le = stamp(`${row.date} ${LUNCH[1]}`)
-    for (const strategy of strategies) {
-      if (strategy.some((balance) => banned.has(`${row.date}|${balance.id}`))) continue
-      const available = strategy.reduce((sum, balance) => sum + balance.usable - balance.used, 0)
-      if (available + 1e-8 < row.hours) continue
-      let remaining = row.hours
-      let cursor = stamp(row.leaveStart)
-      for (const balance of strategy) {
-        const take = Math.min(balance.usable - balance.used, remaining)
-        if (take <= 0) continue
-        balance.used = Math.round((balance.used + take) * 1000000) / 1000000
-        const segmentEnd = advanceMs(cursor, take * 60 * MINUTE, ls, le)
-        row.allocations.push({ id: `${row.date}:${balance.id}`, date: row.date, firstCard: row.firstCard, start: formatStamp(cursor), end: formatStamp(segmentEnd), hours: take, typeId: balance.id, typeName: balance.name })
-        cursor = segmentEnd
-        remaining = Math.round((remaining - take) * 1000000) / 1000000
-      }
-      row.status = 'ready'
-      row.reason = row.upgraded ? `本月迟到额度不足，改请 ${row.hours} 小时`
-        : row.graceMinutes ? `${row.leaveEnd.slice(11)} 后仍有 ${row.graceMinutes} 分钟迟到，计入本月额度`
-          : row.cappedDay ? '一天最多请 8 小时，已按 8 小时申请'
-            : row.allocations.length > 1 ? '调休不足，与年假分段拼够'
-              : row.hours > 0.5 ? `${row.leaveStart.slice(11)}–${row.leaveEnd.slice(11)} 请 ${row.hours} 小时`
-                : '待确认'
-      return true
-    }
-    return false
+  const fallback = balances.find((item) => item.unlimited && item.available !== false)
+  const available = (row, balance) => {
+    if (!balance || balance.available === false || banned.has(`${row.date}|${balance.id}`)) return 0
+    return balance.unlimited ? Infinity : Math.max(0, balance.usable - balance.used)
   }
-  for (const row of leaveRows) {
-    if (allocate(row)) continue
-    row.status = 'blocked'
-    row.reason = '调休假与年假合计不足以覆盖当天请假时长，先不处理'
+  const push = (row, balance, take, cursor) => {
+    const end = advanceMs(cursor, take * 60 * MINUTE, ...lunchOf(row))
+    row.allocations.push({ id: `${row.date}:${balance.id}`, date: row.date, firstCard: row.firstCard, start: formatStamp(cursor), end: formatStamp(end), hours: take, typeId: balance.id, typeName: balance.name })
+    balance.used = Math.round((balance.used + take) * 1000000) / 1000000
+    return end
+  }
+  const reasonFor = (row, segments) => {
+    if (row.quotaExceeded) return '本月迟到额度已超，仍按计算迟到生成'
+    if (!row.countLate) return '不计算迟到，多请 0.5 小时'
+    if (row.remainingLate > 0) return `${row.leaveEnd.slice(11)} 后仍有 ${row.remainingLate} 分钟迟到，计入本月额度`
+    if (segments.length > 1) return `${segments.map((item) => item.balance.name).join('+')} 分段拼够`
+    if (row.cappedDay) return '一天最多请 8 小时，已按 8 小时申请'
+    if (row.hours > 0.5) return `${row.leaveStart.slice(11)}–${row.leaveEnd.slice(11)} 请 ${row.hours} 小时`
+    return '待确认'
+  }
+  const leaveRows = candidates.filter((row) => row.hours > 0)
+  for (const row of [...leaveRows].sort((a, b) => b.lateMinutes - a.lateMinutes || b.date.localeCompare(a.date))) {
+    const override = overrides[row.date] || {}
+    const cursor = stamp(row.leaveStart)
+    if (override.typeId) {
+      const balance = balances.find((item) => item.id === override.typeId)
+      if (!balance || balance.available === false) { row.status = 'blocked'; row.reason = '所选假种不可用，请改选'; continue }
+      if (banned.has(`${row.date}|${balance.id}`)) { row.status = 'blocked'; row.reason = '平台已拒绝所选假种，请改选'; continue }
+      if (available(row, balance) + 1e-8 < row.hours) { row.status = 'blocked'; row.reason = '所选假种余额不足，请改选或使用事假'; continue }
+      push(row, balance, row.hours, cursor)
+      row.status = 'ready'
+      row.reason = reasonFor(row, [{ balance }])
+      continue
+    }
+    const segments = []
+    let remaining = row.hours
+    let next = cursor
+    const add = (balance, take) => {
+      if (take <= 0) return
+      segments.push({ balance, take })
+      remaining = Math.round((remaining - take) * 1000000) / 1000000
+    }
+    const compAvailable = available(row, comp)
+    const annualAvailable = available(row, annual)
+    if (compAvailable + 1e-8 >= remaining) add(comp, remaining)
+    else if (annualAvailable + 1e-8 >= remaining) add(annual, remaining)
+    else {
+      if (compAvailable > 0) add(comp, Math.min(compAvailable, remaining))
+      if (remaining > 0 && annualAvailable > 0) add(annual, Math.min(annualAvailable, remaining))
+      const fallbackAvailable = available(row, fallback)
+      if (remaining > 0 && fallbackAvailable > 0) add(fallback, Math.min(fallbackAvailable === Infinity ? remaining : fallbackAvailable, remaining))
+    }
+    if (remaining > 1e-8) {
+      row.status = 'blocked'
+      row.reason = '调休假、年假与事假合计不足以覆盖当天请假时长，先不处理'
+      continue
+    }
+    for (const segment of segments) next = push(row, segment.balance, segment.take, next)
+    row.status = 'ready'
+    row.reason = reasonFor(row, segments)
   }
   return {
     staffId: source.staffId, staffName: source.staffName, options, rows,
-    entries: rows.flatMap((row) => row.allocations).sort((a, b) => b.date.localeCompare(a.date)),
+    entries: rows.flatMap((row) => row.allocations).sort((a, b) => a.date === b.date ? a.start.localeCompare(b.start) : b.date.localeCompare(a.date)),
     balances: balances.map(({ usable, ...item }) => ({ ...item, remaining: item.unlimited ? null : Math.round((item.hours - item.used) * 1000000) / 1000000 })),
     totalHours: rows.reduce((sum, row) => sum + row.allocations.reduce((total, entry) => total + entry.hours, 0), 0),
+    quotaExceeded,
   }
 }
 
-function fingerprint(source) {
-  const attendance = source.attendance.map(({ id, date, firstCard, dayType, remark }) => ({ id, date, firstCard: Number.isFinite(minuteStamp(firstCard)) ? minuteStamp(firstCard) : firstCard, dayType, remark })).sort((a, b) => a.date.localeCompare(b.date))
+function normalizeOverrides(input, plan) {
+  if (input == null) return {}
+  if (typeof input !== 'object' || Array.isArray(input)) throw new Error('请假调整格式不正确')
+  const dates = new Set(plan.rows.map((row) => row.date))
+  const balances = new Map(plan.balances.map((item) => [item.id, item]))
+  const result = {}
+  for (const [date, value] of Object.entries(input)) {
+    if (!dates.has(date)) throw new Error('所选日期不在本次方案中')
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('请假调整格式不正确')
+    const item = {}
+    if (typeof value.countLate === 'boolean') item.countLate = value.countLate
+    if (value.typeId != null) {
+      const balance = balances.get(String(value.typeId))
+      if (!balance || balance.available === false) throw new Error('所选假种不可用')
+      item.typeId = balance.id
+      item.typeName = balance.name
+    }
+    if (Object.keys(item).length) result[date] = item
+  }
+  return result
+}
+
+function fingerprint(source) {  const attendance = source.attendance.map(({ id, date, firstCard, dayType, remark }) => ({ id, date, firstCard: Number.isFinite(minuteStamp(firstCard)) ? minuteStamp(firstCard) : firstCard, dayType, remark })).sort((a, b) => a.date.localeCompare(b.date))
   const leaves = source.leaves.filter(activeLeave).sort((a, b) => a.id.localeCompare(b.id))
   const balances = [...source.balances].sort((a, b) => a.name.localeCompare(b.name))
   return createHash('sha256').update(JSON.stringify({ staffId: source.staffId, attendance, leaves, balances })).digest('hex')
@@ -270,7 +324,7 @@ class LeaveService {
       const prepared = new Map()
       const banned = new Set()
       let plan = buildPlan(source, options, blocked)
-      // 平台拒绝某假种时当天改用另一假种重算；两个假种都不可用才阻断当天，余额留给较旧日期。
+      // 平台拒绝某假种时当天改用下一假种重算；全部不可用才阻断当天，余额留给较旧日期。
       while (true) {
         const entry = plan.entries.find((item) => !prepared.has(preparedKey(item)))
         if (!entry) break
@@ -282,12 +336,28 @@ class LeaveService {
           banned.add(`${entry.date}|${entry.typeId}`)
           plan = buildPlan(source, options, blocked, banned)
           const row = plan.rows.find((item) => item.date === entry.date)
-          if (row && row.status === 'blocked' && row.reason.includes('先不处理')) row.reason = `北森校验未通过：${error.message}`
+          if (row && row.status === 'blocked') row.reason = `北森校验未通过：${error.message}`
         }
       }
       const createdAt = this.now()
       const publicPlan = { ...plan, unresolved, id: randomUUID(), createdAt, expiresAt: createdAt + PLAN_TTL }
-      this.pending = { publicPlan, fingerprint: fingerprint(source), blocked }
+      this.pending = { publicPlan, fingerprint: fingerprint(source), blocked, source, banned }
+      return { plan: publicPlan }
+    })
+  }
+
+  /** 按确认弹窗的调整重算方案（不重新读北森，提交时仍逐笔重新校验）。 */
+  replan(input = {}) {
+    return this.exclusive(async () => {
+      const pending = this.pending
+      const plan = pending?.publicPlan
+      if (!plan || input.planId !== plan.id) throw new Error('请假方案已变化，请重新生成')
+      if (this.now() > plan.expiresAt) throw new Error('请假方案已过期，请重新生成')
+      const overrides = normalizeOverrides(input.overrides, plan)
+      const next = buildPlan(pending.source, plan.options, pending.blocked, pending.banned, overrides)
+      const publicPlan = { ...next, id: plan.id, createdAt: plan.createdAt, expiresAt: plan.expiresAt, unresolved: plan.unresolved }
+      pending.publicPlan = publicPlan
+      pending.overrides = overrides
       return { plan: publicPlan }
     })
   }
@@ -334,12 +404,12 @@ class LeaveService {
         chosen = plan.entries.filter((entry) => wanted.has(entry.date))
         if (!chosen.length) throw new Error('请至少选择一天提交')
       }
-      // 确认时可按条覆盖请假事由：只认方案内条目的 ID，空值回落生成时的默认事由。
+      // 确认时可按天覆盖请假事由：兼容按条目 ID 传入，空值回落默认事由。
       const reasons = {}
       if (input.reasons != null) {
         if (typeof input.reasons !== 'object' || Array.isArray(input.reasons)) throw new Error('请假事由格式不正确')
         for (const entry of chosen) {
-          const text = String(input.reasons[entry.id] ?? '').trim()
+          const text = String(input.reasons[entry.date] ?? input.reasons[entry.id] ?? '').trim()
           if (text.length > 1000) throw new Error('请假事由不能超过 1000 字')
           reasons[entry.id] = text
         }
@@ -358,7 +428,9 @@ class LeaveService {
           const current = await this.adapter.read(options)
           if (current.staffId !== plan.staffId || minuteStamp(current.attendance.find((item) => item.date === result.date)?.firstCard) !== minuteStamp(result.firstCard)) throw new Error('登录账号或首打卡发生变化，请重新生成方案')
           if (current.leaves.some((leave) => activeLeave(leave) && overlap(stamp(result.start), stamp(result.end), stamp(leave.start), stamp(leave.end)))) throw new Error('该时段已有请假申请，请重新生成方案')
-          if ((current.balances.find((item) => item.id === result.typeId)?.hours ?? -1) < result.hours) throw new Error('假期余额已不足，请重新生成方案')
+          const balance = current.balances.find((item) => item.id === result.typeId)
+          if (!balance) throw new Error('假期余额已变化，请重新生成方案')
+          if (!balance.unlimited && (balance.hours ?? -1) < result.hours) throw new Error('假期余额已不足，请重新生成方案')
           const prepared = await this.adapter.prepare({ staffId: plan.staffId, entry: result, reason: reasons[result.id] || options.reason })
           this.verifyPrepared(result, prepared)
           const marker = { key, staffId: plan.staffId, typeId: result.typeId, date: result.date, typeName: result.typeName, start: result.start, end: result.end, hours: result.hours, at: new Date(this.now()).toISOString() }

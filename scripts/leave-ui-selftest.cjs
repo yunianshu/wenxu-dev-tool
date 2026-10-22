@@ -34,8 +34,18 @@ async function main() {
     return mod.exports
   }
   const { state } = load('src/store.js')
-  const plan = { id: 'isolated-plan', staffName: '测试员工', totalHours: 1, entries: [{ id: 'entry', date: '2026-10-15', hours: 1 }], rows: [{ date: '2026-10-15', status: 'ready' }], balances: [] }
+  const entry = { id: 'entry', date: '2026-10-15', typeId: 'annual', typeName: '年假', start: '2026-10-15 08:30', end: '2026-10-15 09:00', hours: 0.5 }
+  const plan = {
+    id: 'isolated-plan', staffName: '测试员工', totalHours: 0.5, entries: [entry],
+    rows: [{ date: '2026-10-15', firstCard: '2026-10-15 09:00', lateMinutes: 30, status: 'ready', countLate: true, remainingLate: 0, allocations: [entry] }],
+    balances: [
+      { name: '调休假', id: 'comp', hours: 0, available: true, used: 0, remaining: 0 },
+      { name: '年假', id: 'annual', hours: 4, available: true, used: 0.5, remaining: 3.5 },
+      { name: '事假', id: 'personal', hours: null, unlimited: true, available: true, used: 0, remaining: null },
+    ],
+  }
   let submitCalls = 0
+  let replanCalls = 0
   let resolveCalls = 0
   const submitPayloads = []
   let finishSubmit
@@ -43,6 +53,7 @@ async function main() {
   const originalWindow = global.window
   global.window = { gitReport: {
     leavePlan: async payload => { assert.equal(Object.getPrototypeOf(payload), Object.prototype); return { ok: true, plan: structuredClone(plan) } },
+    leaveReplan: async payload => { replanCalls++; assert.equal(payload.planId, 'isolated-plan'); return { ok: true, plan: structuredClone(plan) } },
     leaveSubmit: async payload => { submitCalls++; submitPayloads.push(payload); return new Promise(resolve => { finishSubmit = resolve }) },
     leaveResolve: async payload => { resolveCalls++; assert.deepEqual(payload, { planId: 'isolated-plan', markerId: 'isolated-marker', confirmedMissing: true }); return { ok: true, resolved: true } },
     leaveConnect: async () => ({ ok: true, connected: true, mode: 'embedded', loggedIn: false, bookmarklet: 'javascript:void(1)' }),
@@ -59,12 +70,14 @@ async function main() {
     await setup.submit()
     assert.equal(submitCalls, 0, '确认弹窗未打开时不得提交')
     setup.openReview()
-    setup.entryReasons.value.entry = '家里有事'
+    await setup.replanPlan({ '2026-10-15': { countLate: false } })
+    assert.equal(replanCalls, 1, '调整计算迟到/假种应走 replan')
+    setup.dateReasons.value['2026-10-15'] = '家里有事'
     const sending = setup.submit()
     assert.equal(state.leave.submitting, true)
     await setup.submit()
     assert.equal(submitCalls, 1, '重复点击不能重复发起')
-    assert.deepEqual(submitPayloads[0], { planId: 'isolated-plan', confirmed: true, dates: ['2026-10-15'], reasons: { entry: '家里有事' } }, '确认时按条携带请假事由与所选日期')
+    assert.deepEqual(submitPayloads[0], { planId: 'isolated-plan', confirmed: true, dates: ['2026-10-15'], reasons: { '2026-10-15': '家里有事' } }, '确认时按天携带请假事由与所选日期')
     app.unmount(); app = mount()
     assert.equal(setup.plan.value.id, plan.id)
     assert.equal(setup.busy.value, true, '切换视图保留执行状态')

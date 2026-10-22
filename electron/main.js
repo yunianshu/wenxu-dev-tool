@@ -889,7 +889,7 @@ function registerIpc() {
   }
   ensureSsoCapture()
   let leaveService
-  for (const [channel, method] of [['leave:connect', 'connect'], ['leave:plan', 'plan'], ['leave:submit', 'submit'], ['leave:resolve', 'resolve']]) {
+  for (const [channel, method] of [['leave:connect', 'connect'], ['leave:plan', 'plan'], ['leave:replan', 'replan'], ['leave:submit', 'submit'], ['leave:resolve', 'resolve']]) {
     ipcMain.handle(channel, async (_event, payload) => {
       try {
         leaveService ||= new LeaveService({ adapter: leaveAdapter, ledger: createFileLedger(app.getPath('userData')) })
