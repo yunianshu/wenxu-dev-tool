@@ -143,6 +143,23 @@ async function main() {
       assert.deepEqual([plan.totalHours, plan.entries[0].end.slice(11)], [hours, end], time)
     }
   })
+  await test('已有请假覆盖后 9 点余量计入迟到额度，卡片展示已用/还可用', () => {
+    const data = source([card('08', '09:02:00')])
+    data.leaves.push(leave('08', { id: 'existing', typeId: 'annual', typeName: '年假', start: '2026-10-08 08:30', end: '2026-10-08 09:00', hoursText: '0.5小时' }))
+    const plan = buildPlan(data, OPTIONS)
+    const row = plan.rows[0]
+    assert.equal(row.status, 'covered')
+    assert.equal(row.remainingLate, 2)
+    assert.match(row.reason, /09:00 后 2 分钟计入本月迟到额度/)
+    assert.deepEqual(plan.quota['2026-10'], { days: 1, minutes: 2 })
+    // 覆盖到 09:15 前无余量时不占额度；09:16 后覆盖到岗也不占。
+    const toArrival = source([card('08', '09:02:00')])
+    toArrival.leaves.push(leave('08', { end: '2026-10-08 09:02', hoursText: '0.5小时' }))
+    assert.equal(buildPlan(toArrival, OPTIONS).quota['2026-10'], undefined)
+    const early = source([card('08', '08:50:00')])
+    early.leaves.push(leave('08', { end: '2026-10-08 08:50', hoursText: '0.5小时' }))
+    assert.equal(buildPlan(early, OPTIONS).quota['2026-10'], undefined)
+  })
   await test('重复覆盖按请假块终点判断，部分覆盖阻断', () => {
     const data = source([card('15', '09:00:59')], 0.5, 0)
     data.leaves.push(leave('15', { end: '2026-10-15 09:00', hoursText: '0.5小时' }))

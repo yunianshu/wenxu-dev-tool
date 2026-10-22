@@ -73,6 +73,7 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
   if (!balances.some((item) => item.name === '年假')) throw new Error('年假余额数据不完整')
   const rows = []
   const candidates = []
+  const coveredResiduals = []
   const dates = new Set()
   if (source.leaves.some((leave) => !leave.status || (activeLeave(leave) && (!Number.isFinite(stamp(leave.start)) || !Number.isFinite(stamp(leave.end)) || stamp(leave.start) >= stamp(leave.end))))) throw new Error('已有请假记录不完整，请在北森核对')
   for (const record of [...source.attendance].sort((a, b) => b.date.localeCompare(a.date))) {
@@ -99,8 +100,20 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
       for (const leave of overlaps.sort((a, b) => a.start.localeCompare(b.start))) {
         if (stamp(leave.start) <= covered && !/部分/.test(leave.revocation || '') && ['1', '3'].includes(leave.documentType)) covered = Math.max(covered, stamp(leave.end))
       }
-      row.status = covered >= coverageEnd ? 'covered' : 'blocked'
-      row.reason = covered >= coverageEnd ? '已有审批中或已通过的请假覆盖' : '存在重叠或部分销假的申请，请在北森核对'
+      const isCovered = covered >= coverageEnd
+      row.status = isCovered ? 'covered' : 'blocked'
+      row.reason = isCovered ? '已有审批中或已通过的请假覆盖' : '存在重叠或部分销假的申请，请在北森核对'
+      if (isCovered) {
+        // 已有请假覆盖终点之后仍迟到的分钟是既成事实，计入当月迟到额度且不可调整。
+        const coveredEnd = Math.min(covered, first)
+        const coveredResidual = first <= graceEnd ? Math.max(0, (first - coveredEnd) / MINUTE) : 0
+        if (coveredResidual > 0) {
+          row.residualLate = coveredResidual
+          row.remainingLate = coveredResidual
+          row.reason = `已有请假覆盖，${formatStamp(coveredEnd).slice(11)} 后 ${coveredResidual} 分钟计入本月迟到额度`
+          coveredResiduals.push(row)
+        }
+      }
       continue
     }
     if (/(?:假|出差|外出|补签)/.test(record.remark || '')) { row.status = 'blocked'; row.reason = '考勤备注已有相关申请，需手动核对'; continue }
@@ -126,6 +139,13 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
   // 默认额度够就计算迟到（少请假）；不够（含用户手动勾选）一律强制多请 0.5 小时，不产生超额方案。
   const quota = new Map()
   const quotaFor = (month) => quota.get(month) || { days: 0, minutes: 0 }
+  // 已覆盖日期的余量是既成事实，优先占额（可能超限，卡片如实展示）。
+  for (const row of coveredResiduals.sort((a, b) => b.date.localeCompare(a.date))) {
+    const used = quotaFor(row.date.slice(0, 7))
+    used.days += 1
+    used.minutes += row.residualLate
+    quota.set(row.date.slice(0, 7), used)
+  }
   const tryConsume = (row) => {
     const month = row.date.slice(0, 7)
     const used = quotaFor(month)

@@ -58,9 +58,9 @@
           <span class="leave-stat-sub">本次 {{ balance.used }} · 剩余 {{ balance.unlimited ? '不限' : balance.remaining }}</span>
         </div>
         <div v-if="quotaNow" class="leave-stat">
-          <span class="leave-stat-label">迟到额度 · {{ quotaNow.month }}</span>
-          <strong>{{ quotaNow.days }}<small> / {{ plan.quotaLimits.days }} 次</small></strong>
-          <span class="leave-stat-sub">迟到 {{ quotaNow.minutes }} / {{ plan.quotaLimits.minutes }} 分钟 · 单次 ≤15 分钟</span>
+          <span class="leave-stat-label">本月迟到额度 · {{ quotaNow.month }}</span>
+          <strong>还可用 {{ quotaNow.daysLeft }}<small> 次 · {{ quotaNow.minutesLeft }} 分钟</small></strong>
+          <span class="leave-stat-sub">已用 {{ quotaNow.days }} / {{ plan.quotaLimits.days }} 次 · {{ quotaNow.minutes }} / {{ plan.quotaLimits.minutes }} 分钟 · 单次 ≤15 分钟</span>
         </div>
         <div class="leave-stat">
           <span class="leave-stat-label">本次待申请</span>
@@ -215,9 +215,18 @@ const coveredDays = computed(() => plan.value?.rows.filter(row => row.status ===
 const toleratedDays = computed(() => plan.value?.rows.filter(row => row.status === 'tolerated').length || 0)
 const quotaNow = computed(() => {
   const quota = plan.value?.quota || {}
+  const limits = plan.value?.quotaLimits || { days: 5, minutes: 50 }
   const months = Object.keys(quota).sort()
   const month = months[months.length - 1]
-  return month ? { month, ...quota[month] } : null
+  if (!month) return null
+  const used = quota[month]
+  return {
+    month,
+    days: used.days,
+    minutes: used.minutes,
+    daysLeft: Math.max(0, limits.days - used.days),
+    minutesLeft: Math.max(0, limits.minutes - used.minutes),
+  }
 })
 const allSucceeded = computed(() => leave.results.length > 0 && leave.results.every(row => row.status === 'success'))
 const futureDate = (date) => { const pad = n => String(n).padStart(2, '0'); return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` > today() }
@@ -471,11 +480,12 @@ async function resolvePending() {
 .leave-empty > .el-icon { font-size: 40px; color: var(--brand-accent); }
 .leave-empty h2 { font-size: 16px; font-weight: 500; color: var(--text-muted); margin: 12px 0 0; }
 .leave-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
-.leave-stat { display: flex; flex-direction: column; gap: 6px; padding: 16px 20px; background: var(--surface); }
-.leave-stat-label { color: var(--text-muted); font-size: 13px; }
-.leave-stat strong { font-size: 26px; color: var(--brand-accent); font-variant-numeric: tabular-nums; line-height: 1.1; }
+/* 固定高度并截断副文本：数值变化不会撑高卡片导致页面抖动。 */
+.leave-stat { display: flex; flex-direction: column; gap: 6px; padding: 16px 20px; height: 124px; overflow: hidden; background: var(--surface); }
+.leave-stat-label { color: var(--text-muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.leave-stat strong { font-size: 26px; color: var(--brand-accent); font-variant-numeric: tabular-nums; line-height: 1.1; white-space: nowrap; }
 .leave-stat small { font-size: 13px; font-weight: 400; color: var(--text-muted); }
-.leave-stat-sub { color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.leave-stat-sub { color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .leave-unresolved h2, .leave-detail-head h2 { font-size: 16px; margin: 0; }
 .leave-unresolved-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding-top: 14px; }
 .leave-unresolved-row b { font-size: 13px; font-weight: 500; }
