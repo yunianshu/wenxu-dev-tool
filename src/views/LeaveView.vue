@@ -47,10 +47,11 @@
 
     <template v-if="plan">
       <section class="leave-stats">
-        <div v-for="balance in plan.balances" :key="balance.name" class="leave-stat">
+        <div v-for="balance in shownBalances" :key="balance.name" class="leave-stat">
           <span class="leave-stat-label">{{ balance.name }}可用</span>
-          <strong>{{ balance.hours }}<small> 小时</small></strong>
-          <span class="leave-stat-sub">本次 {{ balance.used }} · 剩余 {{ balance.remaining }}</span>
+          <strong v-if="balance.unlimited">不限</strong>
+          <strong v-else>{{ balance.hours }}<small> 小时</small></strong>
+          <span class="leave-stat-sub">本次 {{ balance.used }} · 剩余 {{ balance.unlimited ? '不限' : balance.remaining }}</span>
         </div>
         <div class="leave-stat">
           <span class="leave-stat-label">本次待申请</span>
@@ -113,7 +114,7 @@
             <el-input v-model="entryReasons[row.id]" :disabled="leave.submitting" maxlength="1000" :placeholder="reasonPlaceholder" :aria-label="`${row.date} 请假事由`" />
           </template></el-table-column>
         </el-table>
-        <p class="leave-muted">{{ plan.balances.map(b => `${b.name} ${b.hours} → ${b.remaining} 小时`).join('；') }}</p>
+        <p class="leave-muted">{{ shownBalances.map(b => b.unlimited ? `${b.name} 本次 ${b.used} 小时（不限）` : `${b.name} ${b.hours} → ${b.remaining} 小时`).join('；') }}</p>
       </template>
       <template #footer><el-button :disabled="leave.submitting" @click="reviewVisible = false">返回核对</el-button><el-button type="primary" :loading="leave.submitting" :disabled="busy || leave.consumed" @click="submit">确认提交</el-button></template>
     </el-dialog>
@@ -150,6 +151,7 @@ if (!options.since) options.since = `${today().slice(0, 7)}-01`
 if (!options.until) options.until = today()
 const range = computed({ get: () => [options.since, options.until], set: (value) => { if (value?.length === 2) [options.since, options.until] = value } })
 const plan = computed(() => leave.plan)
+const shownBalances = computed(() => (plan.value?.balances || []).filter(balance => balance.available !== false))
 const busy = computed(() => leave.running || leave.submitting)
 const reviewVisible = ref(false)
 // 确认弹窗里按条覆盖的请假事由；空值回落「默认事由」。
@@ -327,9 +329,8 @@ async function resolvePending() {
 .leave-empty { text-align: center; color: var(--text-muted); padding: 72px 20px; }
 .leave-empty > .el-icon { font-size: 40px; color: var(--brand-accent); }
 .leave-empty h2 { font-size: 16px; font-weight: 500; color: var(--text-muted); margin: 12px 0 0; }
-.leave-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); }
-.leave-stat { display: flex; flex-direction: column; gap: 6px; padding: 16px 20px; }
-.leave-stat + .leave-stat { border-left: 1px solid var(--line); }
+.leave-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
+.leave-stat { display: flex; flex-direction: column; gap: 6px; padding: 16px 20px; background: var(--surface); }
 .leave-stat-label { color: var(--text-muted); font-size: 13px; }
 .leave-stat strong { font-size: 26px; color: var(--brand-accent); font-variant-numeric: tabular-nums; line-height: 1.1; }
 .leave-stat small { font-size: 13px; font-weight: 400; color: var(--text-muted); }
@@ -353,7 +354,6 @@ async function resolvePending() {
 .leave-review-table :deep(.el-input__wrapper) { box-shadow: 0 0 0 1px var(--line) inset; }
 @media (max-width: 900px) {
   .leave-stats { grid-template-columns: 1fr; }
-  .leave-stat + .leave-stat { border-left: 0; border-top: 1px solid var(--line); }
   .leave-connect { margin-left: 0; }
 }
 </style>

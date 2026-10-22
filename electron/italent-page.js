@@ -109,11 +109,11 @@ async function italentPage(action, options = {}) {
     }])
     const types = sources.find?.((item) => item.fieldName === 'OIdVacationType')?.dataSourceResults
     if (!Array.isArray(types)) throw new Error('北森假期余额无法识别')
-    if (['调休假', '年假'].some((name) => types.filter((item) => item.text === name && String(item.isActive) === '1').length > 1)) throw new Error('存在同名假种，无法确定扣减账户，请在北森核对')
+    if (['调休假', '年假', '事假', '请假'].some((name) => types.filter((item) => item.text === name && String(item.isActive) === '1').length > 1)) throw new Error('存在同名假种，无法确定扣减账户，请在北森核对')
     return { form, data, types }
   }
   function balances(types) {
-    return ['调休假', '年假'].map((name) => {
+    const result = ['调休假', '年假'].map((name) => {
       const type = types.find((item) => item.text === name && String(item.isActive) === '1')
       if (!type) return { name, id: '', hours: 0, available: false }
       let remaining
@@ -124,6 +124,14 @@ async function italentPage(action, options = {}) {
       const hours = Math.round(amounts.reduce((sum, match) => sum + Number(match[1]), 0) * 1000000) / 1000000
       return { name, id: String(type.value), hours, available: true }
     })
+    // 年假用完后改用事假/请假；该假种不设余额上限，平台校验拒绝时由当天阻断兜底。
+    const fallbacks = types.filter((item) => ['事假', '请假'].includes(item.text) && String(item.isActive) === '1')
+    if (fallbacks.length > 1) throw new Error('存在多个候补假种（事假/请假），无法确定扣减账户，请在北森核对')
+    const fallback = fallbacks[0]
+    result.push(fallback
+      ? { name: fallback.text, id: String(fallback.value), hours: null, unlimited: true, available: true }
+      : { name: '事假', id: '', hours: 0, available: false })
+    return result
   }
   if (action === 'read') {
     const source = await list('attendance')

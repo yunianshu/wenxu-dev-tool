@@ -15,9 +15,10 @@ const { DatabaseSync } = require('node:sqlite')
 const NOW = Date.parse('2026-10-15T06:00:00Z')
 const OPTIONS = normalizeOptions({}, NOW)
 const clone = (data) => JSON.parse(JSON.stringify(data))
-const card = (day, time = '09:29:00', rest = {}) => ({ id: `att-${day}`, date: `2026-10-${day}`, firstCard: `2026-10-${day} ${time}`, lastCard: '', dayType: '1', remark: '', ...rest })
+const card = (day, time = '09:10:00', rest = {}) => ({ id: `att-${day}`, date: `2026-10-${day}`, firstCard: `2026-10-${day} ${time}`, lastCard: '', dayType: '1', remark: '', ...rest })
 const leave = (day, rest = {}) => ({ id: `leave-${day}`, typeId: 'comp', typeName: '调休假', start: `2026-10-${day} 08:30`, end: `2026-10-${day} 09:29`, hoursText: '1小时', status: '2', revocation: '未销假', documentType: '1', ...rest })
-const source = (attendance = [card('15')], comp = 1.5, annual = 36.5) => ({ staffId: 'staff-test', staffName: '测试员工', attendance, leaves: [], balances: [{ name: '调休假', id: 'comp', hours: comp, available: true }, { name: '年假', id: 'annual', hours: annual, available: true }] })
+const source = (attendance = [card('15')], comp = 1.5, annual = 36.5, fallback = null) => ({ staffId: 'staff-test', staffName: '测试员工', attendance, leaves: [], balances: [{ name: '调休假', id: 'comp', hours: comp, available: true }, { name: '年假', id: 'annual', hours: annual, available: true }, ...(fallback ? [fallback] : [])] })
+const personal = { name: '事假', id: 'personal', hours: null, unlimited: true, available: true }
 let passed = 0
 async function test(name, run) { await run(); passed++; console.log(`✓ ${name}`) }
 
@@ -34,7 +35,8 @@ function setupService(data = source(), changes = {}) {
       calls.push(key)
       const item = changes.appliedEntries[calls.length - 1]
       data.leaves.push(leave(item.date.slice(-2), { id: `new-${calls.length}`, typeId: item.typeId, typeName: item.typeName, start: item.start, end: item.end, hoursText: `${item.hours}小时` }))
-      data.balances.find(balance => balance.id === item.typeId).hours -= item.hours
+      const balance = data.balances.find(entry => entry.id === item.typeId)
+      if (balance && !balance.unlimited) balance.hours -= item.hours
       return { sent: true }
     },
   }
@@ -50,7 +52,7 @@ function pageFixture({ count = 2, balance = '1.5 小时', applyStatus = 200, app
   let owner = 'staff-test'
   const field = (name, val, label = val) => ({ name, value: val, text: label })
   const metadataField = (name) => ({ cmp_data: { field_name: name, fieldChangeTriggerId: 'trigger-from-platform', datasourcename: 'Attendance.EveryVacationItems', refreshParams: 'StaffId={formData.StaffId}' } })
-  const types = [{ text: '调休假', value: 'comp', isActive: '1', extAttr: { Remain: JSON.stringify([`余额 ${balance}`]) } }, { text: '年假', value: 'annual', isActive: '1', extAttr: { Remain: '["年假 36.5 小时"]' } }]
+  const types = [{ text: '调休假', value: 'comp', isActive: '1', extAttr: { Remain: JSON.stringify([`余额 ${balance}`]) } }, { text: '年假', value: 'annual', isActive: '1', extAttr: { Remain: '["年假 36.5 小时"]' } }, { text: '事假', value: 'personal', isActive: '1' }]
   const fetch = async (input, opts = {}) => {
     const url = new URL(input)
     const query = Object.fromEntries(url.searchParams)
@@ -115,41 +117,61 @@ async function main() {
     assert.deepEqual([OPTIONS.since, OPTIONS.until, OPTIONS.workStart, OPTIONS.workEnd], ['2026-10-01', '2026-10-15', '08:30', '17:30'])
     for (const opts of [{ since: '2026-02-30' }, { until: '2026-10-16' }, { since: '2026-10-16' }, { workStart: '24:00' }, { workEnd: '08:00' }]) assert.throws(() => normalizeOptions(opts, NOW))
   })
-  await test('先舍弃秒数再按半小时进位：29:59、30:59 计 0.5h，31:00 才计 1h', () => {
+  await test('先舍弃秒数，迟到后固定请 8:30–9:00，9:00 后最多余 15 分钟', () => {
     for (const time of ['08:30:01', '08:30:59']) {
       const plan = buildPlan(source([card('15', time)]), OPTIONS)
       assert.equal(plan.totalHours, 0, time)
       assert.equal(plan.rows[0].reason, '未迟到', time)
     }
-    for (const [time, hours, end] of [['08:31:00', 0.5, '08:31'], ['08:48:00', 0.5, '08:48'], ['08:59:59', 0.5, '08:59'], ['09:00:00', 0.5, '09:00'], ['09:00:01', 0.5, '09:00'], ['09:00:59', 0.5, '09:00'], ['09:01:00', 1, '09:01'], ['09:29:59', 1, '09:29'], ['09:30:59', 1, '09:30'], ['09:31:00', 1.5, '09:31']]) {
+    for (const time of ['08:31:00', '08:48:00', '08:59:59', '09:00:00', '09:00:01', '09:00:59', '09:10:00', '09:15:59']) {
       const plan = buildPlan(source([card('15', time)]), OPTIONS)
-      assert.equal(plan.totalHours, hours, time)
-      assert.equal(plan.entries[0].end.slice(11), end, time)
+      assert.equal(plan.totalHours, 0.5, time)
+      assert.equal(plan.entries[0].start.slice(11), '08:30', time)
+      assert.equal(plan.entries[0].end.slice(11), '09:00', time)
       assert.equal(Number.isInteger(plan.rows[0].lateMinutes), true)
     }
+    assert.match(buildPlan(source([card('15', '09:10:00')]), OPTIONS).rows[0].reason, /10 分钟/)
+    for (const time of ['09:16:00', '09:29:59', '10:00:00']) {
+      const plan = buildPlan(source([card('15', time)]), OPTIONS)
+      assert.equal(plan.entries.length, 0, time)
+      assert.equal(plan.rows[0].status, 'blocked', time)
+    }
   })
-  await test('重复覆盖和整天单一假种都使用舍弃秒数后的分钟终点', () => {
+  await test('重复覆盖和整天单一假种仍按固定 0.5 小时请假', () => {
     const data = source([card('15', '09:00:59')], 0.5, 0)
     data.leaves.push(leave('15', { end: '2026-10-15 09:00', hoursText: '0.5小时' }))
     assert.equal(buildPlan(data, OPTIONS).rows[0].status, 'covered')
-    const plan = buildPlan(source([card('15', '09:30:59')], 0.5, 1), OPTIONS)
-    assert.deepEqual(plan.entries.map(item => [item.typeName, item.hours, item.end]), [['年假', 1, '2026-10-15 09:30']])
-    const none = buildPlan(source([card('15', '09:30:59')], 0.5, 0.5), OPTIONS)
+    const plan = buildPlan(source([card('15', '09:10:00')], 0, 1), OPTIONS)
+    assert.deepEqual(plan.entries.map(item => [item.typeName, item.hours, item.end]), [['年假', 0.5, '2026-10-15 09:00']])
+    const none = buildPlan(source([card('15', '09:10:00')], 0.25, 0.25), OPTIONS)
     assert.equal(none.entries.length, 0)
     assert.equal(none.rows[0].reason, '调休假与年假都不足以覆盖当天迟到，先不处理')
+    const fallback = buildPlan(source([card('15', '09:10:00')], 0.25, 0, personal), OPTIONS)
+    assert.deepEqual(fallback.entries.map(item => [item.typeName, item.hours]), [['事假', 0.5]])
   })
-  await test('日期倒序、调休优先、调休不足整天时整天改用年假', () => {
-    const plan = buildPlan(source([card('13'), card('15'), card('14')], 1.5, 1), OPTIONS)
-    assert.deepEqual(plan.entries.map(item => [item.date, item.typeName, item.hours]), [['2026-10-15', '调休假', 1], ['2026-10-14', '年假', 1]])
-    assert.equal(plan.rows[2].status, 'blocked')
-    assert.equal(plan.rows[2].reason, '调休假与年假都不足以覆盖当天迟到，先不处理')
-    assert.equal(plan.balances[0].remaining, 0.5)
+  await test('调休优先给原始迟到较长的日期，再年假，最后请假', () => {
+    const plan = buildPlan(source([card('13', '08:35:00'), card('15', '09:10:00'), card('14', '08:50:00')], 0.5, 0.5, personal), OPTIONS)
+    assert.deepEqual(plan.entries.map(item => [item.date, item.typeName, item.hours]), [['2026-10-15', '调休假', 0.5], ['2026-10-14', '年假', 0.5], ['2026-10-13', '事假', 0.5]])
+    assert.deepEqual(plan.rows.map(item => item.status), ['ready', 'ready', 'ready'])
+    assert.equal(plan.balances[0].remaining, 0)
     assert.equal(plan.balances[1].remaining, 0)
+    assert.equal(plan.balances[2].remaining, null)
   })
-  await test('不足半小时余额不挪用，单日不足整日阻止并保留余额', () => {
-    const plan = buildPlan(source([card('15'), card('14', '08:48:00')], 0.75, 0), OPTIONS)
-    assert.equal(plan.rows[0].status, 'blocked')
-    assert.equal(plan.rows[1].status, 'ready')
+  await test('每月最多 5 次迟到，9:00 后余量合计不超过 50 分钟', () => {
+    const six = ['10', '11', '12', '13', '14', '15'].map(day => card(day, '09:10:00'))
+    const capped = buildPlan(source(six, 10, 10, personal), OPTIONS)
+    assert.equal(capped.entries.length, 5)
+    assert.equal(capped.rows.find(item => item.date === '2026-10-10').status, 'blocked')
+    assert.match(capped.rows.find(item => item.date === '2026-10-10').reason, /本月最多处理 5 次/)
+    const heavy = ['10', '11', '12', '13', '14'].map(day => card(day, '09:15:00'))
+    const grace = buildPlan(source(heavy, 10, 10, personal), OPTIONS)
+    assert.equal(grace.entries.length, 3)
+    assert.match(grace.rows.find(item => item.date === '2026-10-11').reason, /超过 50 分钟/)
+  })
+  await test('单日余额不足时不挪用零头，余额保留给下一笔', () => {
+    const plan = buildPlan(source([card('15', '09:10:00'), card('14', '08:48:00')], 0.75, 0), OPTIONS)
+    assert.equal(plan.rows[0].status, 'ready')
+    assert.equal(plan.rows[1].status, 'blocked')
     assert.equal(plan.totalHours, 0.5)
     assert.equal(plan.balances[0].remaining, 0.25)
   })
@@ -163,9 +185,9 @@ async function main() {
     assert.equal(buildPlan(data, OPTIONS).rows[0].status, 'covered')
     data.leaves[0].status = '1'
     assert.equal(buildPlan(data, OPTIONS).rows[0].status, 'covered')
-    data.leaves[0].end = '2026-10-15 09:00'
+    data.leaves[0].end = '2026-10-15 08:50'
     assert.equal(buildPlan(data, OPTIONS).rows[0].status, 'blocked')
-    data.leaves.push(leave('15', { id: 'second', start: '2026-10-15 09:00' }))
+    data.leaves.push(leave('15', { id: 'second', start: '2026-10-15 08:50', end: '2026-10-15 09:00' }))
     assert.equal(buildPlan(data, OPTIONS).rows[0].status, 'covered')
     data.leaves.forEach(item => { item.status = '3' })
     assert.equal(buildPlan(data, OPTIONS).rows[0].status, 'ready')
@@ -195,7 +217,7 @@ async function main() {
     env.data.attendance[0].lastCard = '2026-10-15 18:30:00'
     const result = await env.service.submit({ planId: plan.id, confirmed: true, entries: [{ hours: 100 }] })
     assert.equal(result.completed, true)
-    assert.equal(env.data.leaves[0].hoursText, '1小时')
+    assert.equal(env.data.leaves[0].hoursText, '0.5小时')
     assert.deepEqual(env.ledger.load(), [])
     await assert.rejects(env.service.submit({ planId: plan.id, confirmed: true }), /变化/)
   })
@@ -254,7 +276,7 @@ async function main() {
     assert.equal(uncertain.plan.unresolved.length, 1)
     assert.equal(uncertain.plan.unresolved[0].message, '提交连接中断')
     assert.equal(uncertain.plan.entries.length, 0)
-    env.data.leaves.push(leave('15'))
+    env.data.leaves.push(leave('15', { end: '2026-10-15 09:00', hoursText: '0.5小时' }))
     const reconciled = await env.service.plan({})
     assert.equal(reconciled.plan.unresolved.length, 0)
     assert.equal(reconciled.plan.rows[0].status, 'covered')
@@ -276,7 +298,7 @@ async function main() {
     assert.equal(second.unresolved[0].canRetry, true)
     assert.match(second.unresolved[0].message, /旧版/)
     const input = { planId: second.id, markerId: second.unresolved[0].id, confirmedMissing: true }
-    env.data.leaves.push(leave('15', { end: '2026-10-15 09:00', hoursText: '0.5小时' }))
+    env.data.leaves.push(leave('15', { end: '2026-10-15 09:00' }))
     await assert.rejects(env.service.resolve(input), /重叠申请/)
     assert.equal(env.ledger.load().length, 1)
     env.data.leaves = []
@@ -327,7 +349,8 @@ async function main() {
     const fixture = pageFixture({ count: 101 })
     const data = await fixture.run('read', OPTIONS)
     assert.equal(data.attendance.length, 101)
-    assert.deepEqual(Array.from(data.balances, item => item.hours), [1.5, 36.5])
+    assert.deepEqual(Array.from(data.balances, item => item.hours), [1.5, 36.5, null])
+    assert.deepEqual(Array.from(data.balances, item => [item.name, item.available, item.unlimited === true]), [['调休假', true, false], ['年假', true, false], ['事假', true, true]])
     const pages = fixture.calls.filter(item => item.path.endsWith('/TableList') && item.query.metaObjName === 'Attendance.AttendanceStatistics')
     assert.deepEqual(pages.map(item => item.body.table_data.paging.page), [0, 1])
     assert.equal(pages[1].body.table_data.ext_data.SortCursor, 'cursor-from-platform')
@@ -344,7 +367,7 @@ async function main() {
     const entry = buildPlan(source(), OPTIONS).entries[0]
     const prepared = await fixture.run('prepare', { entry, staffId: 'staff-test', reason: '测试事由' })
     assert.equal(fixture.calls.filter(item => item.path.endsWith('/ApplyVacation')).length, 0)
-    assert.equal(prepared.hours, 1)
+    assert.equal(prepared.hours, 0.5)
     await assert.rejects(fixture.run('apply', { key: prepared.key }), /确认/)
     await fixture.run('apply', { key: prepared.key, confirmed: true, staffId: 'staff-test' })
     await assert.rejects(fixture.run('apply', { key: prepared.key, confirmed: true }), /失效/)
@@ -352,12 +375,20 @@ async function main() {
     assert.equal(applies.length, 1)
     const fields = Object.fromEntries(applies[0].body.metaFields.map(item => [item.name, item.value]))
     assert.equal(fields.VacationStartDateTime, '2026/10/15 08:30')
-    assert.equal(fields.VacationStopDateTime, '2026/10/15 09:29')
-    assert.equal(fields.VacationDurationIncludeUnit, '1小时')
+    assert.equal(fields.VacationStopDateTime, '2026/10/15 09:00')
+    assert.equal(fields.VacationDurationIncludeUnit, '0.5小时')
     assert.equal(fields.Description, '测试事由')
     assert.equal(fields.StaffId, 'staff-test')
     assert.equal('_id' in fields, false, '内部新建 ID 不得作为表单字段发送')
     assert.equal('IsFirst' in fields, false, '只提交表单绑定字段')
+  })
+  await test('事假兜底使用平台假种 ID 与名称，准备仍按 0.5 小时校验', async () => {
+    const fixture = pageFixture()
+    const entry = buildPlan(source([card('15')], 0.25, 0, personal), OPTIONS).entries[0]
+    assert.deepEqual([entry.typeName, entry.typeId, entry.hours], ['事假', 'personal', 0.5])
+    const prepared = await fixture.run('prepare', { entry, staffId: 'staff-test' })
+    assert.deepEqual([prepared.typeId, prepared.hours], ['personal', 0.5])
+    assert.equal(fixture.calls.filter(item => item.path.endsWith('/ApplyVacation')).length, 0)
   })
   await test('提交时账号切换和平台时长偏差均不写入', async () => {
     const fixture = pageFixture(); const entry = buildPlan(source(), OPTIONS).entries[0]
