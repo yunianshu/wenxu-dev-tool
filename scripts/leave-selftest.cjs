@@ -134,7 +134,7 @@ async function main() {
       assert.equal(plan.rows[0].reason, '待确认', time)
     }
     assert.match(buildPlan(source([card('15', '09:10:00')]), OPTIONS).rows[0].reason, /09:00 后仍有 10 分钟迟到，计入本月额度/)
-    for (const [time, hours, end] of [['09:15:59', 0.5, '09:00'], ['09:16:00', 1, '09:30'], ['09:29:59', 1, '09:30'], ['09:31:00', 1.5, '10:00'], ['09:59:00', 1.5, '10:00'], ['10:00:00', 1.5, '10:00'], ['10:05:00', 2, '10:30'], ['10:16:00', 2, '10:30'], ['10:31:00', 2.5, '11:00']]) {
+    for (const [time, hours, end] of [['09:15:59', 0.5, '09:00'], ['09:16:00', 1, '09:30'], ['09:29:59', 1, '09:30'], ['09:31:00', 1.5, '10:00'], ['09:59:00', 1.5, '10:00'], ['10:00:00', 1.5, '10:00'], ['10:05:00', 2, '10:30'], ['10:16:00', 2, '10:30'], ['10:31:00', 2.5, '11:00'], ['11:59:00', 3.5, '12:00'], ['12:15:00', 3.5, '12:00'], ['13:00:00', 3.5, '12:00'], ['13:30:00', 4, '13:30'], ['14:30:00', 5, '14:30'], ['16:40:00', 7.5, '17:00'], ['17:29:59', 8, '17:30']]) {
       const plan = buildPlan(source([card('15', time)]), OPTIONS)
       assert.deepEqual([plan.totalHours, plan.entries[0].end.slice(11)], [hours, end], time)
     }
@@ -158,6 +158,9 @@ async function main() {
     const split = buildPlan(source([card('15', '10:05:00')], 1, 1), OPTIONS)
     assert.deepEqual(split.entries.map(item => [item.typeName, item.start.slice(11), item.end.slice(11), item.hours]), [['调休假', '08:30', '09:30', 1], ['年假', '09:30', '10:30', 1]])
     assert.match(split.rows[0].reason, /分段拼够/)
+    // 跨午休拆分：分段终点按有效工时推进，第二段跳过 12:00–13:00。
+    const lunch = buildPlan(source([card('15', '14:30:00')], 2, 3), OPTIONS)
+    assert.deepEqual(lunch.entries.map(item => [item.typeName, item.start.slice(11), item.end.slice(11), item.hours]), [['调休假', '08:30', '10:30', 2], ['年假', '10:30', '14:30', 3]])
     const both = buildPlan(source([card('15', '10:05:00')], 0.5, 0), OPTIONS)
     assert.equal(both.entries.length, 0)
     assert.equal(both.rows[0].reason, '调休假与年假合计不足以覆盖当天请假时长，先不处理')

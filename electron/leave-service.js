@@ -6,13 +6,26 @@ const MINUTE = 60000
 const PLAN_TTL = 10 * MINUTE
 // 迟到请假口径：08:30–08:45 的迟到优先走每月 5 次/50 分钟额度，额度不够才请 0.5 小时；
 // 08:46–09:15 请上班后 0.5 小时（09:00 后余量计入额度，不足升级为覆盖到岗的整段请假）；
-// 09:16 起一律按到达时刻向上取整到半小时请假，不设上限、不计迟到。
+// 09:16 起一律按到达时刻向上取整到半小时请假，一天最多 8 小时，超出部分不再多请。
 // 假种按天级联：调休 → 年假 → 调休+年假分段拼够；两者合计不足则该日先不处理。
 const LEAVE_BLOCK = 30 * MINUTE
 const EARLY_TOLERANCE = 15 * MINUTE
 const LATE_GRACE = 15 * MINUTE
 const MAX_TOLERATED_DAYS_PER_MONTH = 5
 const MAX_TOLERATED_MINUTES_PER_MONTH = 50
+const MAX_LEAVE_HOURS_PER_DAY = 8
+// 午休 12:00–13:00 不计入请假时长：跨午休的请假按有效工时计算时长与终点。
+const LUNCH = ['12:00', '13:00']
+const lunchOverlap = (a, b, ls, le) => Math.max(0, Math.min(b, le) - Math.max(a, ls))
+const effectiveMs = (a, b, ls, le) => Math.max(0, b - a - lunchOverlap(a, b, ls, le))
+/** 从 from 起累计 ms 有效工时对应的墙钟时刻（跨午休自动跳过）。 */
+const advanceMs = (from, ms, ls, le) => {
+  if (from >= le) return from + ms
+  const base = from >= ls ? le : from
+  const morningLeft = Math.max(0, ls - base)
+  if (ms <= morningLeft) return base + ms
+  return le + (ms - morningLeft)
+}
 const stamp = (s) => {
   const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(String(s || ''))
   if (!match) return NaN
@@ -93,14 +106,17 @@ function buildPlan(source, options, blocked = {}, banned = new Set()) {
     if (/(?:假|出差|外出|补签)/.test(record.remark || '')) { row.status = 'blocked'; row.reason = '考勤备注已有相关申请，需手动核对'; continue }
     if (blocked[record.date]) { row.status = 'blocked'; row.reason = blocked[record.date]; continue }
     // 08:30–08:45 优先走每月迟到额度；08:46–09:15 请 0.5 小时（09:00 后余量计入额度）；
-    // 09:16 起按到达时刻向上取整到半小时请假，不设上限、不计迟到。
+    // 09:16 起按有效迟到（扣除午休）向上取整到半小时请假，一天最多 8 小时。
+    const ls = stamp(`${record.date} ${LUNCH[0]}`)
+    const le = stamp(`${record.date} ${LUNCH[1]}`)
     const firstWindowEnd = start + EARLY_TOLERANCE
     const mandatory = first > firstWindowEnd
     const longLeave = first > graceEnd
-    const hours = longLeave ? Math.ceil((first - start) / LEAVE_BLOCK) / 2 : 0.5
+    const rawHours = longLeave ? Math.ceil(effectiveMs(start, first, ls, le) / LEAVE_BLOCK) / 2 : 0.5
     row.leaveStart = formatStamp(start)
-    row.leaveEnd = formatStamp(longLeave ? start + hours * 60 * MINUTE : leaveEnd)
-    row.hours = hours
+    row.hours = Math.min(rawHours, MAX_LEAVE_HOURS_PER_DAY)
+    row.cappedDay = rawHours > MAX_LEAVE_HOURS_PER_DAY
+    row.leaveEnd = formatStamp(advanceMs(start, row.hours * 60 * MINUTE, ls, le))
     row.mandatory = mandatory
     row.graceMinutes = mandatory && !longLeave ? Math.max(0, (first - leaveEnd) / MINUTE) : 0
     row.status = 'candidate'
@@ -151,6 +167,8 @@ function buildPlan(source, options, blocked = {}, banned = new Set()) {
     [comp], [annual], [comp, annual],
   ]
   const allocate = (row) => {
+    const ls = stamp(`${row.date} ${LUNCH[0]}`)
+    const le = stamp(`${row.date} ${LUNCH[1]}`)
     for (const strategy of strategies) {
       if (strategy.some((balance) => banned.has(`${row.date}|${balance.id}`))) continue
       const available = strategy.reduce((sum, balance) => sum + balance.usable - balance.used, 0)
@@ -161,7 +179,7 @@ function buildPlan(source, options, blocked = {}, banned = new Set()) {
         const take = Math.min(balance.usable - balance.used, remaining)
         if (take <= 0) continue
         balance.used = Math.round((balance.used + take) * 1000000) / 1000000
-        const segmentEnd = cursor + take * 60 * MINUTE
+        const segmentEnd = advanceMs(cursor, take * 60 * MINUTE, ls, le)
         row.allocations.push({ id: `${row.date}:${balance.id}`, date: row.date, firstCard: row.firstCard, start: formatStamp(cursor), end: formatStamp(segmentEnd), hours: take, typeId: balance.id, typeName: balance.name })
         cursor = segmentEnd
         remaining = Math.round((remaining - take) * 1000000) / 1000000
@@ -169,9 +187,10 @@ function buildPlan(source, options, blocked = {}, banned = new Set()) {
       row.status = 'ready'
       row.reason = row.upgraded ? `本月迟到额度不足，改请 ${row.hours} 小时`
         : row.graceMinutes ? `${row.leaveEnd.slice(11)} 后仍有 ${row.graceMinutes} 分钟迟到，计入本月额度`
-          : row.allocations.length > 1 ? '调休不足，与年假分段拼够'
-            : row.hours > 0.5 ? `${row.leaveStart.slice(11)}–${row.leaveEnd.slice(11)} 请 ${row.hours} 小时`
-              : '待确认'
+          : row.cappedDay ? '一天最多请 8 小时，已按 8 小时申请'
+            : row.allocations.length > 1 ? '调休不足，与年假分段拼够'
+              : row.hours > 0.5 ? `${row.leaveStart.slice(11)}–${row.leaveEnd.slice(11)} 请 ${row.hours} 小时`
+                : '待确认'
       return true
     }
     return false
