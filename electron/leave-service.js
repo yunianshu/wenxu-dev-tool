@@ -5,14 +5,14 @@ const { randomUUID, createHash } = require('node:crypto')
 const MINUTE = 60000
 const PLAN_TTL = 10 * MINUTE
 // 迟到请假口径：08:30–08:45 的迟到优先走每月 5 次/50 分钟额度，额度不够才请 0.5 小时；
-// 超过 08:45 必须请假：08:46–09:15 请上班后 0.5 小时（09:00 后余量计入额度，不足升级 1 小时），
-// 09:16 起按到达时刻向上取整到半小时请假；请假最多到 10:00，10:00 后的到岗分钟计入迟到额度。
+// 08:46–09:15 请上班后 0.5 小时（09:00 后余量计入额度，不足升级为覆盖到岗的整段请假）；
+// 09:16 起一律按到达时刻向上取整到半小时请假，不设上限、不计迟到。
+// 假种按天级联：调休 → 年假 → 调休+年假分段拼够；两者合计不足则该日先不处理。
 const LEAVE_BLOCK = 30 * MINUTE
 const EARLY_TOLERANCE = 15 * MINUTE
 const LATE_GRACE = 15 * MINUTE
 const MAX_TOLERATED_DAYS_PER_MONTH = 5
 const MAX_TOLERATED_MINUTES_PER_MONTH = 50
-const LEAVE_CAP = '10:00'
 const stamp = (s) => {
   const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(String(s || ''))
   if (!match) return NaN
@@ -93,21 +93,16 @@ function buildPlan(source, options, blocked = {}, banned = new Set()) {
     if (/(?:假|出差|外出|补签)/.test(record.remark || '')) { row.status = 'blocked'; row.reason = '考勤备注已有相关申请，需手动核对'; continue }
     if (blocked[record.date]) { row.status = 'blocked'; row.reason = blocked[record.date]; continue }
     // 08:30–08:45 优先走每月迟到额度；08:46–09:15 请 0.5 小时（09:00 后余量计入额度）；
-    // 09:16 起按到达时刻向上取整到半小时请假；请假封顶 10:00，之后的到岗分钟计入迟到额度。
-    const cap = stamp(`${record.date} ${LEAVE_CAP}`)
-    const capped = first > cap
+    // 09:16 起按到达时刻向上取整到半小时请假，不设上限、不计迟到。
     const firstWindowEnd = start + EARLY_TOLERANCE
     const mandatory = first > firstWindowEnd
     const longLeave = first > graceEnd
-    const hours = capped ? Math.max(0.5, (cap - start) / LEAVE_BLOCK / 2) : longLeave ? Math.ceil((first - start) / LEAVE_BLOCK) / 2 : 0.5
+    const hours = longLeave ? Math.ceil((first - start) / LEAVE_BLOCK) / 2 : 0.5
     row.leaveStart = formatStamp(start)
-    row.leaveEnd = formatStamp(capped ? cap : longLeave ? start + hours * 60 * MINUTE : leaveEnd)
+    row.leaveEnd = formatStamp(longLeave ? start + hours * 60 * MINUTE : leaveEnd)
     row.hours = hours
     row.mandatory = mandatory
-    row.capped = capped
-    row.graceMinutes = capped ? (first - cap) / MINUTE : (mandatory && !longLeave ? Math.max(0, (first - leaveEnd) / MINUTE) : 0)
-    // 10:00 后的余量同样不能超过 15 分钟；超过则额度也计不下，留人工核对。
-    if (row.graceMinutes > LATE_GRACE / MINUTE) { row.status = 'blocked'; row.reason = `到岗超过 ${LEAVE_CAP} 仍多于 15 分钟，需手动核对`; continue }
+    row.graceMinutes = mandatory && !longLeave ? Math.max(0, (first - leaveEnd) / MINUTE) : 0
     row.status = 'candidate'
     candidates.push(row)
   }
@@ -123,11 +118,9 @@ function buildPlan(source, options, blocked = {}, banned = new Set()) {
     months.set(month, used)
     return true
   }
-  // 09:00–09:15 与 10:00 后的余量优先占用额度；额度不足时，10:00 前可升级为
-  // 覆盖到岗时刻的整段请假，已封顶 10:00 的只能阻断（不能再延长请假）。
+  // 09:00–09:15 的余量优先占用额度；额度不足时升级为覆盖到岗时刻的整段请假。
   for (const row of candidates.filter((item) => item.mandatory && item.graceMinutes > 0)) {
     if (spend(row, row.graceMinutes)) { row.requiresLeave = true; continue }
-    if (row.capped) { row.status = 'blocked'; row.reason = '本月迟到额度不足，且请假最多到 10:00，需手动核对'; continue }
     const start = stamp(`${row.date} ${options.workStart}`)
     const first = minuteStamp(row.firstCard)
     row.hours = Math.ceil((first - start) / LEAVE_BLOCK) / 2
@@ -149,41 +142,44 @@ function buildPlan(source, options, blocked = {}, banned = new Set()) {
     row.requiresLeave = true
   }
   for (const row of candidates.filter((item) => item.mandatory && item.graceMinutes === 0)) row.requiresLeave = true
-  // 调休优先给原始迟到时间较长的日期，短迟到留给年假/请假；同一天只用一个假种。
+  // 假种按天级联：整段调休 → 整段年假 → 调休+年假按时间分段拼够；合计不足该日先不处理。
+  // 分段按半小时边界切（余额可用量向下取整到 0.5 小时），段与段首尾相接。
   const comp = balances.find((item) => item.name === '调休假')
   const annual = balances.find((item) => item.name === '年假')
-  const fallback = balances.find((item) => item.unlimited && item.available !== false)
   const leaveRows = candidates.filter((row) => row.requiresLeave && row.status === 'candidate')
-  const assign = (row, balance) => {
-    const entry = { id: `${row.date}:${balance.id}`, date: row.date, firstCard: row.firstCard, start: row.leaveStart, end: row.leaveEnd, hours: row.hours, typeId: balance.id, typeName: balance.name }
-    balance.used += row.hours
-    row.allocations.push(entry)
-    row.status = 'ready'
-    row.reason = row.upgraded ? `本月迟到额度不足，改请 ${row.hours} 小时`
-      : row.graceMinutes ? `${row.leaveEnd.slice(11)} 后仍有 ${row.graceMinutes} 分钟迟到，计入本月额度`
-        : row.hours > 0.5 ? `${row.leaveStart.slice(11)}–${row.leaveEnd.slice(11)} 请 ${row.hours} 小时`
-          : '待确认'
-  }
-  for (const row of [...leaveRows].sort((a, b) => b.lateMinutes - a.lateMinutes || b.date.localeCompare(a.date))) {
-    if (banned.has(`${row.date}|${comp.id}`)) continue
-    if (comp.usable - comp.used + 1e-8 < row.hours) continue
-    assign(row, comp)
+  const strategies = [
+    [comp], [annual], [comp, annual],
+  ]
+  const allocate = (row) => {
+    for (const strategy of strategies) {
+      if (strategy.some((balance) => banned.has(`${row.date}|${balance.id}`))) continue
+      const available = strategy.reduce((sum, balance) => sum + balance.usable - balance.used, 0)
+      if (available + 1e-8 < row.hours) continue
+      let remaining = row.hours
+      let cursor = stamp(row.leaveStart)
+      for (const balance of strategy) {
+        const take = Math.min(balance.usable - balance.used, remaining)
+        if (take <= 0) continue
+        balance.used = Math.round((balance.used + take) * 1000000) / 1000000
+        const segmentEnd = cursor + take * 60 * MINUTE
+        row.allocations.push({ id: `${row.date}:${balance.id}`, date: row.date, firstCard: row.firstCard, start: formatStamp(cursor), end: formatStamp(segmentEnd), hours: take, typeId: balance.id, typeName: balance.name })
+        cursor = segmentEnd
+        remaining = Math.round((remaining - take) * 1000000) / 1000000
+      }
+      row.status = 'ready'
+      row.reason = row.upgraded ? `本月迟到额度不足，改请 ${row.hours} 小时`
+        : row.graceMinutes ? `${row.leaveEnd.slice(11)} 后仍有 ${row.graceMinutes} 分钟迟到，计入本月额度`
+          : row.allocations.length > 1 ? '调休不足，与年假分段拼够'
+            : row.hours > 0.5 ? `${row.leaveStart.slice(11)}–${row.leaveEnd.slice(11)} 请 ${row.hours} 小时`
+              : '待确认'
+      return true
+    }
+    return false
   }
   for (const row of leaveRows) {
-    if (row.allocations.length) continue
-    if (banned.has(`${row.date}|${annual.id}`)) continue
-    if (annual.usable - annual.used + 1e-8 < row.hours) continue
-    assign(row, annual)
-  }
-  for (const row of leaveRows) {
-    if (row.allocations.length) continue
-    if (!fallback || banned.has(`${row.date}|${fallback.id}`)) continue
-    assign(row, fallback)
-  }
-  for (const row of leaveRows) {
-    if (row.allocations.length) continue
+    if (allocate(row)) continue
     row.status = 'blocked'
-    row.reason = fallback ? '调休假、年假与请假都不足以覆盖当天请假时长，先不处理' : '调休假与年假都不足以覆盖当天请假时长，先不处理'
+    row.reason = '调休假与年假合计不足以覆盖当天请假时长，先不处理'
   }
   return {
     staffId: source.staffId, staffName: source.staffName, options, rows,
@@ -333,9 +329,7 @@ class LeaveService {
           const current = await this.adapter.read(options)
           if (current.staffId !== plan.staffId || minuteStamp(current.attendance.find((item) => item.date === result.date)?.firstCard) !== minuteStamp(result.firstCard)) throw new Error('登录账号或首打卡发生变化，请重新生成方案')
           if (current.leaves.some((leave) => activeLeave(leave) && overlap(stamp(result.start), stamp(result.end), stamp(leave.start), stamp(leave.end)))) throw new Error('该时段已有请假申请，请重新生成方案')
-          const balance = current.balances.find((item) => item.id === result.typeId)
-          if (!balance) throw new Error('假期余额已变化，请重新生成方案')
-          if (!balance.unlimited && (balance.hours ?? -1) < result.hours) throw new Error('假期余额已不足，请重新生成方案')
+          if ((current.balances.find((item) => item.id === result.typeId)?.hours ?? -1) < result.hours) throw new Error('假期余额已不足，请重新生成方案')
           const prepared = await this.adapter.prepare({ staffId: plan.staffId, entry: result, reason: reasons[result.id] || options.reason })
           this.verifyPrepared(result, prepared)
           const marker = { key, staffId: plan.staffId, typeId: result.typeId, date: result.date, typeName: result.typeName, start: result.start, end: result.end, hours: result.hours, at: new Date(this.now()).toISOString() }
