@@ -4,7 +4,7 @@ const vm = require('node:vm')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const { LeaveService, createFileLedger, buildPlan, normalizeOptions, stamp } = require('../electron/leave-service')
+const { LeaveService, createFileLedger, createPlanStore, buildPlan, normalizeOptions, stamp } = require('../electron/leave-service')
 const { italentPage } = require('../electron/italent-page')
 const { ItalentBrowser } = require('../electron/italent-browser')
 const { ItalentEmbedded, ItalentBookmarklet } = require('../electron/italent-embedded')
@@ -22,7 +22,7 @@ const source = (attendance = [card('15')], comp = 1.5, annual = 36.5, withPerson
 let passed = 0
 async function test(name, run) { await run(); passed++; console.log(`✓ ${name}`) }
 
-function setupService(data = source(), changes = {}) {
+function setupService(data = source(), changes = {}, planStore = { load: () => null, save() {}, clear() {} }) {
   let stored = []
   const calls = []
   const preparedReasons = []
@@ -41,7 +41,7 @@ function setupService(data = source(), changes = {}) {
     },
   }
   const ledger = { load: () => clone(stored), save: (rows) => { stored = clone(rows) } }
-  const service = new LeaveService({ adapter, ledger, now: () => NOW, pause: async () => {} })
+  const service = new LeaveService({ adapter, ledger, planStore, now: () => NOW, pause: async () => {} })
   return { service, adapter, data, calls, changes, ledger, preparedReasons }
 }
 
@@ -184,9 +184,13 @@ async function main() {
     assert.deepEqual([b.hours, b.remainingLate, b.allocations[0].end.slice(11)], [1, 0, '09:30'])
     const noResidual = buildPlan(source([card('15', '09:00:00')], 10), OPTIONS, {}, new Set(), { '2026-10-15': { countLate: false } })
     assert.deepEqual([noResidual.rows[0].hours, noResidual.rows[0].allocations[0].end.slice(11)], [1, '09:30'])
-    const exceeded = buildPlan(source(['10', '11', '12', '13', '14', '15'].map(day => card(day, '08:40:00')), 10), OPTIONS, {}, new Set(), Object.fromEntries(['10', '11', '12', '13', '14', '15'].map(day => [`2026-10-${day}`, { countLate: true }])))
-    assert.equal(exceeded.quotaExceeded, true)
-    assert.equal(exceeded.rows.find(item => item.date === '2026-10-10').quotaExceeded, true)
+    // 三条件同时成立：手动全勾也只能计 5 次，第 6 次自动改为多请 0.5 小时。
+    const forced = buildPlan(source(['10', '11', '12', '13', '14', '15'].map(day => card(day, '08:40:00')), 10), OPTIONS, {}, new Set(), Object.fromEntries(['10', '11', '12', '13', '14', '15'].map(day => [`2026-10-${day}`, { countLate: true }])))
+    const sixth = forced.rows.find(item => item.date === '2026-10-10')
+    assert.deepEqual([forced.quota['2026-10'].days, forced.quota['2026-10'].minutes, forced.quotaLimits], [5, 50, { days: 5, minutes: 50 }])
+    assert.equal(sixth.countLate, false)
+    assert.deepEqual([sixth.hours, sixth.remainingLate], [0.5, 0])
+    assert.match(sixth.reason, /不计算迟到/)
   })
   await test('replan 按天调整计算迟到与假种，提交使用调整后的方案', async () => {
     const env = setupService(source([card('15', '08:43:00'), card('14', '09:10:00')], 10))
@@ -207,10 +211,36 @@ async function main() {
     assert.equal(result.completed, true)
     assert.deepEqual(result.results.map(item => [item.date, item.typeName]), [['2026-10-15', '调休假'], ['2026-10-14', '事假']])
   })
-  await test('指定假种余额不足时阻断当天，避免超扣', () => {
+  await test('指定假种余额不足时自动回退级联，调休与年假都不超扣', () => {
     const plan = buildPlan(source([card('15', '09:10:00')], 0, 10), OPTIONS, {}, new Set(), { '2026-10-15': { typeId: 'comp' } })
-    assert.equal(plan.rows[0].status, 'blocked')
-    assert.match(plan.rows[0].reason, /余额不足/)
+    assert.equal(plan.rows[0].status, 'ready')
+    assert.deepEqual(plan.rows[0].allocations.map(item => [item.typeName, item.hours]), [['年假', 0.5]])
+    assert.match(plan.rows[0].reason, /调休.*不足，自动改用/)
+    // 取消“计算迟到”多请 0.5 小时后，指定假种不够同样回退并分段。
+    const grown = buildPlan(source([card('15', '09:10:00')], 0.5, 0.5), OPTIONS, {}, new Set(), { '2026-10-15': { typeId: 'comp', countLate: false } })
+    assert.equal(grown.rows[0].status, 'ready')
+    assert.deepEqual(grown.rows[0].allocations.map(item => [item.typeName, item.hours]), [['调休假', 0.5], ['年假', 0.5]])
+  })
+  await test('方案留存与恢复：重启后台后直接提交，提交后留存清除', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'leave-plan-store-'))
+    try {
+      const store = createPlanStore(directory)
+      const env = setupService(source([card('15')]), {}, store)
+      const { plan } = await env.service.plan({})
+      // 模拟后台重启：同一留存目录上的新服务实例。
+      const reborn = setupService(env.data, { appliedEntries: [{ ...plan.entries[0], date: '2026-10-15' }] }, createPlanStore(directory))
+      const restored = await reborn.service.restore()
+      assert.equal(restored.plan.id, plan.id)
+      assert.deepEqual(restored.plan.entries.map(item => [item.date, item.typeName]), [['2026-10-15', plan.entries[0].typeName]])
+      const adjusted = await reborn.service.replan({ planId: restored.plan.id, overrides: { '2026-10-15': { countLate: false } } })
+      assert.equal(adjusted.plan.entries[0].hours, 1, '恢复后仍可调整计算迟到')
+      reborn.changes.appliedEntries = adjusted.plan.entries
+      const result = await reborn.service.submit({ planId: restored.plan.id, confirmed: true })
+      assert.equal(result.completed, true)
+      assert.equal((await setupService(env.data, {}, createPlanStore(directory)).service.restore()).plan, null, '提交后留存清除')
+    } finally {
+      fs.rmSync(fs.realpathSync(directory), { recursive: true, force: true })
+    }
   })
   await test('每月迟到额度：最多 5 次、合计 50 分钟，额度不足改为请假', () => {
     const six = buildPlan(source(['10', '11', '12', '13', '14', '15'].map(day => card(day, '08:40:00')), 10), OPTIONS)

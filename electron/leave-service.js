@@ -122,17 +122,14 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
     row.status = 'candidate'
     candidates.push(row)
   }
-  // 每月迟到额度：最多 5 次、合计 50 分钟。默认额度够就计算迟到（少请假），
-  // 不够就多请 0.5 小时覆盖；用户显式选择“计算迟到”时不自动改，只标记超额。
+  // 每月迟到额度三条件同时成立：最多 5 次、合计 50 分钟、每次 ≤15 分钟（窗口已保证）。
+  // 默认额度够就计算迟到（少请假）；不够（含用户手动勾选）一律强制多请 0.5 小时，不产生超额方案。
   const quota = new Map()
-  const quotaFor = (month) => quota.get(month) || { days: 0, minutes: 0, exceeded: false }
-  const tryConsume = (row, warn) => {
+  const quotaFor = (month) => quota.get(month) || { days: 0, minutes: 0 }
+  const tryConsume = (row) => {
     const month = row.date.slice(0, 7)
     const used = quotaFor(month)
-    if (used.days + 1 > MAX_TOLERATED_DAYS_PER_MONTH || used.minutes + row.residualLate > MAX_TOLERATED_MINUTES_PER_MONTH) {
-      if (warn) { used.exceeded = true; row.quotaExceeded = true; quota.set(month, used) }
-      return false
-    }
+    if (used.days + 1 > MAX_TOLERATED_DAYS_PER_MONTH || used.minutes + row.residualLate > MAX_TOLERATED_MINUTES_PER_MONTH) return false
     used.days += 1
     used.minutes += row.residualLate
     quota.set(month, used)
@@ -144,13 +141,10 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
   const explicitRows = residualRows.filter(explicit).sort(byDate)
   const graceRows = residualRows.filter((row) => !explicit(row) && row.residualKind === 'grace').sort(byDate)
   const earlyRows = residualRows.filter((row) => !explicit(row) && row.residualKind === 'early').sort(byDate)
-  for (const row of explicitRows) {
-    row.countLate = overrides[row.date].countLate
-    if (row.countLate) tryConsume(row, true)
-  }
-  for (const row of [...graceRows, ...earlyRows]) row.countLate = tryConsume(row, false)
+  for (const row of explicitRows) row.countLate = overrides[row.date].countLate && tryConsume(row)
+  for (const row of [...graceRows, ...earlyRows]) row.countLate = tryConsume(row)
   for (const row of candidates) {
-    if (typeof overrides[row.date]?.countLate === 'boolean') row.countLate = overrides[row.date].countLate
+    if (typeof overrides[row.date]?.countLate === 'boolean') row.countLate = row.countLate === true
     else if (typeof row.countLate !== 'boolean') row.countLate = true
   }
   const startOf = (row) => stamp(`${row.date} ${options.workStart}`)
@@ -166,7 +160,6 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
       row.reason = `15 分钟内迟到 ${row.lateMinutes} 分钟，计入本月迟到额度，不申请`
     }
   }
-  const quotaExceeded = [...quota.values()].some((item) => item.exceeded)
   // 假种按天级联：整段调休 → 整段年假 → 调休+年假拼够 → 事假补差额；
   // 用户可在 overrides 里指定单日假种（余额不足则阻断）。分段按有效工时首尾相接。
   const comp = balances.find((item) => item.name === '调休假')
@@ -183,8 +176,8 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
     return end
   }
   const reasonFor = (row, segments) => {
-    if (row.quotaExceeded) return '本月迟到额度已超，仍按计算迟到生成'
-    if (!row.countLate) return '不计算迟到，多请 0.5 小时'
+    if (row.typeFallback) return `${row.typeFallback}余额不足，自动改用 ${segments.map((item) => item.balance.name).join('+')}`
+    if (!row.countLate && row.residualLate > 0) return '不计算迟到，多请 0.5 小时'
     if (row.remainingLate > 0) return `${row.leaveEnd.slice(11)} 后仍有 ${row.remainingLate} 分钟迟到，计入本月额度`
     if (segments.length > 1) return `${segments.map((item) => item.balance.name).join('+')} 分段拼够`
     if (row.cappedDay) return '一天最多请 8 小时，已按 8 小时申请'
@@ -195,14 +188,15 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
   for (const row of [...leaveRows].sort((a, b) => b.lateMinutes - a.lateMinutes || b.date.localeCompare(a.date))) {
     const override = overrides[row.date] || {}
     const cursor = stamp(row.leaveStart)
-    if (override.typeId) {
-      const balance = balances.find((item) => item.id === override.typeId)
-      if (!balance || balance.available === false) { row.status = 'blocked'; row.reason = '所选假种不可用，请改选'; continue }
-      if (banned.has(`${row.date}|${balance.id}`)) { row.status = 'blocked'; row.reason = '平台已拒绝所选假种，请改选'; continue }
-      if (available(row, balance) + 1e-8 < row.hours) { row.status = 'blocked'; row.reason = '所选假种余额不足，请改选或使用事假'; continue }
-      push(row, balance, row.hours, cursor)
+    // 指定假种只在余额足够时生效；不足（含取消“计算迟到”多请 0.5 小时后）自动回退级联，
+    // 调休与年假都严格按余额限制，差额由事假补足。
+    const forced = balances.find((item) => item.id === override.typeId)
+    const forcedReady = forced && forced.available !== false && !banned.has(`${row.date}|${forced.id}`) && available(row, forced) + 1e-8 >= row.hours
+    if (forced && !forcedReady) row.typeFallback = forced.name
+    if (forcedReady) {
+      push(row, forced, row.hours, cursor)
       row.status = 'ready'
-      row.reason = reasonFor(row, [{ balance }])
+      row.reason = reasonFor(row, [{ balance: forced }])
       continue
     }
     const segments = []
@@ -237,7 +231,8 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
     entries: rows.flatMap((row) => row.allocations).sort((a, b) => a.date === b.date ? a.start.localeCompare(b.start) : b.date.localeCompare(a.date)),
     balances: balances.map(({ usable, ...item }) => ({ ...item, remaining: item.unlimited ? null : Math.round((item.hours - item.used) * 1000000) / 1000000 })),
     totalHours: rows.reduce((sum, row) => sum + row.allocations.reduce((total, entry) => total + entry.hours, 0), 0),
-    quotaExceeded,
+    quota: Object.fromEntries([...quota.entries()].map(([month, used]) => [month, { ...used }])),
+    quotaLimits: { days: MAX_TOLERATED_DAYS_PER_MONTH, minutes: MAX_TOLERATED_MINUTES_PER_MONTH },
   }
 }
 
@@ -288,10 +283,33 @@ function createFileLedger(directory) {
   }
 }
 
+/** 当前待确认方案的本地留存：重启应用后可恢复，不必重新生成；提交/解除后清除。 */
+function createPlanStore(directory) {
+  const file = path.join(directory, 'leave-active-plan.json')
+  return {
+    load() {
+      if (!fs.existsSync(file)) return null
+      const data = JSON.parse(fs.readFileSync(file, 'utf8'))
+      if (!data || typeof data !== 'object' || !data.publicPlan?.id) throw new Error('请假方案留存无法读取，请重新生成')
+      return data
+    },
+    save(data) {
+      fs.mkdirSync(directory, { recursive: true })
+      const temp = `${file}.${randomUUID()}.tmp`
+      try { fs.writeFileSync(temp, JSON.stringify(data), { mode: 0o600 }); fs.renameSync(temp, file) }
+      finally { if (fs.existsSync(temp)) fs.unlinkSync(temp) }
+    },
+    clear() {
+      try { if (fs.existsSync(file)) fs.unlinkSync(file) } catch { /* 清理失败不影响主流程 */ }
+    },
+  }
+}
+
 class LeaveService {
-  constructor({ adapter, ledger, now = Date.now, pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
+  constructor({ adapter, ledger, planStore, now = Date.now, pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
     this.adapter = adapter
     this.ledger = ledger || { load: () => [], save() {} }
+    this.planStore = planStore || { load: () => null, save() {}, clear() {} }
     this.now = now
     this.pause = pause
     this.busy = false
@@ -304,7 +322,20 @@ class LeaveService {
     try { return await fn() } finally { this.busy = false }
   }
 
-  connect() { return this.exclusive(() => { this.pending = null; return this.adapter.connect() }) }
+  connect() { return this.exclusive(() => { this.pending = null; this.planStore.clear(); return this.adapter.connect() }) }
+
+  /** 恢复上次未提交的方案（重启后台后）；有效期从恢复时刻重新起算，提交前仍会全量复核。 */
+  restore() {
+    return this.exclusive(() => {
+      if (this.pending) return { plan: this.pending.publicPlan }
+      const saved = this.planStore.load()
+      if (!saved) return { plan: null }
+      const publicPlan = { ...saved.publicPlan, expiresAt: this.now() + PLAN_TTL }
+      this.pending = { ...saved, publicPlan }
+      this.planStore.save(this.pending)
+      return { plan: publicPlan }
+    })
+  }
 
   plan(input) {
     return this.exclusive(async () => {
@@ -341,7 +372,8 @@ class LeaveService {
       }
       const createdAt = this.now()
       const publicPlan = { ...plan, unresolved, id: randomUUID(), createdAt, expiresAt: createdAt + PLAN_TTL }
-      this.pending = { publicPlan, fingerprint: fingerprint(source), blocked, source, banned }
+      this.pending = { publicPlan, fingerprint: fingerprint(source), blocked, source, banned: [...banned] }
+      this.planStore.save(this.pending)
       return { plan: publicPlan }
     })
   }
@@ -352,12 +384,13 @@ class LeaveService {
       const pending = this.pending
       const plan = pending?.publicPlan
       if (!plan || input.planId !== plan.id) throw new Error('请假方案已变化，请重新生成')
-      if (this.now() > plan.expiresAt) throw new Error('请假方案已过期，请重新生成')
+      if (this.now() > plan.expiresAt) { this.pending = null; this.planStore.clear(); throw new Error('请假方案已过期，请重新生成') }
       const overrides = normalizeOverrides(input.overrides, plan)
-      const next = buildPlan(pending.source, plan.options, pending.blocked, pending.banned, overrides)
+      const next = buildPlan(pending.source, plan.options, pending.blocked, new Set(pending.banned), overrides)
       const publicPlan = { ...next, id: plan.id, createdAt: plan.createdAt, expiresAt: plan.expiresAt, unresolved: plan.unresolved }
       pending.publicPlan = publicPlan
       pending.overrides = overrides
+      this.planStore.save(pending)
       return { plan: publicPlan }
     })
   }
@@ -382,6 +415,7 @@ class LeaveService {
       if (overlaps.length && !overlaps.some((leave) => matchesMarker(leave, marker))) throw new Error('北森已存在重叠申请，请先在平台核对后重新生成')
       this.ledger.save(ledger.filter((entry) => entry !== marker))
       this.pending = null
+      this.planStore.clear()
       return { resolved: true, found: overlaps.length > 0 }
     })
   }
@@ -391,7 +425,7 @@ class LeaveService {
       if (input.confirmed !== true) throw new Error('请先核对并确认请假方案')
       const pending = this.pending
       if (!pending || input.planId !== pending.publicPlan.id) throw new Error('请假方案已变化，请重新生成并确认')
-      if (this.now() > pending.publicPlan.expiresAt) { this.pending = null; throw new Error('请假方案已过期，请重新生成并确认') }
+      if (this.now() > pending.publicPlan.expiresAt) { this.pending = null; this.planStore.clear(); throw new Error('请假方案已过期，请重新生成并确认') }
       const plan = pending.publicPlan
       if (!plan.entries.length) throw new Error('没有可提交的请假记录')
       // 可只提交部分日期：按天整选（同一天的调休+年假分段必须一起提交），只认方案内日期。
@@ -415,6 +449,7 @@ class LeaveService {
         }
       }
       this.pending = null
+      this.planStore.clear()
       const options = { ...plan.options, staffId: plan.staffId }
       const source = await this.adapter.read(options)
       if (fingerprint(source) !== pending.fingerprint) throw new Error('出勤、已有请假或余额发生变化，请重新生成并确认方案')
@@ -470,4 +505,4 @@ class LeaveService {
   }
 }
 
-module.exports = { LeaveService, createFileLedger, buildPlan, normalizeOptions, stamp, fingerprint }
+module.exports = { LeaveService, createFileLedger, createPlanStore, buildPlan, normalizeOptions, stamp, fingerprint }

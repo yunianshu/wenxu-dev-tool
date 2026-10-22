@@ -22,7 +22,7 @@ const deployHistory = require('./deploy/history')
 const releaseNotes = require('./deploy/release-notes')
 const aiDeploy = require('./deploy/ai-deploy')
 const fillService = require('./fill-service')
-const { LeaveService, createFileLedger } = require('./leave-service')
+const { LeaveService, createFileLedger, createPlanStore } = require('./leave-service')
 const { ItalentBrowser, ATTENDANCE_URL } = require('./italent-browser')
 const { ItalentEmbedded, ItalentBookmarklet } = require('./italent-embedded')
 const { ItalentAdapter } = require('./italent-adapter')
@@ -889,10 +889,14 @@ function registerIpc() {
   }
   ensureSsoCapture()
   let leaveService
-  for (const [channel, method] of [['leave:connect', 'connect'], ['leave:plan', 'plan'], ['leave:replan', 'replan'], ['leave:submit', 'submit'], ['leave:resolve', 'resolve']]) {
+  for (const [channel, method] of [['leave:connect', 'connect'], ['leave:plan', 'plan'], ['leave:replan', 'replan'], ['leave:restore', 'restore'], ['leave:submit', 'submit'], ['leave:resolve', 'resolve']]) {
     ipcMain.handle(channel, async (_event, payload) => {
       try {
-        leaveService ||= new LeaveService({ adapter: leaveAdapter, ledger: createFileLedger(app.getPath('userData')) })
+        if (!leaveService) {
+          leaveService = new LeaveService({ adapter: leaveAdapter, ledger: createFileLedger(app.getPath('userData')), planStore: createPlanStore(app.getPath('userData')) })
+          // 上次未提交的方案自动恢复，重新进入页面不必重新生成。
+          await leaveService.restore()
+        }
         return { ok: true, ...(await leaveService[method](payload)) }
       }
       catch (error) { return { ok: false, error: error.message || String(error) } }

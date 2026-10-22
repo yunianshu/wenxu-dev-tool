@@ -238,6 +238,7 @@ contextBridge.exposeInMainWorld('gitReport', {
   leaveConnect: () => ipcRenderer.invoke('leave:connect'),
   leavePlan: (payload) => ipcRenderer.invoke('leave:plan', toPlain(payload)),
   leaveReplan: (payload) => ipcRenderer.invoke('leave:replan', toPlain(payload)),
+  leaveRestore: () => ipcRenderer.invoke('leave:restore'),
   leaveSubmit: (payload) => ipcRenderer.invoke('leave:submit', toPlain(payload)),
   leaveResolve: (payload) => ipcRenderer.invoke('leave:resolve', toPlain(payload)),
   // ─── 一键填报模块（Git 提交 → 工时计划 → 禅道任务工时） ───

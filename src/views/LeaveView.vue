@@ -57,10 +57,15 @@
           <strong v-else>{{ balance.hours }}<small> 小时</small></strong>
           <span class="leave-stat-sub">本次 {{ balance.used }} · 剩余 {{ balance.unlimited ? '不限' : balance.remaining }}</span>
         </div>
+        <div v-if="quotaNow" class="leave-stat">
+          <span class="leave-stat-label">迟到额度 · {{ quotaNow.month }}</span>
+          <strong>{{ quotaNow.days }}<small> / {{ plan.quotaLimits.days }} 次</small></strong>
+          <span class="leave-stat-sub">迟到 {{ quotaNow.minutes }} / {{ plan.quotaLimits.minutes }} 分钟 · 单次 ≤15 分钟</span>
+        </div>
         <div class="leave-stat">
           <span class="leave-stat-label">本次待申请</span>
           <strong>{{ plan.totalHours }}<small> 小时 / {{ plan.entries.length }} 笔</small></strong>
-          <span class="leave-stat-sub">{{ readyDays }} 天待请假 · {{ coveredDays }} 天已有申请<template v-if="toleratedDays"> · {{ toleratedDays }} 天额度内迟到</template><template v-if="remainingLateTotal"> · 剩余迟到 {{ remainingLateTotal }} 分钟</template></span>
+          <span class="leave-stat-sub">{{ readyDays }} 天待请假 · {{ coveredDays }} 天已有申请<template v-if="toleratedDays"> · {{ toleratedDays }} 天额度内迟到</template></span>
         </div>
       </section>
 
@@ -84,21 +89,21 @@
           </div>
           <el-button type="primary" :disabled="busy || leave.consumed || !reviewRows.length" @click="openReview">核对并提交 {{ plan.entries.length }} 笔</el-button>
         </div>
-        <el-alert v-if="plan.quotaExceeded" class="leave-quota-alert" type="warning" :closable="false" show-icon title="本月迟到额度已超出（最多 5 次 / 50 分钟），请调整“计算迟到”或重新生成方案。" />
-        <el-table :data="plan.rows" row-key="date" class="leave-table">
-          <el-table-column prop="date" label="日期" width="118" />
-          <el-table-column label="首打卡" min-width="155"><template #default="{ row }">{{ row.firstCard || '—' }}</template></el-table-column>
-          <el-table-column label="迟到" width="94"><template #default="{ row }">{{ row.lateMinutes ? `${row.lateMinutes} 分钟` : '—' }}</template></el-table-column>
-          <el-table-column label="请假方案" min-width="200"><template #default="{ row }">
+        <!-- 列宽全部固定：重算方案时不因内容变化重排列，避免点击“计算迟到”时抖动。 -->
+        <el-table :data="plan.rows" row-key="date" class="leave-table leave-table-fixed">
+          <el-table-column prop="date" label="日期" width="106" />
+          <el-table-column label="首打卡" width="170"><template #default="{ row }">{{ row.firstCard || '—' }}</template></el-table-column>
+          <el-table-column label="迟到" width="88"><template #default="{ row }">{{ row.lateMinutes ? `${row.lateMinutes} 分钟` : '—' }}</template></el-table-column>
+          <el-table-column label="请假方案" width="250"><template #default="{ row }">
             <div v-for="entry in row.allocations" :key="entry.id" class="leave-allocation"><b>{{ entry.typeName }}</b> {{ entry.start.slice(11) }}–{{ entry.end.slice(11) }} · {{ entry.hours }} 小时</div>
             <span v-if="!row.allocations.length" class="leave-muted">—</span>
           </template></el-table-column>
-          <el-table-column label="计算迟到" width="96"><template #default="{ row }">
+          <el-table-column label="计算迟到" width="88" align="center"><template #default="{ row }">
             <el-checkbox v-if="row.lateMinutes > 0 && (row.status === 'ready' || row.status === 'tolerated' || (row.status === 'blocked' && /^所选假种|^平台已拒绝所选假种/.test(row.reason)))" :model-value="row.countLate !== false" :disabled="busy || leave.consumed" @change="value => setCountLate(row, value)" />
             <span v-else class="leave-muted">—</span>
           </template></el-table-column>
-          <el-table-column label="剩余迟到" width="94"><template #default="{ row }">{{ row.remainingLate ? `${row.remainingLate} 分钟` : '—' }}</template></el-table-column>
-          <el-table-column label="状态" min-width="200"><template #default="{ row }"><span :class="['leave-row-status', `is-${statusOf(row).kind}`]">{{ statusOf(row).text }}</span></template></el-table-column>
+          <el-table-column label="剩余迟到" width="88" align="center"><template #default="{ row }">{{ row.remainingLate ? `${row.remainingLate} 分钟` : '—' }}</template></el-table-column>
+          <el-table-column label="状态" width="240"><template #default="{ row }"><span :class="['leave-row-status', `is-${statusOf(row).kind}`]">{{ statusOf(row).text }}</span></template></el-table-column>
         </el-table>
       </section>
       <el-alert v-if="leave.results.length" :type="allSucceeded ? 'success' : 'warning'" :closable="false" show-icon :title="allSucceeded ? `已提交 ${leave.results.length} 笔，均已在北森回查确认。` : '本次提交已停止，请查看下方结果；结果待核对的申请不会自动重发。'" />
@@ -166,7 +171,7 @@
 </template>
 
 <script setup>
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { invoke } from '@tauri-apps/api/core'
 import { WebviewWindow, getAllWebviewWindows } from '@tauri-apps/api/webviewWindow'
@@ -207,7 +212,12 @@ const resolveChecked = ref(false)
 const readyDays = computed(() => plan.value?.rows.filter(row => row.status === 'ready').length || 0)
 const coveredDays = computed(() => plan.value?.rows.filter(row => row.status === 'covered').length || 0)
 const toleratedDays = computed(() => plan.value?.rows.filter(row => row.status === 'tolerated').length || 0)
-const remainingLateTotal = computed(() => plan.value?.rows.reduce((sum, row) => sum + (row.remainingLate || 0), 0) || 0)
+const quotaNow = computed(() => {
+  const quota = plan.value?.quota || {}
+  const months = Object.keys(quota).sort()
+  const month = months[months.length - 1]
+  return month ? { month, ...quota[month] } : null
+})
 const allSucceeded = computed(() => leave.results.length > 0 && leave.results.every(row => row.status === 'success'))
 const futureDate = (date) => { const pad = n => String(n).padStart(2, '0'); return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` > today() }
 const shortcuts = [
@@ -277,6 +287,14 @@ function startLoginWatcher() {
   }, 2500)
 }
 onUnmounted(stopLoginWatcher)
+// 恢复上次未提交的方案（后台留存），重新进入页面不必重新生成。
+onMounted(async () => {
+  if (state.leave.plan || state.leave.running || state.leave.submitting) return
+  try {
+    const result = await window.gitReport.leaveRestore?.()
+    if (result?.ok && result.plan) state.leave.plan = result.plan
+  } catch { /* 无留存或读取失败时保持空方案 */ }
+})
 
 async function connect() {
   if (busy.value || loginWaiting.value) return
@@ -468,7 +486,6 @@ async function resolvePending() {
 .leave-review-table :deep(.el-input__wrapper) { box-shadow: 0 0 0 1px var(--line) inset; }
 .leave-review-body { position: relative; min-height: 220px; }
 .leave-review-error { color: var(--el-color-danger); font-size: 12px; line-height: 1.5; margin-top: 4px; }
-.leave-quota-alert { margin: 0 0 12px; }
 @media (max-width: 900px) {
   .leave-stats { grid-template-columns: 1fr; }
   .leave-connect-group { margin-left: 0; }
