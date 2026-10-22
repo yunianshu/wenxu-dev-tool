@@ -117,27 +117,31 @@ async function main() {
     assert.deepEqual([OPTIONS.since, OPTIONS.until, OPTIONS.workStart, OPTIONS.workEnd], ['2026-10-01', '2026-10-15', '08:30', '17:30'])
     for (const opts of [{ since: '2026-02-30' }, { until: '2026-10-16' }, { since: '2026-10-16' }, { workStart: '24:00' }, { workEnd: '08:00' }]) assert.throws(() => normalizeOptions(opts, NOW))
   })
-  await test('先舍弃秒数，迟到后固定请 8:30–9:00，9:00 后最多余 15 分钟', () => {
+  await test('15 分钟内迟到走额度不申请；超过 15 分钟必须请假', () => {
     for (const time of ['08:30:01', '08:30:59']) {
       const plan = buildPlan(source([card('15', time)]), OPTIONS)
       assert.equal(plan.totalHours, 0, time)
       assert.equal(plan.rows[0].reason, '未迟到', time)
     }
-    for (const time of ['08:31:00', '08:48:00', '08:59:59', '09:00:00', '09:00:01', '09:00:59', '09:10:00', '09:15:59']) {
-      const plan = buildPlan(source([card('15', time)]), OPTIONS)
-      assert.equal(plan.totalHours, 0.5, time)
-      assert.equal(plan.entries[0].start.slice(11), '08:30', time)
-      assert.equal(plan.entries[0].end.slice(11), '09:00', time)
-      assert.equal(Number.isInteger(plan.rows[0].lateMinutes), true)
-    }
-    assert.match(buildPlan(source([card('15', '09:10:00')]), OPTIONS).rows[0].reason, /10 分钟/)
-    for (const time of ['09:16:00', '09:29:59', '10:00:00']) {
+    for (const time of ['08:31:00', '08:40:00', '08:45:00', '08:45:59']) {
       const plan = buildPlan(source([card('15', time)]), OPTIONS)
       assert.equal(plan.entries.length, 0, time)
-      assert.equal(plan.rows[0].status, 'blocked', time)
+      assert.equal(plan.rows[0].status, 'tolerated', time)
+      assert.match(plan.rows[0].reason, /计入本月迟到额度/, time)
     }
+    for (const time of ['08:46:00', '08:59:59', '09:00:00']) {
+      const plan = buildPlan(source([card('15', time)]), OPTIONS)
+      assert.deepEqual([plan.totalHours, plan.entries[0].end.slice(11)], [0.5, '09:00'], time)
+      assert.equal(plan.rows[0].reason, '待确认', time)
+    }
+    assert.match(buildPlan(source([card('15', '09:10:00')]), OPTIONS).rows[0].reason, /09:00 后仍有 10 分钟迟到，计入本月额度/)
+    for (const [time, hours, end] of [['09:15:59', 0.5, '09:00'], ['09:16:00', 1, '09:30'], ['09:29:59', 1, '09:30'], ['09:31:00', 1.5, '10:00'], ['10:00:00', 1.5, '10:00']]) {
+      const plan = buildPlan(source([card('15', time)]), OPTIONS)
+      assert.deepEqual([plan.totalHours, plan.entries[0].end.slice(11)], [hours, end], time)
+    }
+    assert.equal(buildPlan(source([card('15', '10:01:00')]), OPTIONS).rows[0].status, 'blocked')
   })
-  await test('重复覆盖和整天单一假种仍按固定 0.5 小时请假', () => {
+  await test('重复覆盖按请假块终点判断，部分覆盖阻断', () => {
     const data = source([card('15', '09:00:59')], 0.5, 0)
     data.leaves.push(leave('15', { end: '2026-10-15 09:00', hoursText: '0.5小时' }))
     assert.equal(buildPlan(data, OPTIONS).rows[0].status, 'covered')
@@ -145,28 +149,29 @@ async function main() {
     assert.deepEqual(plan.entries.map(item => [item.typeName, item.hours, item.end]), [['年假', 0.5, '2026-10-15 09:00']])
     const none = buildPlan(source([card('15', '09:10:00')], 0.25, 0.25), OPTIONS)
     assert.equal(none.entries.length, 0)
-    assert.equal(none.rows[0].reason, '调休假与年假都不足以覆盖当天迟到，先不处理')
+    assert.equal(none.rows[0].reason, '调休假与年假都不足以覆盖当天请假时长，先不处理')
     const fallback = buildPlan(source([card('15', '09:10:00')], 0.25, 0, personal), OPTIONS)
     assert.deepEqual(fallback.entries.map(item => [item.typeName, item.hours]), [['事假', 0.5]])
   })
   await test('调休优先给原始迟到较长的日期，再年假，最后请假', () => {
     const plan = buildPlan(source([card('13', '08:35:00'), card('15', '09:10:00'), card('14', '08:50:00')], 0.5, 0.5, personal), OPTIONS)
-    assert.deepEqual(plan.entries.map(item => [item.date, item.typeName, item.hours]), [['2026-10-15', '调休假', 0.5], ['2026-10-14', '年假', 0.5], ['2026-10-13', '事假', 0.5]])
-    assert.deepEqual(plan.rows.map(item => item.status), ['ready', 'ready', 'ready'])
+    assert.deepEqual(plan.entries.map(item => [item.date, item.typeName, item.hours]), [['2026-10-15', '调休假', 0.5], ['2026-10-14', '年假', 0.5]])
+    assert.deepEqual(plan.rows.map(item => item.status), ['ready', 'ready', 'tolerated'])
     assert.equal(plan.balances[0].remaining, 0)
     assert.equal(plan.balances[1].remaining, 0)
     assert.equal(plan.balances[2].remaining, null)
   })
-  await test('每月最多 5 次迟到，9:00 后余量合计不超过 50 分钟', () => {
-    const six = ['10', '11', '12', '13', '14', '15'].map(day => card(day, '09:10:00'))
-    const capped = buildPlan(source(six, 10, 10, personal), OPTIONS)
-    assert.equal(capped.entries.length, 5)
-    assert.equal(capped.rows.find(item => item.date === '2026-10-10').status, 'blocked')
-    assert.match(capped.rows.find(item => item.date === '2026-10-10').reason, /本月最多处理 5 次/)
-    const heavy = ['10', '11', '12', '13', '14'].map(day => card(day, '09:15:00'))
-    const grace = buildPlan(source(heavy, 10, 10, personal), OPTIONS)
-    assert.equal(grace.entries.length, 3)
-    assert.match(grace.rows.find(item => item.date === '2026-10-11').reason, /超过 50 分钟/)
+  await test('每月迟到额度：最多 5 次、合计 50 分钟，额度不足改为请假', () => {
+    const six = buildPlan(source(['10', '11', '12', '13', '14', '15'].map(day => card(day, '08:40:00')), 10), OPTIONS)
+    assert.equal(six.rows.filter(item => item.status === 'tolerated').length, 5)
+    assert.deepEqual(six.rows.find(item => item.date === '2026-10-10').allocations.map(item => item.hours), [0.5])
+    const minutes = buildPlan(source(['12', '13', '14', '15'].map(day => card(day, '08:44:00')), 10), OPTIONS)
+    assert.equal(minutes.rows.filter(item => item.status === 'tolerated').length, 3)
+    assert.deepEqual(minutes.rows.find(item => item.date === '2026-10-12').allocations.map(item => item.hours), [0.5])
+    const upgrade = buildPlan(source(['12', '13', '14', '15'].map(day => card(day, '09:14:00')), 10), OPTIONS)
+    const upgraded = upgrade.rows.find(item => item.date === '2026-10-12')
+    assert.deepEqual([upgraded.hours, upgraded.reason], [1, '本月迟到额度不足，改请 1 小时'])
+    assert.equal(upgrade.rows.filter(item => item.reason.includes('计入本月额度')).length, 3)
   })
   await test('单日余额不足时不挪用零头，余额保留给下一笔', () => {
     const plan = buildPlan(source([card('15', '09:10:00'), card('14', '08:48:00')], 0.75, 0), OPTIONS)

@@ -348,6 +348,7 @@ async function resolvePending() {
 .leave-allocation { line-height: 1.9; font-variant-numeric: tabular-nums; }
 .leave-allocation b { font-weight: 500; }
 .leave-row-status.is-ready, .leave-row-status.is-covered, .leave-row-status.is-success { color: var(--brand-accent); }
+.leave-row-status.is-tolerated, .leave-row-status.is-skipped { color: var(--text-muted); }
 .leave-row-status.is-unknown, .leave-row-status.is-blocked { color: var(--el-color-warning); }
 .leave-row-status.is-failed { color: var(--el-color-danger); }
 .leave-row-status.is-skipped { color: var(--text-muted); }

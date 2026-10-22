@@ -47,3 +47,8 @@
 - `node scripts/leave-selftest.cjs`：33 组通过，新增固定 0.5 小时、09:15/10:00 边界、每月 5 次与 50 分钟上限、调休长迟到优先、事假兜底以及部分覆盖阻断断言。
 - `node scripts/leave-ui-selftest.cjs`、`node scripts/knowledge-rpc-selftest.cjs`、`npm run build:tauri:renderer`：通过。
 - 未连接真实北森提交；本次验证未创建任何请假申请。
+
+## 2026-10-22 迟到规则二次修订（1.4.141）
+
+- 最终口径：单次迟到超过 15 分钟必须请假。08:30–08:45 到岗走每月额度（5 次/50 分钟）不申请，额度不足改请 0.5 小时；08:46–09:00 请 0.5 小时；09:01–09:15 请 0.5 小时且余量计入额度，额度不足升级为 1 小时；09:16–10:00 按到达时刻请 1/1.5 小时；晚于 10:00 阻断。
+- `node scripts/leave-selftest.cjs`：34 组通过，重写迟到分层、额度上限与升级断言；`leave-ui-selftest`、`knowledge-rpc-selftest`、`build:tauri:renderer` 通过。未创建真实请假。
