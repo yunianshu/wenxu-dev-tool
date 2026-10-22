@@ -1,5 +1,10 @@
 # 一键请假验证记录
 
+## 2026-10-22 假种下拉显示当前假种（1.4.152）
+
+- el-select 空字符串值被当占位符显示“请选择”；改为非空哨兵“自动”，未手动指定时单一假种显示该假种、分段混合显示“自动”。
+- `leave-ui-selftest`（新增 selectedTypeId/setType 断言）、`leave-selftest`、`knowledge-rpc-selftest`、`build:tauri:renderer` 通过。未创建真实请假。
+
 ## 2026-10-22 余量为 0 不多请（1.4.151）
 
 - 08:46–09:00 到岗（含 9 点整）固定 0.5 小时，countLate 被忽略；两处表格仅余量>0 显示开关；restore 按当前规则重算并保留 overrides。
