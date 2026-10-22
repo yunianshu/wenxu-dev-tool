@@ -82,7 +82,7 @@
             <h2>出勤与请假明细</h2>
             <span class="leave-muted">{{ plan.options.since }} 至 {{ plan.options.until }} · 方案有效 10 分钟</span>
           </div>
-          <el-button type="primary" :disabled="busy || leave.consumed || !plan.entries.length" @click="openReview">核对并提交 {{ plan.entries.length }} 笔</el-button>
+          <el-button type="primary" :disabled="busy || leave.consumed || !reviewRows.length" @click="openReview">核对并提交 {{ plan.entries.length }} 笔</el-button>
         </div>
         <el-alert v-if="plan.quotaExceeded" class="leave-quota-alert" type="warning" :closable="false" show-icon title="本月迟到额度已超出（最多 5 次 / 50 分钟），请调整“计算迟到”或重新生成方案。" />
         <el-table :data="plan.rows" row-key="date" class="leave-table">
@@ -381,7 +381,7 @@ function setType(row, value) {
   void replanPlan()
 }
 function openReview() {
-  if (busy.value || leave.consumed || !plan.value?.entries.length) return
+  if (busy.value || leave.consumed || !reviewRows.value.length) return
   dateReasons.value = Object.fromEntries(reviewRows.value.map(row => [row.date, dateReasons.value[row.date] ?? '']))
   selectedDates.value = reviewRows.value.filter(row => row.status === 'ready' && row.allocations.length).map(row => row.date)
   reviewVisible.value = true
