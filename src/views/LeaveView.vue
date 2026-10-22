@@ -99,7 +99,7 @@
             <span v-if="!row.allocations.length" class="leave-muted">—</span>
           </template></el-table-column>
           <el-table-column label="计算迟到" width="88" align="center"><template #default="{ row }">
-            <el-checkbox v-if="row.lateMinutes > 0 && (row.status === 'ready' || row.status === 'tolerated' || (row.status === 'blocked' && /^所选假种|^平台已拒绝所选假种/.test(row.reason)))" :model-value="row.countLate !== false" :disabled="busy || leave.consumed" @change="value => setCountLate(row, value)" />
+            <el-checkbox v-if="row.residualLate > 0 && (row.status === 'ready' || row.status === 'tolerated' || (row.status === 'blocked' && /^所选假种|^平台已拒绝所选假种/.test(row.reason)))" :model-value="row.countLate !== false" :disabled="busy || leave.consumed" @change="value => setCountLate(row, value)" />
             <span v-else class="leave-muted">—</span>
           </template></el-table-column>
           <el-table-column label="剩余迟到" width="88" align="center"><template #default="{ row }">{{ row.remainingLate ? `${row.remainingLate} 分钟` : '—' }}</template></el-table-column>
@@ -145,7 +145,8 @@
             <span v-if="!row.allocations.length" class="leave-muted">—</span>
           </template></el-table-column>
           <el-table-column label="计算迟到" width="88"><template #default="{ row }">
-            <el-checkbox :model-value="row.countLate !== false" :disabled="leave.submitting || replanning" @change="value => setCountLate(row, value)" />
+            <el-checkbox v-if="row.residualLate > 0" :model-value="row.countLate !== false" :disabled="leave.submitting || replanning" @change="value => setCountLate(row, value)" />
+            <span v-else class="leave-muted">—</span>
           </template></el-table-column>
           <el-table-column label="剩余迟到" width="90"><template #default="{ row }">{{ row.remainingLate ? `${row.remainingLate} 分钟` : '—' }}</template></el-table-column>
           <el-table-column label="请假事由" min-width="180"><template #default="{ row }">
@@ -361,9 +362,10 @@ function buildOverrides() {
     if (!(row.lateMinutes > 0)) continue
     if (row.status === 'blocked' && !/^所选假种|^平台已拒绝所选假种/.test(row.reason)) continue
     if (!['ready', 'tolerated', 'blocked'].includes(row.status)) continue
-    const item = { countLate: row.countLate !== false }
+    // 余量为 0（08:46–09:00 到岗）没有可计迟到，不参与“计算迟到”调整。
+    const item = row.residualLate > 0 ? { countLate: row.countLate !== false } : {}
     if (typeOverrides.value[row.date]) item.typeId = typeOverrides.value[row.date].typeId
-    overrides[row.date] = item
+    if (Object.keys(item).length) overrides[row.date] = item
   }
   return overrides
 }

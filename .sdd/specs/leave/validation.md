@@ -1,5 +1,10 @@
 # 一键请假验证记录
 
+## 2026-10-22 余量为 0 不多请（1.4.151）
+
+- 08:46–09:00 到岗（含 9 点整）固定 0.5 小时，countLate 被忽略；两处表格仅余量>0 显示开关；restore 按当前规则重算并保留 overrides。
+- `leave-selftest` 40 组（新增余量 0 忽略 countLate 断言）、`leave-ui-selftest`、`knowledge-rpc-selftest`、`build:tauri:renderer` 通过。未创建真实请假。
+
 ## 2026-10-22 方案留存与额度三条件（1.4.150）
 
 - 方案留存 userData/leave-active-plan.json，后台重启后 restore 恢复并可 replan/直接提交；提交后清除。迟到额度三条件同时成立：额度不足（含手动勾选）自动多请 0.5 小时；指定假种不足自动回退级联（调休/年假不超扣）；quota 摘要与固定列宽。

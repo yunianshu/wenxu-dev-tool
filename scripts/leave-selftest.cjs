@@ -133,6 +133,9 @@ async function main() {
       const plan = buildPlan(source([card('15', time)]), OPTIONS)
       assert.deepEqual([plan.totalHours, plan.entries[0].end.slice(11)], [0.5, '09:00'], time)
       assert.equal(plan.rows[0].reason, '待确认', time)
+      // 08:46–09:00 到岗（含 9 点整）没有可计余量：取消“计算迟到”也不多请。
+      const forced = buildPlan(source([card('15', time)]), OPTIONS, {}, new Set(), { '2026-10-15': { countLate: false } })
+      assert.deepEqual([forced.totalHours, forced.rows[0].residualLate], [0.5, 0], time)
     }
     assert.match(buildPlan(source([card('15', '09:10:00')]), OPTIONS).rows[0].reason, /09:00 后仍有 10 分钟迟到，计入本月额度/)
     for (const [time, hours, end] of [['09:15:59', 0.5, '09:00'], ['09:16:00', 1, '09:30'], ['09:29:59', 1, '09:30'], ['09:31:00', 1.5, '10:00'], ['09:59:00', 1.5, '10:00'], ['10:00:00', 1.5, '10:00'], ['10:05:00', 2, '10:30'], ['10:16:00', 2, '10:30'], ['10:31:00', 2.5, '11:00'], ['11:59:00', 3.5, '12:00'], ['12:15:00', 3.5, '12:00'], ['13:00:00', 3.5, '12:00'], ['13:30:00', 4, '13:30'], ['14:30:00', 5, '14:30'], ['16:40:00', 7.5, '17:00'], ['17:29:59', 8, '17:30']]) {
@@ -183,7 +186,7 @@ async function main() {
     assert.deepEqual([a.hours, a.remainingLate, a.allocations[0].end.slice(11)], [0.5, 0, '09:00'])
     assert.deepEqual([b.hours, b.remainingLate, b.allocations[0].end.slice(11)], [1, 0, '09:30'])
     const noResidual = buildPlan(source([card('15', '09:00:00')], 10), OPTIONS, {}, new Set(), { '2026-10-15': { countLate: false } })
-    assert.deepEqual([noResidual.rows[0].hours, noResidual.rows[0].allocations[0].end.slice(11)], [1, '09:30'])
+    assert.deepEqual([noResidual.rows[0].hours, noResidual.rows[0].allocations[0].end.slice(11)], [0.5, '09:00'])
     // 三条件同时成立：手动全勾也只能计 5 次，第 6 次自动改为多请 0.5 小时。
     const forced = buildPlan(source(['10', '11', '12', '13', '14', '15'].map(day => card(day, '08:40:00')), 10), OPTIONS, {}, new Set(), Object.fromEntries(['10', '11', '12', '13', '14', '15'].map(day => [`2026-10-${day}`, { countLate: true }])))
     const sixth = forced.rows.find(item => item.date === '2026-10-10')

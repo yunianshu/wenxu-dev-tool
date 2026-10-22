@@ -150,7 +150,8 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
   const startOf = (row) => stamp(`${row.date} ${options.workStart}`)
   const lunchOf = (row) => [stamp(`${row.date} ${LUNCH[0]}`), stamp(`${row.date} ${LUNCH[1]}`)]
   for (const row of candidates) {
-    const rawHours = row.baseHours + (row.countLate ? 0 : 0.5)
+    // 余量为 0（08:46–09:00 到岗，含 9 点整）没有可计迟到，固定基础请假，忽略 countLate。
+    const rawHours = row.baseHours + (!row.countLate && row.residualLate > 0 ? 0.5 : 0)
     row.hours = Math.min(rawHours, MAX_LEAVE_HOURS_PER_DAY)
     row.cappedDay = rawHours > MAX_LEAVE_HOURS_PER_DAY
     row.remainingLate = row.countLate ? row.residualLate : 0
@@ -324,13 +325,14 @@ class LeaveService {
 
   connect() { return this.exclusive(() => { this.pending = null; this.planStore.clear(); return this.adapter.connect() }) }
 
-  /** 恢复上次未提交的方案（重启后台后）；有效期从恢复时刻重新起算，提交前仍会全量复核。 */
+  /** 恢复上次未提交的方案（重启后台后）；按当前规则用留存快照重算，旧版本生成的行自动纠正。 */
   restore() {
     return this.exclusive(() => {
       if (this.pending) return { plan: this.pending.publicPlan }
       const saved = this.planStore.load()
       if (!saved) return { plan: null }
-      const publicPlan = { ...saved.publicPlan, expiresAt: this.now() + PLAN_TTL }
+      const rebuilt = buildPlan(saved.source, saved.publicPlan.options, saved.blocked, new Set(saved.banned || []), saved.overrides || {})
+      const publicPlan = { ...rebuilt, id: saved.publicPlan.id, createdAt: this.now(), expiresAt: this.now() + PLAN_TTL, unresolved: saved.publicPlan.unresolved || [] }
       this.pending = { ...saved, publicPlan }
       this.planStore.save(this.pending)
       return { plan: publicPlan }
