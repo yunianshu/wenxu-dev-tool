@@ -25,15 +25,19 @@
         <span class="leave-field-label">默认事由</span>
         <el-input v-model="options.reason" :disabled="busy" maxlength="1000" placeholder="选填" class="leave-reason" aria-label="默认请假事由" />
       </div>
-      <el-button class="leave-connect" :disabled="busy" @click="connect">连接北森</el-button>
+      <div class="leave-connect-group">
+        <el-button :disabled="busy" @click="showBookmarklet">浏览器书签</el-button>
+        <el-button :disabled="busy" @click="connect">连接北森</el-button>
+      </div>
     </section>
 
     <div v-if="loginWaiting" class="leave-login" role="status">
       <el-icon class="is-loading"><Loading /></el-icon>
-      <span>北森登录窗口已打开，完成登录后自动关闭</span>
+      <span>{{ loginMode === 'bookmarklet' ? '在已登录北森的浏览器标签页点击书签即可连接' : '北森登录窗口已打开，完成登录后自动关闭' }}</span>
       <template v-if="bookmarkletHref">
         <span class="leave-login-sep">·</span>
         <a class="leave-bookmarklet" :href="bookmarkletHref" draggable="true" title="拖到浏览器书签栏，在已登录北森的标签页上点击" @click.prevent>免登录书签</a>
+        <el-button link class="leave-bookmarklet-copy" @click="copyBookmarklet">复制</el-button>
       </template>
     </div>
 
@@ -193,6 +197,7 @@ function statusOf(row) {
 let italentWindow = null
 let loginWatcher = null
 const loginWaiting = ref(false)
+const loginMode = ref('window')
 const bookmarkletHref = ref('')
 
 function stopLoginWatcher() {
@@ -257,11 +262,32 @@ async function connect() {
       return
     }
     bookmarkletHref.value = first?.bookmarklet || ''
+    loginMode.value = 'window'
     await openItalentWindow()
     startLoginWatcher()
     ElMessage.success('已打开北森登录窗口，完成登录后自动关闭')
   } catch (error) { leave.error = error.message }
   finally { leave.running = false }
+}
+async function showBookmarklet() {
+  if (busy.value || loginWaiting.value) return
+  leave.running = true; leave.error = ''
+  try {
+    const result = await window.gitReport.leaveConnect()
+    if (!result?.ok) throw new Error(result?.error || '连接失败')
+    if (result.loggedIn) { ElMessage.success(result.mode === 'bookmarklet' ? '已通过书签连接北森' : '北森已连接'); return }
+    bookmarkletHref.value = result.bookmarklet || ''
+    if (!bookmarkletHref.value) throw new Error('浏览器连接不可用')
+    loginMode.value = 'bookmarklet'
+    startLoginWatcher()
+    ElMessage.success('把书签拖到浏览器书签栏，在已登录北森的标签页点击')
+  } catch (error) { leave.error = error.message }
+  finally { leave.running = false }
+}
+async function copyBookmarklet() {
+  if (!bookmarkletHref.value) return
+  try { await window.gitReport.copyText(bookmarkletHref.value); ElMessage.success('连接脚本已复制，可在浏览器新建书签并粘贴') }
+  catch { ElMessage.error('复制失败，请用鼠标拖动书签') }
 }
 async function generate() {
   if (busy.value) return
@@ -275,7 +301,7 @@ async function generate() {
     leave.error = error.message
     // 会话过期：自动弹出登录窗口并开始等待，登录成功后重试生成即可。
     if (isTauri && !loginWaiting.value && /登录/.test(error.message)) {
-      try { await openItalentWindow(); startLoginWatcher() } catch { /* 弹窗失败时保留原错误 */ }
+      try { loginMode.value = 'window'; await openItalentWindow(); startLoginWatcher() } catch { /* 弹窗失败时保留原错误 */ }
     }
   }
   finally { leave.running = false }
@@ -331,7 +357,7 @@ async function resolvePending() {
 .leave-range { width: 280px; }
 .leave-time { width: 110px; }
 .leave-time-sep { color: var(--text-muted); }
-.leave-connect { margin-left: auto; }
+.leave-connect-group { margin-left: auto; display: flex; gap: 8px; }
 .leave-login { display: flex; align-items: center; gap: 8px; padding: 9px 16px; border: 1px solid var(--accent-soft); border-radius: var(--radius-md); background: var(--accent-soft); color: var(--ink-soft); font-size: 13px; }
 .leave-login > .el-icon { color: var(--brand-accent); }
 .leave-login-sep { color: var(--text-muted); }
@@ -369,6 +395,6 @@ async function resolvePending() {
 .leave-review-body { position: relative; min-height: 220px; }
 @media (max-width: 900px) {
   .leave-stats { grid-template-columns: 1fr; }
-  .leave-connect { margin-left: 0; }
+  .leave-connect-group { margin-left: 0; }
 }
 </style>

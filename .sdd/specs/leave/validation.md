@@ -1,5 +1,11 @@
 # 一键请假验证记录
 
+## 2026-10-22 分发后无法连接北森修复（1.4.147）
+
+- 根因排查：书签桥本机回调未处理新版 Chrome/Edge 的 Private Network Access 预检（OPTIONS 返回 404），浏览器会拒绝公网页面访问 127.0.0.1，导致只能退回内嵌窗口登录；企微 SSO 捕获此前只读 Chrome Default 配置，同事使用 Edge/多 Profile 时无法自动登入。
+- 修复：本机回调配 OPTIONS 预检、`Access-Control-Allow-Private-Network: true` 与 CORS 方法/头声明；SSO 捕获扩展到 Chrome/Edge/Brave 的 Default 与 Profile N；工具栏新增「浏览器书签」入口与复制按钮，不打开内嵌窗口也能复用浏览器会话。
+- `leave-selftest` 36 组通过（新增预检响应、跨浏览器多配置捕获断言）；`leave-ui-selftest` 通过（新增书签入口与复制）；`knowledge-rpc-selftest`、`build:tauri:renderer` 通过。未创建真实请假。
+
 ## 2026-10-22 提交加载反馈（1.4.146）
 
 - 确认弹窗内容加 v-loading 遮罩与“正在提交 N 笔”提示，按钮显示“提交中”；提交期间勾选、返回与关闭均禁用。

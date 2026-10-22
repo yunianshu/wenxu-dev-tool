@@ -39,11 +39,14 @@ async function main() {
   let resolveCalls = 0
   const submitPayloads = []
   let finishSubmit
+  const copied = []
   const originalWindow = global.window
   global.window = { gitReport: {
     leavePlan: async payload => { assert.equal(Object.getPrototypeOf(payload), Object.prototype); return { ok: true, plan: structuredClone(plan) } },
     leaveSubmit: async payload => { submitCalls++; submitPayloads.push(payload); return new Promise(resolve => { finishSubmit = resolve }) },
     leaveResolve: async payload => { resolveCalls++; assert.deepEqual(payload, { planId: 'isolated-plan', markerId: 'isolated-marker', confirmedMissing: true }); return { ok: true, resolved: true } },
+    leaveConnect: async () => ({ ok: true, connected: true, mode: 'embedded', loggedIn: false, bookmarklet: 'javascript:void(1)' }),
+    copyText: async text => { copied.push(text); return true },
   } }
   const renderer = vue.createRenderer({ createComment: () => ({}), insert() {}, remove() {}, parentNode() {}, nextSibling() {} })
   let setup
@@ -87,6 +90,14 @@ async function main() {
     assert.equal(setup.plan.value.id, plan.id, '解除后已重新生成方案')
     setup.openResolve(marker)
     setup.reviewVisible.value = true
+    // 浏览器书签通道：不打开登录窗口也能拿到连接脚本，并可复制到剪贴板。
+    await setup.showBookmarklet()
+    assert.equal(setup.loginMode.value, 'bookmarklet')
+    assert.equal(setup.loginWaiting.value, true)
+    assert.equal(setup.bookmarkletHref.value, 'javascript:void(1)')
+    await setup.copyBookmarklet()
+    assert.deepEqual(copied, ['javascript:void(1)'])
+    setup.stopLoginWatcher()
     setup.options.workStart = '09:00'
     await vue.nextTick()
     assert.equal(state.leave.plan, null)

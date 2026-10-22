@@ -28,14 +28,17 @@ class ItalentEmbedded {
     if (this.server) return
     const server = http.createServer((request, response) => {
       const url = request.url || ''
-      if (request.method === 'GET' && url.startsWith('/bridge.js')) return this.serveBridgeScript(response)
-      if (request.method === 'GET' && url.startsWith('/bridge/next')) return void this.serveBridgeNext(response)
+      // 新版 Chrome/Edge 从公网页面访问 localhost 会先发 Private Network Access 预检；
+      // 不处理 OPTIONS 并返回 allow-private-network，书签桥会被浏览器直接拒绝。
+      if (request.method === 'OPTIONS') return this.serveCorsPreflight(request, response)
+      if (request.method === 'GET' && url.startsWith('/bridge.js')) return this.serveBridgeScript(request, response)
+      if (request.method === 'GET' && url.startsWith('/bridge/next')) return void this.serveBridgeNext(request, response)
       if (request.method !== 'POST' || url !== '/leave-callback') { response.writeHead(404); response.end(); return }
       let body = ''
       request.setEncoding('utf8')
       request.on('data', (chunk) => { body += chunk; if (body.length > MAX_BODY) request.destroy() })
       request.on('end', () => {
-        response.setHeader('Access-Control-Allow-Origin', String(request.headers.origin || '*'))
+        this.setCors(request, response)
         response.writeHead(204)
         response.end()
         let payload
@@ -58,16 +61,32 @@ class ItalentEmbedded {
     this.port = server.address().port
   }
 
+  setCors(request, response) {
+    response.setHeader('Access-Control-Allow-Origin', String(request.headers.origin || '*'))
+    response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    response.setHeader('Access-Control-Allow-Private-Network', 'true')
+    response.setHeader('Access-Control-Max-Age', '600')
+    response.setHeader('Vary', 'Origin')
+  }
+
+  serveCorsPreflight(request, response) {
+    this.setCors(request, response)
+    response.writeHead(204)
+    response.end()
+  }
+
   /** 书签桥注入脚本：在已登录北森的页面里长轮询任务并执行，结果走 /leave-callback 回传。 */
-  serveBridgeScript(response) {
+  serveBridgeScript(request, response) {
+    this.setCors(request, response)
     const script = `(function(){if(window.__plmLeaveBridge)return;window.__plmLeaveBridge=true;var b=Math.random().toString(36).slice(2);function pump(){fetch('http://127.0.0.1:${this.port}/bridge/next?b='+b,{credentials:'omit'}).then(function(r){if(r.status===204)return pump();if(!r.ok)throw new Error('poll '+r.status);return r.json().then(function(job){if(job&&job.code){try{(0,eval)(job.code)}catch(e){}}pump()})}).catch(function(){setTimeout(pump,2000)})}pump()})()`
-    response.setHeader('Access-Control-Allow-Origin', '*')
     response.setHeader('Content-Type', 'text/javascript; charset=utf-8')
     response.writeHead(200)
     response.end(script)
   }
 
-  async serveBridgeNext(response) {
+  async serveBridgeNext(request, response) {
+    this.setCors(request, response)
     this.lastPoll = Date.now()
     const deadline = Date.now() + 20000
     const timer = setInterval(() => {
@@ -76,13 +95,11 @@ class ItalentEmbedded {
       if (job) {
         job.served = true
         clearInterval(timer)
-        response.setHeader('Access-Control-Allow-Origin', '*')
         response.setHeader('Content-Type', 'application/json; charset=utf-8')
         response.writeHead(200)
         response.end(JSON.stringify({ code: job.code }))
       } else if (Date.now() >= deadline) {
         clearInterval(timer)
-        response.setHeader('Access-Control-Allow-Origin', '*')
         response.writeHead(204)
         response.end()
       }

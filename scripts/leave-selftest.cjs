@@ -554,6 +554,13 @@ async function main() {
     assert.equal(data.attendance.length, 2)
     const script = await (await realFetch(`http://127.0.0.1:${bridge.port}/bridge.js`)).text()
     assert(script.includes(`127.0.0.1:${bridge.port}/bridge/next`))
+    // 新版浏览器从公网页面访问 localhost 会先发私有网络预检；必须放行并声明 allow-private-network。
+    const preflight = await realFetch(`http://127.0.0.1:${bridge.port}/bridge.js`, { method: 'OPTIONS', headers: { Origin: 'https://cloud.italent.cn', 'Access-Control-Request-Method': 'GET', 'Access-Control-Request-Private-Network': 'true' } })
+    assert.equal(preflight.status, 204)
+    assert.equal(preflight.headers.get('access-control-allow-private-network'), 'true')
+    assert.equal(preflight.headers.get('access-control-allow-origin'), 'https://cloud.italent.cn')
+    const bridged = await realFetch(`http://127.0.0.1:${bridge.port}/bridge.js`, { headers: { Origin: 'https://cloud.italent.cn' } })
+    assert.equal(bridged.headers.get('access-control-allow-private-network'), 'true')
     assert(bridge.href().startsWith('javascript:'))
     bridge.close()
     const idle = new ItalentBookmarklet({ timeout: 200 })
@@ -597,6 +604,31 @@ async function main() {
       assert.equal(/fresh=1/.test(result?.url || ''), true)
       const stale = new ChromeSSOWatcher({ historyPath, intervalMs: 20, timeoutMs: 200 })
       assert.equal(await stale.wait(), null)
+    } finally {
+      fs.rmSync(fs.realpathSync(directory), { recursive: true, force: true })
+    }
+  })
+  await test('SSO 捕获覆盖 Chrome/Edge 多配置：任一 History 出现新签名即触发', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'leave-sso-multi-'))
+    try {
+      const chromePath = path.join(directory, 'chrome-History')
+      const edgePath = path.join(directory, 'edge-History')
+      const chromeTime = (unixSeconds) => Math.round((unixSeconds + 11644473600) * 1000000)
+      const now = Date.now() / 1000
+      for (const file of [chromePath, edgePath]) {
+        const db = new DatabaseSync(file)
+        db.exec('CREATE TABLE urls (url TEXT PRIMARY KEY, last_visit_time INTEGER)')
+        db.prepare('INSERT INTO urls VALUES (?, ?)').run(`https://www.italent.cn/v1/sso/italent/auth?old=${path.basename(file)}`, chromeTime(now - 7200))
+        db.close()
+      }
+      const watcher = new ChromeSSOWatcher({ historyPaths: [chromePath, edgePath], intervalMs: 20, timeoutMs: 3000 })
+      const captured = watcher.wait()
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      const db = new DatabaseSync(edgePath)
+      db.prepare('INSERT INTO urls VALUES (?, ?)').run('https://www.italent.cn/v1/sso/italent/auth?fresh=edge', chromeTime(now))
+      db.close()
+      const result = await captured
+      assert.equal(/fresh=edge/.test(result?.url || ''), true)
     } finally {
       fs.rmSync(fs.realpathSync(directory), { recursive: true, force: true })
     }
