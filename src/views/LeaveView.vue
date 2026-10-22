@@ -103,6 +103,7 @@
     </template>
 
     <el-dialog v-model="reviewVisible" title="确认请假方案" width="860px" :close-on-click-modal="false" :close-on-press-escape="!leave.submitting" :show-close="!leave.submitting">
+      <div v-loading="leave.submitting" :element-loading-text="`正在提交 ${selectedEntries.length} 笔，逐笔写入北森并回查…`" class="leave-review-body">
       <template v-if="plan">
         <p>{{ plan.staffName?.split('(')[0] }} · 已选 {{ selectedEntries.length }} 笔、{{ selectedHours }} 小时</p>
         <el-table :data="plan.entries" row-key="id" max-height="380" class="leave-review-table">
@@ -119,7 +120,8 @@
         </el-table>
         <p class="leave-muted">{{ shownBalances.map(b => b.unlimited ? `${b.name} 本次 ${b.used} 小时（不限）` : `${b.name} ${b.hours} → ${b.remaining} 小时`).join('；') }}</p>
       </template>
-      <template #footer><el-button :disabled="leave.submitting" @click="reviewVisible = false">返回核对</el-button><el-button type="primary" :loading="leave.submitting" :disabled="busy || leave.consumed || !selectedEntries.length" @click="submit">确认提交 {{ selectedEntries.length }} 笔</el-button></template>
+      </div>
+      <template #footer><el-button :disabled="leave.submitting" @click="reviewVisible = false">返回核对</el-button><el-button type="primary" :loading="leave.submitting" :disabled="busy || leave.consumed || !selectedEntries.length" @click="submit">{{ leave.submitting ? '提交中' : `确认提交 ${selectedEntries.length} 笔` }}</el-button></template>
     </el-dialog>
 
     <el-dialog :model-value="!!resolveTarget" title="核对上次提交结果" width="560px" :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy" @close="resolveTarget = null">
@@ -364,6 +366,7 @@ async function resolvePending() {
 .leave-row-status.is-failed { color: var(--el-color-danger); }
 .leave-row-status.is-skipped { color: var(--text-muted); }
 .leave-review-table :deep(.el-input__wrapper) { box-shadow: 0 0 0 1px var(--line) inset; }
+.leave-review-body { position: relative; min-height: 220px; }
 @media (max-width: 900px) {
   .leave-stats { grid-template-columns: 1fr; }
   .leave-connect { margin-left: 0; }
