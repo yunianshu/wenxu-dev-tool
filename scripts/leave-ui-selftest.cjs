@@ -103,6 +103,15 @@ async function main() {
     assert.equal(setup.plan.value.id, plan.id, '解除后已重新生成方案')
     setup.openResolve(marker)
     setup.reviewVisible.value = true
+    // 假种下拉显示当前实际生效的假种；单一假种直接显示，混合分段显示“自动”哨兵。
+    assert.equal(setup.selectedTypeId({ date: '2026-10-15', allocations: [{ typeId: 'annual' }] }), 'annual')
+    assert.equal(setup.selectedTypeId({ date: '2026-10-15', allocations: [{ typeId: 'comp' }, { typeId: 'annual' }] }), '__auto__')
+    setup.setType({ date: '2026-10-15' }, 'annual')
+    assert.deepEqual(setup.typeOverrides.value['2026-10-15'], { typeId: 'annual', typeName: '年假' })
+    setup.setType({ date: '2026-10-15' }, '__auto__')
+    assert.equal(setup.typeOverrides.value['2026-10-15'], undefined)
+    assert.ok(replanCalls >= 2, '调整假种会触发 replan 重算')
+    await new Promise(resolve => setTimeout(resolve, 20))
     // 浏览器书签通道：不打开登录窗口也能拿到连接脚本，并可复制到剪贴板。
     await setup.showBookmarklet()
     assert.equal(setup.loginMode.value, 'bookmarklet')

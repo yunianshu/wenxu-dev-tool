@@ -128,8 +128,8 @@
           <el-table-column prop="date" label="日期" width="104" />
           <el-table-column label="假种" width="148"><template #default="{ row }">
             <template v-if="row.allocations.length || row.status === 'blocked'">
-              <el-select :model-value="typeOverrides[row.date]?.typeId || ''" :disabled="leave.submitting || replanning" size="small" aria-label="假种" @change="value => setType(row, value)">
-                <el-option label="自动" value="" />
+              <el-select :model-value="selectedTypeId(row)" :disabled="leave.submitting || replanning" size="small" aria-label="假种" @change="value => setType(row, value)">
+                <el-option label="自动" :value="AUTO_TYPE" />
                 <el-option v-for="balance in shownBalances" :key="balance.id" :label="balance.name" :value="balance.id" />
               </el-select>
               <div v-if="row.status === 'blocked'" class="leave-review-error">{{ row.reason }}</div>
@@ -389,9 +389,17 @@ function setCountLate(row, value) {
   overrides[row.date] = { ...(overrides[row.date] || {}), countLate: value }
   void replanPlan(overrides)
 }
+// 假种下拉的“自动”哨兵值：空字符串会被 el-select 当占位符显示成“请选择”。
+const AUTO_TYPE = '__auto__'
+// 下拉显示当前实际生效的假种：手动指定优先；单一假种显示该假种；分段混合显示“自动”。
+function selectedTypeId(row) {
+  if (typeOverrides.value[row.date]?.typeId) return typeOverrides.value[row.date].typeId
+  if (row.allocations.length === 1) return row.allocations[0].typeId
+  return AUTO_TYPE
+}
 function setType(row, value) {
   const next = { ...typeOverrides.value }
-  if (!value) delete next[row.date]
+  if (!value || value === AUTO_TYPE) delete next[row.date]
   else {
     const balance = shownBalances.value.find(item => item.id === value)
     if (!balance) return
