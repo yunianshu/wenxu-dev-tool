@@ -42,7 +42,7 @@
     </div>
 
     <p v-if="loginWaiting && loginMode === 'bookmarklet'" class="leave-muted leave-network-help">首次连接请允许北森页面访问本机网络。若之前拒绝，请在地址栏的网站设置中允许「本地网络访问」后重新点击书签；也可使用「连接北森」登录。旧版书签升级后需重新复制一次。</p>
-    <el-button v-if="loginWaiting" link @click="stopLoginWatcher">停止等待</el-button>
+    <el-button v-if="loginWaiting" link @click="loginMode === 'window' ? closeItalentWindow() : stopLoginWatcher()">{{ loginMode === 'window' ? '收起登录窗口' : '停止等待' }}</el-button>
 
     <el-alert v-if="leave.error" :title="leave.error" type="error" show-icon :closable="false" />
     <div v-if="leave.running || leave.submitting" class="leave-phase" role="status"><el-icon class="is-loading"><Loading /></el-icon>{{ leave.submitting ? '正在重新核对，并按日期倒序提交；请等待平台回查…' : '正在读取出勤、核对余额和校验请假时长…' }}</div>
@@ -198,15 +198,15 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { invoke } from '@tauri-apps/api/core'
 import { WebviewWindow, getAllWebviewWindows } from '@tauri-apps/api/webviewWindow'
+import { listen } from '@tauri-apps/api/event'
 import { state } from '../store'
 import { toPlain } from '../utils/ipc'
 import { useTopbarReady } from '../composables/useTopbarReady'
+import { ITALENT_URL, ITALENT_LABEL } from '../italent-url'
 
 const topbarReady = useTopbarReady()
 const leave = state.leave
 const isTauri = !!window.__TAURI_INTERNALS__
-// 与旧 Kimi 桥接一致：直接落在「我的考勤」列表页，未登录时北森自行跳登录并回跳。
-const ITALENT_URL = 'https://cloud.italent.cn/attendance?metaObjName=Attendance.AttendanceStatistics&app=Attendance&viewName=Attendance.AttendanceDataRecordNavView&_qpt=indexpage#/indexPage'
 const options = leave.options
 const today = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
 if (!options.since) options.since = `${today().slice(0, 7)}-01`
@@ -277,6 +277,8 @@ let loginGeneration = 0
 const loginWaiting = ref(false)
 const loginMode = ref('window')
 const bookmarkletHref = ref('')
+let disposed = false
+let unlistenItalentClose = null
 
 function stopLoginWatcher() {
   loginGeneration++
@@ -285,21 +287,33 @@ function stopLoginWatcher() {
 }
 
 async function openItalentWindow() {
-  const existing = (await getAllWebviewWindows()).find((view) => view.label === 'leave-italent')
+  const existing = (await getAllWebviewWindows()).find((view) => view.label === ITALENT_LABEL)
   if (existing) {
     italentWindow = existing
     await existing.show()
     await existing.setFocus()
     // 隐藏窗口里的旧会话可能已过期：重新加载让北森自行跳回登录页。
-    try { await invoke('eval_in_webview', { label: 'leave-italent', code: 'location.reload()' }) } catch { /* 重载失败由登录探测兜底 */ }
+    try { await invoke('eval_in_webview', { label: ITALENT_LABEL, code: 'location.reload()' }) } catch { /* 重载失败由登录探测兜底 */ }
     return
   }
-  const view = new WebviewWindow('leave-italent', { url: ITALENT_URL, title: '北森 · 一键请假', width: 1180, height: 800, center: true })
+  const view = new WebviewWindow(ITALENT_LABEL, { url: ITALENT_URL, title: '北森 · 一键请假', width: 1180, height: 800, center: true })
   await new Promise((resolve, reject) => {
     view.once('tauri://created', resolve)
     view.once('tauri://error', (event) => reject(new Error(`北森窗口创建失败：${event?.payload || '未知错误'}`)))
   })
   italentWindow = view
+}
+
+async function closeItalentWindow() {
+  try {
+    const view = italentWindow || (await getAllWebviewWindows()).find(item => item.label === ITALENT_LABEL)
+    await view?.hide()
+    stopLoginWatcher()
+    return true
+  } catch {
+    leave.error = '北森窗口未能自动收起，请点击窗口右上角 × 关闭；主程序会继续运行'
+    return false
+  }
 }
 
 // 等待任一通道就绪：内嵌窗口登录成功（隐藏窗口）、书签桥连接或浏览器会话恢复。
@@ -326,8 +340,8 @@ function startLoginWatcher() {
     if (result?.ok && result.loggedIn) {
       stopLoginWatcher()
       if (result.mode === 'embedded') {
-        try { await italentWindow?.hide() } catch { /* 窗口可能已被关闭 */ }
-        ElMessage.success('北森登录成功，窗口已自动关闭')
+        const hidden = await closeItalentWindow()
+        ElMessage.success(hidden ? '北森登录成功，窗口已收起' : '北森登录成功')
       } else if (result.mode === 'bookmarklet') ElMessage.success('已通过书签连接北森')
       else ElMessage.success('已连接北森（浏览器会话）')
       return
@@ -338,7 +352,21 @@ function startLoginWatcher() {
     }
   }, 2500)
 }
-onUnmounted(stopLoginWatcher)
+onMounted(async () => {
+  if (!isTauri) return
+  try {
+    const unlisten = await listen('leave-italent-closed', () => {
+      if (loginMode.value === 'window') stopLoginWatcher()
+    })
+    if (disposed) unlisten()
+    else unlistenItalentClose = unlisten
+  } catch { /* 宿主事件不可用时仍可在界面主动收起窗口或停止等待 */ }
+})
+onUnmounted(() => {
+  disposed = true
+  stopLoginWatcher()
+  unlistenItalentClose?.()
+})
 // 恢复上次未提交的方案（后台留存），重新进入页面不必重新生成。
 onMounted(async () => {
   if (state.leave.plan || locked.value || leave.invalidated) return
@@ -373,7 +401,7 @@ async function connect() {
     loginMode.value = 'window'
     await openItalentWindow()
     startLoginWatcher()
-    ElMessage.success('已打开北森登录窗口，完成登录后自动关闭')
+    ElMessage.success('已打开北森登录窗口，完成登录后自动收起，也可点击 × 收起')
   } catch (error) { leave.error = error.message }
   finally { leave.running = false }
 }

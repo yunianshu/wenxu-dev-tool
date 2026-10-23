@@ -1,4 +1,4 @@
-/** 挂载真实 Vue setup，核对生成、确认、重复点击、切页和编辑后的方案失效。 */
+/** 挂载真实 Vue setup，核对方案状态、确认门以及北森窗口的收起和重开。 */
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
@@ -8,6 +8,27 @@ const { parse, compileScript } = require('@vue/compiler-sfc')
 const { transformSync } = require('esbuild')
 
 async function main() {
+  const messages = []
+  const views = new Map()
+  const createdViews = []
+  const invokes = []
+  const listeners = new Set()
+  let listenDelay = null
+  const emitClose = () => { for (const handler of [...listeners]) handler({ payload: null }) }
+  class LoginWindow {
+    constructor(label, options) {
+      this.label = label; this.visible = options.visible !== false; this.hideCalls = 0; this.focusCalls = 0
+      views.set(label, this); createdViews.push(this)
+    }
+    async once(event, handler) { if (event === 'tauri://created') queueMicrotask(handler); return () => {} }
+    async show() { this.visible = true }
+    async setFocus() { this.focusCalls++ }
+    async hide() {
+      this.hideCalls++
+      if (this.failHide) throw new Error('隔离窗口隐藏失败')
+      this.visible = false
+    }
+  }
   const modules = new Map()
   function load(relative) {
     const filename = path.resolve(__dirname, '..', relative)
@@ -17,7 +38,15 @@ async function main() {
     mod.filename = filename
     mod.paths = Module._nodeModulePaths(path.dirname(filename))
     mod.require = id => {
-      if (id === 'element-plus') return { ElMessage: { success() {} } }
+      if (id === 'element-plus') return { ElMessage: { success(message) { messages.push(message) } } }
+      if (id === '@tauri-apps/api/core') return { invoke: async (command, args) => { invokes.push({ command, args }) } }
+      if (id === '@tauri-apps/api/webviewWindow') return { WebviewWindow: LoginWindow, getAllWebviewWindows: async () => [...views.values()] }
+      if (id === '@tauri-apps/api/event') return { listen: async (event, handler) => {
+        assert.equal(event, 'leave-italent-closed')
+        if (listenDelay) await listenDelay
+        listeners.add(handler)
+        return () => listeners.delete(handler)
+      } }
       if (id.startsWith('.')) {
         let file = path.resolve(path.dirname(filename), id)
         if (!path.extname(file)) file += '.js'
@@ -51,7 +80,7 @@ async function main() {
   let finishSubmit
   const copied = []
   const originalWindow = global.window
-  global.window = { gitReport: {
+  global.window = { __TAURI_INTERNALS__: {}, gitReport: {
     leavePlan: async payload => { assert.equal(Object.getPrototypeOf(payload), Object.prototype); return { ok: true, plan: structuredClone(plan) } },
     leaveReplan: async payload => { replanCalls++; assert.equal(payload.planId, 'isolated-plan'); return { ok: true, plan: { ...structuredClone(plan), overrides: structuredClone(payload.overrides) } } },
     leaveSubmit: async payload => { submitCalls++; submitPayloads.push(payload); return new Promise(resolve => { finishSubmit = resolve }) },
@@ -174,6 +203,101 @@ async function main() {
     await replanDone; await new Promise(resolve => setImmediate(resolve))
     assert.equal(state.leave.plan.entries[0].typeId, 'annual', '后台重启恢复后仍保留手选假种')
 
+    // 使用真实 Vue 连接流程和隔离 Tauri 边界，不访问北森或创建真实申请。
+    const realSetInterval = global.setInterval
+    const realClearInterval = global.clearInterval
+    const ticks = new Map()
+    let nextTimer = 0
+    global.setInterval = callback => { const id = ++nextTimer; ticks.set(id, callback); return id }
+    global.clearInterval = id => ticks.delete(id)
+    const poll = () => { assert.equal(ticks.size, 1); return [...ticks.values()][0]() }
+    const notLoggedIn = async () => ({ ok: true, connected: true, mode: 'embedded', loggedIn: false, bookmarklet: 'javascript:void(1)' })
+    window.gitReport.leaveConnect = notLoggedIn
+    try {
+      await new Promise(resolve => setImmediate(resolve))
+      assert.equal(listeners.size, 1, '切页必须移除旧窗口监听，当前仅保留一个监听')
+      await setup.connect()
+      const popup = views.get('leave-italent')
+      assert.equal(popup.visible, true)
+      assert.equal(setup.loginWaiting.value, true)
+      assert.equal(createdViews.length, 1)
+
+      for (let i = 0; i < 3; i++) {
+        popup.visible = false // 隔离宿主的原生 × 收起结果；Rust 测试覆盖事件分流。
+        emitClose()
+        assert.equal(setup.loginWaiting.value, false, '原生 × 立即停止登录等待')
+        assert.equal(ticks.size, 0)
+        await setup.connect()
+        assert.equal(popup.visible, true, '收起后再次连接能显示原窗口')
+        assert.equal(createdViews.length, 1, '重复连接复用原窗口，保留登录会话')
+      }
+      assert.equal(popup.focusCalls, 3)
+      assert.equal(invokes.length, 3)
+      assert.ok(invokes.every(call => call.command === 'eval_in_webview' && call.args.label === 'leave-italent'))
+      assert.equal(await setup.closeItalentWindow(), true, '界面收起按钮也能收起窗口')
+      assert.equal(popup.visible, false)
+      assert.equal(setup.loginWaiting.value, false)
+
+      await setup.connect()
+      let finishStatus
+      window.gitReport.leaveConnect = () => new Promise(resolve => { finishStatus = resolve })
+      const beforeLateReply = messages.length
+      const polling = poll()
+      popup.visible = false; emitClose()
+      const hiddenAtClose = popup.hideCalls
+      finishStatus({ ok: true, loggedIn: true, mode: 'embedded' })
+      await polling
+      assert.equal(setup.loginWaiting.value, false)
+      assert.equal(popup.hideCalls, hiddenAtClose, '手动关闭后的旧登录响应不能再操作窗口')
+      assert.equal(messages.length, beforeLateReply, '手动关闭后的旧响应不能弹登录成功提示')
+
+      window.gitReport.leaveConnect = notLoggedIn
+      views.delete('leave-italent'); emitClose() // 隔离隐藏失败后原生销毁的兜底路径。
+      await setup.connect()
+      const replacement = views.get('leave-italent')
+      assert.notEqual(replacement, popup)
+      assert.equal(createdViews.length, 2, '窗口被销毁后能重建')
+      window.gitReport.leaveConnect = async () => ({ ok: true, loggedIn: true, mode: 'embedded' })
+      await poll()
+      assert.equal(replacement.visible, false, '登录成功后自动收起')
+      assert.equal(setup.loginWaiting.value, false)
+      assert.equal(messages.at(-1), '北森登录成功，窗口已收起')
+
+      window.gitReport.leaveConnect = notLoggedIn
+      await setup.connect()
+      replacement.failHide = true
+      assert.equal(await setup.closeItalentWindow(), false)
+      assert.match(state.leave.error, /右上角 ×/)
+      assert.equal(setup.loginWaiting.value, true, '主动收起失败仍保留重试入口')
+      window.gitReport.leaveConnect = async () => ({ ok: true, loggedIn: true, mode: 'embedded' })
+      await poll()
+      assert.equal(setup.loginWaiting.value, false)
+      assert.equal(messages.at(-1), '北森登录成功', '隐藏失败不能宣称已收起')
+      replacement.visible = false; emitClose()
+      replacement.failHide = false
+
+      window.gitReport.leaveConnect = notLoggedIn
+      await setup.showBookmarklet()
+      emitClose()
+      assert.equal(setup.loginWaiting.value, true, '北森子窗口关闭不能停止浏览器书签等待')
+      setup.stopLoginWatcher()
+      app.unmount()
+      assert.equal(listeners.size, 0, '卸载后清理窗口监听')
+      let finishListen
+      listenDelay = new Promise(resolve => { finishListen = resolve })
+      app = mount(); app.unmount()
+      finishListen()
+      await new Promise(resolve => setImmediate(resolve))
+      assert.equal(listeners.size, 0, '异步注册晚于卸载时也必须清理监听')
+      listenDelay = null
+      app = mount()
+    } finally {
+      setup.stopLoginWatcher()
+      global.setInterval = realSetInterval
+      global.clearInterval = realClearInterval
+      window.gitReport.leaveConnect = notLoggedIn
+    }
+
     const realNow = Date.now
     try {
       await setup.showBookmarklet()
@@ -183,7 +307,7 @@ async function main() {
       assert.match(state.leave.error, /本地网络访问/)
       assert.match(state.leave.error, /连接北森/)
     } finally { Date.now = realNow; setup.stopLoginWatcher() }
-    console.log('一键请假界面自测通过：确认门、跨页重算锁、过期响应丢弃、手选假种恢复与浏览器权限提示。')
+    console.log('一键请假界面自测通过：确认门、跨页重算锁、过期响应丢弃、手选假种恢复、权限提示及北森窗口收起/重开/迟到响应/监听清理。')
   } finally { app.unmount(); global.window = originalWindow }
 }
 main().catch(error => { console.error(error); process.exitCode = 1 })
