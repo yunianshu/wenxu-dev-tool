@@ -260,7 +260,9 @@ fn handle_host(app: &tauri::AppHandle, message: &Value) {
     let result = app
         .get_webview_window("main")
         .ok_or_else(|| "主窗口不存在".to_string())
-        .and_then(|window| host_window_op_tauri(&window, action, &payload));
+        .and_then(|window| {
+            host_window_op_tauri(&window, action, &payload).map_err(|error| error.to_string())
+        });
     if let Err(error) = result {
         eprintln!("桌面窗口操作失败：{error}")
     }
