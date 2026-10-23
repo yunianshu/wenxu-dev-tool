@@ -1,5 +1,10 @@
 # 一键请假验证记录
 
+## 2026-10-23 调休按获得日/有效期限制（1.4.154）
+
+- 真实探测调休记录页（Attendance.ExchangeLeave，StaffSearchForm 列表）：条目含 OvertimeDate/ValidityDate/Balance/Condition；read 增量读取 compEntries，请假日只能使用获得日更早且未过期的条目（当晚加班次日起可用）；指纹包含条目；余额卡显示最早过期日。
+- `leave-selftest` 42 组（新增条目限制、指定调休受限、无条目回退、read 映射断言）；`leave-ui-selftest`、`knowledge-rpc-selftest`、`build:tauri:renderer` 通过；真实北森只读生成验证 10-23 调休分配正常。未创建真实请假。
+
 ## 2026-10-22 覆盖余量计入额度与卡片固定高度（1.4.153）
 
 - 已有请假覆盖的日期，覆盖终点后的迟到分钟优先计入当月额度（不可调整）；额度卡改为“还可用 X 次 · Y 分钟 / 已用 Y/限额 / 单次 ≤15 分钟”。统计卡固定高度 124px 并截断副文本，数值变化不再抖动。

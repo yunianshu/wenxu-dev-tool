@@ -18,7 +18,7 @@ const clone = (data) => JSON.parse(JSON.stringify(data))
 const card = (day, time = '09:10:00', rest = {}) => ({ id: `att-${day}`, date: `2026-10-${day}`, firstCard: `2026-10-${day} ${time}`, lastCard: '', dayType: '1', remark: '', ...rest })
 const leave = (day, rest = {}) => ({ id: `leave-${day}`, typeId: 'comp', typeName: '调休假', start: `2026-10-${day} 08:30`, end: `2026-10-${day} 09:29`, hoursText: '1小时', status: '2', revocation: '未销假', documentType: '1', ...rest })
 const personal = { name: '事假', id: 'personal', hours: null, unlimited: true, available: true }
-const source = (attendance = [card('15')], comp = 1.5, annual = 36.5, withPersonal = true) => ({ staffId: 'staff-test', staffName: '测试员工', attendance, leaves: [], balances: [{ name: '调休假', id: 'comp', hours: comp, available: true }, { name: '年假', id: 'annual', hours: annual, available: true }, ...(withPersonal ? [personal] : [])] })
+const source = (attendance = [card('15')], comp = 1.5, annual = 36.5, withPersonal = true, compEntries) => ({ staffId: 'staff-test', staffName: '测试员工', attendance, leaves: [], balances: [{ name: '调休假', id: 'comp', hours: comp, available: true }, { name: '年假', id: 'annual', hours: annual, available: true }, ...(withPersonal ? [personal] : [])], ...(compEntries ? { compEntries } : {}) })
 let passed = 0
 async function test(name, run) { await run(); passed++; console.log(`✓ ${name}`) }
 
@@ -76,6 +76,14 @@ function pageFixture({ count = 2, balance = '1.5 小时', applyStatus = 200, app
       assert.equal(query.viewName, 'list-from-platform')
       assert.equal(body.search_data.items[0].value, owner)
       const isAtt = query.metaObjName === att
+      if (query.metaObjName === 'Attendance.ExchangeLeave') {
+        const exchangeRows = [
+          { _id: field('_id', 'ex-1'), OvertimeDate: field('OvertimeDate', '2026/10/01'), ValidityDate: field('ValidityDate', '2026/11/30'), Limit: field('Limit', '1.5'), Balance: field('Balance', '1.5'), Condition: field('Condition', '0') },
+          { _id: field('_id', 'ex-2'), OvertimeDate: field('OvertimeDate', '2026/10/14'), ValidityDate: field('ValidityDate', '2026/10/20'), Limit: field('Limit', '2'), Balance: field('Balance', '0'), Condition: field('Condition', '0') },
+        ]
+        data = { cmp_data: { paging: { total: exchangeRows.length } }, biz_data: exchangeRows }
+        return { ok: true, status: 200, json: async () => data }
+      }
       const size = isAtt ? count : 0
       const page = body.table_data.paging.page
       const rows = Array.from({ length: Math.max(0, Math.min(100, size - page * 100)) }, (_, index) => {
@@ -159,6 +167,27 @@ async function main() {
     const early = source([card('08', '08:50:00')])
     early.leaves.push(leave('08', { end: '2026-10-08 08:50', hoursText: '0.5小时' }))
     assert.equal(buildPlan(early, OPTIONS).quota['2026-10'], undefined)
+  })
+  await test('调休按获得日与有效期限制：当日获得不可用于之前/当天，过期不可用', () => {
+    const entries = [
+      { id: 'today', earnedDate: '2026-10-15', expires: '2026-11-30', hours: 1 },
+      { id: 'expired', earnedDate: '2026-10-01', expires: '2026-10-14', hours: 1 },
+      { id: 'ok', earnedDate: '2026-09-01', expires: '2026-11-30', hours: 1 },
+    ]
+    // 10-15 只能用 9 月获得的条目；10-16 起当日条目也可用。
+    const plan = buildPlan(source([card('15', '09:10:00'), card('16', '09:10:00')], 3, 36.5, true, entries), { ...OPTIONS, until: '2026-10-16' })
+    assert.deepEqual(plan.entries.map(item => [item.date, item.typeName, item.hours]), [['2026-10-16', '调休假', 0.5], ['2026-10-15', '调休假', 0.5]])
+    assert.equal(plan.compValidUntil, '2026-11-30', '已过期条目不计入有效至')
+    // 只有“当天获得”的条目时当天不可用调休，改年假并说明原因。
+    const onlyToday = buildPlan(source([card('15', '09:10:00')], 1, 36.5, true, [{ id: 'today', earnedDate: '2026-10-15', expires: '2026-11-30', hours: 1 }]), OPTIONS)
+    assert.deepEqual(onlyToday.entries.map(item => [item.typeName, item.hours]), [['年假', 0.5]])
+    assert.match(onlyToday.rows[0].reason, /调休获得日晚于当天或已过期/)
+    // 全部过期时同口径；指定调休也被限制。
+    const forced = buildPlan(source([card('15', '09:10:00')], 1, 36.5, true, [{ id: 'old', earnedDate: '2026-10-01', expires: '2026-10-10', hours: 1 }]), OPTIONS, {}, new Set(), { '2026-10-15': { typeId: 'comp' } })
+    assert.deepEqual(forced.entries.map(item => [item.typeName, item.hours]), [['年假', 0.5]])
+    assert.match(forced.rows[0].reason, /调休获得日/)
+    // 无条目（旧数据/隔离夹具）回退总额限制。
+    assert.deepEqual(buildPlan(source([card('15', '09:10:00')], 1, 36.5), OPTIONS).entries.map(item => [item.typeName, item.hours]), [['调休假', 0.5]])
   })
   await test('重复覆盖按请假块终点判断，部分覆盖阻断', () => {
     const data = source([card('15', '09:00:59')], 0.5, 0)
@@ -484,6 +513,7 @@ async function main() {
     const fixture = pageFixture({ count: 101 })
     const data = await fixture.run('read', OPTIONS)
     assert.equal(data.attendance.length, 101)
+    assert.equal(JSON.stringify(data.compEntries), JSON.stringify([{ id: 'ex-1', earnedDate: '2026-10-01', expires: '2026-11-30', hours: 1.5 }, { id: 'ex-2', earnedDate: '2026-10-14', expires: '2026-10-20', hours: 0 }]))
     assert.deepEqual(Array.from(data.balances, item => item.hours), [1.5, 36.5, null])
     const pages = fixture.calls.filter(item => item.path.endsWith('/TableList') && item.query.metaObjName === 'Attendance.AttendanceStatistics')
     assert.deepEqual(pages.map(item => item.body.table_data.paging.page), [0, 1])

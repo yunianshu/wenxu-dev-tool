@@ -55,7 +55,7 @@
           <span class="leave-stat-label">{{ balance.name }}可用</span>
           <strong v-if="balance.unlimited">不限</strong>
           <strong v-else>{{ balance.hours }}<small> 小时</small></strong>
-          <span class="leave-stat-sub">本次 {{ balance.used }} · 剩余 {{ balance.unlimited ? '不限' : balance.remaining }}</span>
+          <span class="leave-stat-sub">本次 {{ balance.used }} · 剩余 {{ balance.unlimited ? '不限' : balance.remaining }}<template v-if="balance.name === '调休假' && plan.compValidUntil"> · 有效至 {{ plan.compValidUntil }}</template></span>
         </div>
         <div v-if="quotaNow" class="leave-stat">
           <span class="leave-stat-label">本月迟到额度 · {{ quotaNow.month }}</span>

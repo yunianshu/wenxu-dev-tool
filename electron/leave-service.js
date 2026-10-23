@@ -71,6 +71,14 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
   })
   if (!balances.some((item) => item.name === '调休假')) throw new Error('调休假余额数据不完整')
   if (!balances.some((item) => item.name === '年假')) throw new Error('年假余额数据不完整')
+  // 调休条目（加班获得日 + 有效期）：请假日只能使用获得日更早且未过期的条目；
+  // 未提供条目时（旧数据/隔离夹具）退回总额限制。
+  const compEntries = Array.isArray(source.compEntries)
+    ? source.compEntries
+      .filter((entry) => entry && Number.isFinite(entry.hours) && entry.hours > 0 && validDate(entry.earnedDate) && validDate(entry.expires))
+      .map((entry) => ({ ...entry, usable: Math.floor((entry.hours + 1e-8) * 2) / 2, used: 0 }))
+      .sort((a, b) => a.expires.localeCompare(b.expires) || a.earnedDate.localeCompare(b.earnedDate))
+    : null
   const rows = []
   const candidates = []
   const coveredResiduals = []
@@ -186,18 +194,41 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
   const comp = balances.find((item) => item.name === '调休假')
   const annual = balances.find((item) => item.name === '年假')
   const fallback = balances.find((item) => item.unlimited && item.available !== false)
+  // 调休可用性按请假日计算：条目获得日须早于请假日（当晚加班次日起可用）且请假日未过有效期。
+  const compValid = (entry, date) => entry.earnedDate < date && date <= entry.expires
+  const compFor = (date) => {
+    if (comp.available === false || banned.has(`${date}|${comp.id}`)) return 0
+    if (!compEntries) return Math.max(0, comp.usable - comp.used)
+    return compEntries.reduce((sum, entry) => sum + (compValid(entry, date) ? entry.usable - entry.used : 0), 0)
+  }
+  const compConsume = (date, take) => {
+    if (!compEntries) return
+    let left = take
+    for (const entry of compEntries) {
+      if (left <= 1e-9) break
+      if (!compValid(entry, date)) continue
+      const use = Math.min(entry.usable - entry.used, left)
+      if (use <= 0) continue
+      entry.used = Math.round((entry.used + use) * 1000000) / 1000000
+      left = Math.round((left - use) * 1000000) / 1000000
+    }
+  }
+  const compPoolLeft = () => (compEntries ? compEntries.reduce((sum, entry) => sum + entry.usable - entry.used, 0) : Math.max(0, comp.usable - comp.used))
   const available = (row, balance) => {
     if (!balance || balance.available === false || banned.has(`${row.date}|${balance.id}`)) return 0
+    if (balance === comp) return compFor(row.date)
     return balance.unlimited ? Infinity : Math.max(0, balance.usable - balance.used)
   }
   const push = (row, balance, take, cursor) => {
     const end = advanceMs(cursor, take * 60 * MINUTE, ...lunchOf(row))
     row.allocations.push({ id: `${row.date}:${balance.id}`, date: row.date, firstCard: row.firstCard, start: formatStamp(cursor), end: formatStamp(end), hours: take, typeId: balance.id, typeName: balance.name })
     balance.used = Math.round((balance.used + take) * 1000000) / 1000000
+    if (balance === comp) compConsume(row.date, take)
     return end
   }
   const reasonFor = (row, segments) => {
     if (row.typeFallback) return `${row.typeFallback}余额不足，自动改用 ${segments.map((item) => item.balance.name).join('+')}`
+    if (row.compRestricted) return `调休获得日晚于当天或已过期，改用 ${segments.map((item) => item.balance.name).join('+')}`
     if (!row.countLate && row.residualLate > 0) return '不计算迟到，多请 0.5 小时'
     if (row.remainingLate > 0) return `${row.leaveEnd.slice(11)} 后仍有 ${row.remainingLate} 分钟迟到，计入本月额度`
     if (segments.length > 1) return `${segments.map((item) => item.balance.name).join('+')} 分段拼够`
@@ -213,7 +244,9 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
     // 调休与年假都严格按余额限制，差额由事假补足。
     const forced = balances.find((item) => item.id === override.typeId)
     const forcedReady = forced && forced.available !== false && !banned.has(`${row.date}|${forced.id}`) && available(row, forced) + 1e-8 >= row.hours
-    if (forced && !forcedReady) row.typeFallback = forced.name
+    // 指定调休但当天不可用（获得日晚于当天或已过期）与余额不足分别说明。
+    if (forced && !forcedReady && forced === comp && compPoolLeft() > 0 && compFor(row.date) === 0) row.compRestricted = true
+    else if (forced && !forcedReady) row.typeFallback = forced.name
     if (forcedReady) {
       push(row, forced, row.hours, cursor)
       row.status = 'ready'
@@ -244,9 +277,12 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
       continue
     }
     for (const segment of segments) next = push(row, segment.balance, segment.take, next)
+    // 调休有余额但当天用不了（获得日晚于当天或已过期）时说明原因，避免误解。
+    if (!segments.some((segment) => segment.balance === comp) && compPoolLeft() > 0 && available(row, comp) === 0) row.compRestricted = true
     row.status = 'ready'
     row.reason = reasonFor(row, segments)
   }
+  const compLeftEntries = compEntries ? compEntries.filter((entry) => entry.usable - entry.used > 0 && entry.expires >= options.until) : []
   return {
     staffId: source.staffId, staffName: source.staffName, options, rows,
     entries: rows.flatMap((row) => row.allocations).sort((a, b) => a.date === b.date ? a.start.localeCompare(b.start) : b.date.localeCompare(a.date)),
@@ -254,6 +290,7 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
     totalHours: rows.reduce((sum, row) => sum + row.allocations.reduce((total, entry) => total + entry.hours, 0), 0),
     quota: Object.fromEntries([...quota.entries()].map(([month, used]) => [month, { ...used }])),
     quotaLimits: { days: MAX_TOLERATED_DAYS_PER_MONTH, minutes: MAX_TOLERATED_MINUTES_PER_MONTH },
+    compValidUntil: compLeftEntries.length ? compLeftEntries.reduce((min, entry) => entry.expires < min ? entry.expires : min, compLeftEntries[0].expires) : null,
   }
 }
 
@@ -282,7 +319,8 @@ function normalizeOverrides(input, plan) {
 function fingerprint(source) {  const attendance = source.attendance.map(({ id, date, firstCard, dayType, remark }) => ({ id, date, firstCard: Number.isFinite(minuteStamp(firstCard)) ? minuteStamp(firstCard) : firstCard, dayType, remark })).sort((a, b) => a.date.localeCompare(b.date))
   const leaves = source.leaves.filter(activeLeave).sort((a, b) => a.id.localeCompare(b.id))
   const balances = [...source.balances].sort((a, b) => a.name.localeCompare(b.name))
-  return createHash('sha256').update(JSON.stringify({ staffId: source.staffId, attendance, leaves, balances })).digest('hex')
+  const compEntries = (source.compEntries || []).map(({ id, earnedDate, expires, hours }) => ({ id, earnedDate, expires, hours })).sort((a, b) => String(a.id).localeCompare(String(b.id)))
+  return createHash('sha256').update(JSON.stringify({ staffId: source.staffId, attendance, leaves, balances, compEntries })).digest('hex')
 }
 
 /** 只保存结果待核对的请求，不保存表单、Cookie 或签名；重启后仍防止盲目重发。 */
