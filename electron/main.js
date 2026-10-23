@@ -26,6 +26,7 @@ const { LeaveService, createFileLedger, createPlanStore } = require('./leave-ser
 const { ItalentBrowser, ATTENDANCE_URL } = require('./italent-browser')
 const { ItalentEmbedded, ItalentBookmarklet } = require('./italent-embedded')
 const { ItalentAdapter } = require('./italent-adapter')
+const { createBookmarkletConfig } = require('./italent-bridge')
 const { ChromeSSOWatcher } = require('./italent-history')
 // Tauri 后台下与宿主共用的调用通道（entry.cjs 已加载同一模块实例）；旧 Electron 下未启用。
 const compatHost = require('../backend/electron-compat.cjs').host
@@ -866,7 +867,7 @@ function registerIpc() {
   // Tauri 桌面走通道链：已登录浏览器（Kimi 桥）> 书签桥（无扩展/账号依赖）> 内嵌登录窗口；
   // PLM_LEAVE_ADAPTER=browser|embedded 可强制通道；旧 Electron 通道即浏览器桥。
   const leaveAdapter = process.env.PLM_NODE_BACKEND === '1'
-    ? new ItalentAdapter({ embedded: new ItalentEmbedded({ host: compatHost }), bookmarklet: new ItalentBookmarklet() })
+    ? new ItalentAdapter({ embedded: new ItalentEmbedded({ host: compatHost }), bookmarklet: new ItalentBookmarklet({ loadConfig: createBookmarkletConfig(app.getPath('userData'), store) }) })
     : new ItalentBrowser()
   // 企微捕获登录：后台常驻监听 Chrome 历史中新鲜的企业微信签名直登 URL（用户日常在企微
   // 点开汉印HR/北森消息即产生），捕获后自动为隐藏的内嵌窗口登入并完成门户→考勤会话迁移，
@@ -895,7 +896,8 @@ function registerIpc() {
         if (!leaveService) {
           leaveService = new LeaveService({ adapter: leaveAdapter, ledger: createFileLedger(app.getPath('userData')), planStore: createPlanStore(app.getPath('userData')) })
           // 上次未提交的方案自动恢复，重新进入页面不必重新生成。
-          await leaveService.restore()
+          const restored = await leaveService.restore()
+          if (method === 'restore') return { ok: true, ...restored }
         }
         return { ok: true, ...(await leaveService[method](payload)) }
       }

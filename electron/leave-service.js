@@ -50,6 +50,13 @@ function normalizeOptions(input = {}, now = Date.now()) {
   return result
 }
 
+// 额度以自然月统计；选区只控制本次申请，不缩小核对范围。
+function monthlyOptions(options, now = Date.now()) {
+  const month = options.until.slice(0, 7)
+  const last = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5)), 0)).toISOString().slice(0, 10)
+  return { ...options, since: `${options.since.slice(0, 7)}-01`, until: last < shanghaiDate(now) ? last : shanghaiDate(now) }
+}
+
 function activeLeave(leave) {
   return ['1', '2'].includes(leave.status) && leave.revocation !== '已销假'
 }
@@ -85,11 +92,12 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
   const dates = new Set()
   if (source.leaves.some((leave) => !leave.status || (activeLeave(leave) && (!Number.isFinite(stamp(leave.start)) || !Number.isFinite(stamp(leave.end)) || stamp(leave.start) >= stamp(leave.end))))) throw new Error('已有请假记录不完整，请在北森核对')
   for (const record of [...source.attendance].sort((a, b) => b.date.localeCompare(a.date))) {
-    if (record.date < options.since || record.date > options.until) continue
+    if (record.date.slice(0, 7) < options.since.slice(0, 7) || record.date.slice(0, 7) > options.until.slice(0, 7)) continue
+    const selected = record.date >= options.since && record.date <= options.until
     if (!validDate(record.date) || dates.has(record.date)) throw new Error('出勤日期无效或同一天存在多条记录，请在北森核对')
     dates.add(record.date)
     const row = { date: record.date, firstCard: record.firstCard || '', lateMinutes: 0, hours: 0, status: 'skipped', reason: '', allocations: [] }
-    rows.push(row)
+    if (selected) rows.push(row)
     if (record.dayType !== '1') { row.reason = record.dayType ? '非工作日' : '班次类型不明，请在北森核对'; continue }
     if (!record.firstCard) { row.reason = '缺少首打卡，需手动核对'; continue }
     const first = minuteStamp(record.firstCard)
@@ -125,6 +133,14 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
       continue
     }
     if (/(?:假|出差|外出|补签)/.test(record.remark || '')) { row.status = 'blocked'; row.reason = '考勤备注已有相关申请，需手动核对'; continue }
+    if (!selected) {
+      // 选区外不假设将来会补请假，只统计已经发生的额度内迟到。
+      if (first - start <= EARLY_TOLERANCE) {
+        row.residualLate = row.lateMinutes
+        coveredResiduals.push(row)
+      }
+      continue
+    }
     if (blocked[record.date]) { row.status = 'blocked'; row.reason = blocked[record.date]; continue }
     // 基础请假：08:30–08:45 为 0（可只计迟到）；08:46–09:15 为 0.5 小时；
     // 09:16 起按有效迟到（扣除午休）向上取整。是否计算迟到由额度或用户选择决定：
@@ -194,13 +210,12 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
   const comp = balances.find((item) => item.name === '调休假')
   const annual = balances.find((item) => item.name === '年假')
   const fallback = balances.find((item) => item.unlimited && item.available !== false)
-  // 调休可用性按请假日计算：条目获得日须早于请假日（当晚加班次日起可用）且请假日未过有效期。
   // 调休可用性按请假日计算：获得日 ≤ 请假日 ≤ 有效期（当天加班可用于当天迟到，之前的日期不可）。
   const compValid = (entry, date) => entry.earnedDate <= date && date <= entry.expires
   const compFor = (date) => {
     if (comp.available === false || banned.has(`${date}|${comp.id}`)) return 0
     if (!compEntries) return Math.max(0, comp.usable - comp.used)
-    return compEntries.reduce((sum, entry) => sum + (compValid(entry, date) ? entry.usable - entry.used : 0), 0)
+    return Math.min(Math.max(0, comp.usable - comp.used), compEntries.reduce((sum, entry) => sum + (compValid(entry, date) ? entry.usable - entry.used : 0), 0))
   }
   const compConsume = (date, take) => {
     if (!compEntries) return
@@ -214,7 +229,7 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
       left = Math.round((left - use) * 1000000) / 1000000
     }
   }
-  const compPoolLeft = () => (compEntries ? compEntries.reduce((sum, entry) => sum + entry.usable - entry.used, 0) : Math.max(0, comp.usable - comp.used))
+  const compPoolLeft = () => Math.min(Math.max(0, comp.usable - comp.used), compEntries ? compEntries.reduce((sum, entry) => sum + entry.usable - entry.used, 0) : Infinity)
   const available = (row, balance) => {
     if (!balance || balance.available === false || banned.has(`${row.date}|${balance.id}`)) return 0
     if (balance === comp) return compFor(row.date)
@@ -285,7 +300,7 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
   }
   const compLeftEntries = compEntries ? compEntries.filter((entry) => entry.usable - entry.used > 0 && entry.expires >= options.until) : []
   return {
-    staffId: source.staffId, staffName: source.staffName, options, rows,
+    staffId: source.staffId, staffName: source.staffName, options, rows, overrides,
     entries: rows.flatMap((row) => row.allocations).sort((a, b) => a.date === b.date ? a.start.localeCompare(b.start) : b.date.localeCompare(a.date)),
     balances: balances.map(({ usable, ...item }) => ({ ...item, remaining: item.unlimited ? null : Math.round((item.hours - item.used) * 1000000) / 1000000 })),
     totalHours: rows.reduce((sum, row) => sum + row.allocations.reduce((total, entry) => total + entry.hours, 0), 0),
@@ -383,7 +398,12 @@ class LeaveService {
     try { return await fn() } finally { this.busy = false }
   }
 
-  connect() { return this.exclusive(() => { this.pending = null; this.planStore.clear(); return this.adapter.connect() }) }
+  connect(input = {}) { return this.exclusive(() => {
+    if (!input.statusOnly) { this.pending = null; this.planStore.clear() }
+    return this.adapter.connect(input)
+  }) }
+
+  readSource(options) { return this.adapter.read(monthlyOptions(options, this.now())) }
 
   /** 恢复上次未提交的方案（重启后台后）；按当前规则用留存快照重算，旧版本生成的行自动纠正。 */
   restore() {
@@ -391,6 +411,10 @@ class LeaveService {
       if (this.pending) return { plan: this.pending.publicPlan }
       const saved = this.planStore.load()
       if (!saved) return { plan: null }
+      if (!saved.monthlyCoverage) {
+        this.planStore.clear()
+        return { plan: null, notice: '旧方案未核对完整月份，请重新生成请假方案' }
+      }
       const rebuilt = buildPlan(saved.source, saved.publicPlan.options, saved.blocked, new Set(saved.banned || []), saved.overrides || {})
       const publicPlan = { ...rebuilt, id: saved.publicPlan.id, createdAt: this.now(), expiresAt: this.now() + PLAN_TTL, unresolved: saved.publicPlan.unresolved || [] }
       this.pending = { ...saved, publicPlan }
@@ -403,7 +427,7 @@ class LeaveService {
     return this.exclusive(async () => {
       this.pending = null
       const options = normalizeOptions(input, this.now())
-      const source = await this.adapter.read(options)
+      const source = await this.readSource(options)
       const blocked = {}
       const previous = this.ledger.load()
       // 平台迟到入库的申请可以自动核销本地标记；查不到记录时仍需本人确认。
@@ -419,7 +443,7 @@ class LeaveService {
       const plan = buildPlan(source, options, blocked)
       const createdAt = this.now()
       const publicPlan = { ...plan, unresolved, id: randomUUID(), createdAt, expiresAt: createdAt + PLAN_TTL }
-      this.pending = { publicPlan, fingerprint: fingerprint(source), blocked, source, banned: [] }
+      this.pending = { publicPlan, fingerprint: fingerprint(source), blocked, source, banned: [], monthlyCoverage: true }
       this.planStore.save(this.pending)
       return { plan: publicPlan }
     })
@@ -456,7 +480,7 @@ class LeaveService {
       const marker = ledger.find((entry) => entry.staffId === plan.staffId && markerId(entry) === input.markerId)
       if (!marker) throw new Error('待核对记录已变化，请重新生成')
       if (!(this.now() - Date.parse(marker.at) >= MINUTE)) throw new Error('提交不足一分钟，请稍后重新生成并核对，避免平台仍在处理')
-      const current = await this.adapter.read({ ...plan.options, staffId: plan.staffId })
+      const current = await this.readSource({ ...plan.options, staffId: plan.staffId })
       if (current.staffId !== plan.staffId) throw new Error('北森登录账号已变化，请重新生成')
       const overlaps = current.leaves.filter((leave) => activeLeave(leave) && overlap(stamp(marker.start), stamp(marker.end), stamp(leave.start), stamp(leave.end)))
       if (overlaps.length && !overlaps.some((leave) => matchesMarker(leave, marker))) throw new Error('北森已存在重叠申请，请先在平台核对后重新生成')
@@ -498,7 +522,7 @@ class LeaveService {
       this.pending = null
       this.planStore.clear()
       const options = { ...plan.options, staffId: plan.staffId }
-      const source = await this.adapter.read(options)
+      const source = await this.readSource(options)
       if (fingerprint(source) !== pending.fingerprint) throw new Error('出勤、已有请假或余额发生变化，请重新生成并确认方案')
       const results = chosen.map((entry) => ({ ...entry, status: 'notSubmitted', message: '尚未提交' }))
       let ledger = this.ledger.load()
@@ -507,7 +531,7 @@ class LeaveService {
         if (ledger.some((item) => item.key === key)) { result.status = 'blocked'; result.message = '存在待核对的提交记录，已停止后续申请'; break }
         let attempted = false
         try {
-          const current = await this.adapter.read(options)
+          const current = await this.readSource(options)
           if (current.staffId !== plan.staffId || minuteStamp(current.attendance.find((item) => item.date === result.date)?.firstCard) !== minuteStamp(result.firstCard)) throw new Error('登录账号或首打卡发生变化，请重新生成方案')
           if (current.leaves.some((leave) => activeLeave(leave) && overlap(stamp(result.start), stamp(result.end), stamp(leave.start), stamp(leave.end)))) throw new Error('该时段已有请假申请，请重新生成方案')
           const balance = current.balances.find((item) => item.id === result.typeId)
@@ -524,7 +548,7 @@ class LeaveService {
           for (let attempt = 0; attempt < 6; attempt++) {
             if (attempt) await this.pause(1500)
             try {
-              const check = await this.adapter.read(options)
+              const check = await this.readSource(options)
               if (check.staffId !== plan.staffId) throw new Error('北森登录账号已变化')
               found = check.leaves.find((leave) => activeLeave(leave) && leave.typeId === result.typeId && leave.start.slice(0, 16) === result.start && leave.end.slice(0, 16) === result.end && /^\d+(?:\.\d+)?\s*小时$/.test(leave.hoursText) && Number.parseFloat(leave.hoursText) === result.hours)
               if (found) break

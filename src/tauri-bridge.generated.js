@@ -235,7 +235,7 @@ contextBridge.exposeInMainWorld('gitReport', {
   // 发布历史的更新内容在后台整理完成后推送，界面据此刷新
   onDeployHistoryUpdated: (cb) => subscribe('deploy:history:updated', cb),
   // 北森请假：生成只读方案，确认后才允许写入。
-  leaveConnect: () => ipcRenderer.invoke('leave:connect'),
+  leaveConnect: (payload) => ipcRenderer.invoke('leave:connect', toPlain(payload)),
   leavePlan: (payload) => ipcRenderer.invoke('leave:plan', toPlain(payload)),
   leaveReplan: (payload) => ipcRenderer.invoke('leave:replan', toPlain(payload)),
   leaveRestore: () => ipcRenderer.invoke('leave:restore'),

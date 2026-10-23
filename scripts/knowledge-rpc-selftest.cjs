@@ -152,6 +152,13 @@ async function main() {
   try {
     backend = await startBackend(userData)
     const electron = electronApi(backend.rpc), tauri = tauriApi(backend.rpc)
+    // 仅检查参数传递，不启动配对服务或写入真实凭据库。
+    for (const createApi of [electronApi, tauriApi]) {
+      const api = createApi(async (channel, payload) => ({ channel, payload }))
+      const result = await api.leaveConnect({ statusOnly: true, mode: 'bookmarklet' })
+      assert.equal(result.channel, 'leave:connect')
+      assert.equal(JSON.stringify(result.payload), JSON.stringify({ statusOnly: true, mode: 'bookmarklet' }))
+    }
     for (const api of [electron, tauri]) {
       assert.equal(typeof api.leaveConnect, 'function')
       assert.match((await api.leavePlan({ since: 'invalid-date' })).error, /日期/)

@@ -36,7 +36,7 @@ async function main() {
   const { state } = load('src/store.js')
   const entry = { id: 'entry', date: '2026-10-15', typeId: 'annual', typeName: '年假', start: '2026-10-15 08:30', end: '2026-10-15 09:00', hours: 0.5 }
   const plan = {
-    id: 'isolated-plan', staffName: '测试员工', totalHours: 0.5, entries: [entry],
+    id: 'isolated-plan', staffName: '测试员工', totalHours: 0.5, entries: [entry], overrides: {},
     rows: [{ date: '2026-10-15', firstCard: '2026-10-15 09:00', lateMinutes: 30, status: 'ready', countLate: true, remainingLate: 0, allocations: [entry] }],
     balances: [
       { name: '调休假', id: 'comp', hours: 0, available: true, used: 0, remaining: 0 },
@@ -53,7 +53,7 @@ async function main() {
   const originalWindow = global.window
   global.window = { gitReport: {
     leavePlan: async payload => { assert.equal(Object.getPrototypeOf(payload), Object.prototype); return { ok: true, plan: structuredClone(plan) } },
-    leaveReplan: async payload => { replanCalls++; assert.equal(payload.planId, 'isolated-plan'); return { ok: true, plan: structuredClone(plan) } },
+    leaveReplan: async payload => { replanCalls++; assert.equal(payload.planId, 'isolated-plan'); return { ok: true, plan: { ...structuredClone(plan), overrides: structuredClone(payload.overrides) } } },
     leaveSubmit: async payload => { submitCalls++; submitPayloads.push(payload); return new Promise(resolve => { finishSubmit = resolve }) },
     leaveResolve: async payload => { resolveCalls++; assert.deepEqual(payload, { planId: 'isolated-plan', markerId: 'isolated-marker', confirmedMissing: true }); return { ok: true, resolved: true } },
     leaveConnect: async () => ({ ok: true, connected: true, mode: 'embedded', loggedIn: false, bookmarklet: 'javascript:void(1)' }),
@@ -107,9 +107,11 @@ async function main() {
     assert.equal(setup.selectedTypeId({ date: '2026-10-15', allocations: [{ typeId: 'annual' }] }), 'annual')
     assert.equal(setup.selectedTypeId({ date: '2026-10-15', allocations: [{ typeId: 'comp' }, { typeId: 'annual' }] }), '__auto__')
     setup.setType({ date: '2026-10-15' }, 'annual')
-    assert.deepEqual(setup.typeOverrides.value['2026-10-15'], { typeId: 'annual', typeName: '年假' })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(setup.typeOverrides.value['2026-10-15'].typeId, 'annual')
     setup.setType({ date: '2026-10-15' }, '__auto__')
-    assert.equal(setup.typeOverrides.value['2026-10-15'], undefined)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(setup.typeOverrides.value['2026-10-15'].typeId, undefined)
     assert.ok(replanCalls >= 2, '调整假种会触发 replan 重算')
     await new Promise(resolve => setTimeout(resolve, 20))
     // 浏览器书签通道：不打开登录窗口也能拿到连接脚本，并可复制到剪贴板。
@@ -126,7 +128,62 @@ async function main() {
     assert.equal(setup.reviewVisible.value, false)
     assert.equal(setup.resolveTarget.value, null)
     assert.equal(state.leave.results.length, 0)
-    console.log('一键请假界面自测通过：提交与解除标记的确认门、等待期、重复点击、切页状态与编辑失效。')
+    // 延迟重算、切页以及配置变化都不能恢复旧方案。
+    await setup.generate()
+    let finishReplan
+    window.gitReport.leaveReplan = async () => new Promise(resolve => { finishReplan = resolve })
+    const updating = setup.replanPlan({})
+    assert.equal(setup.locked.value, true)
+    app.unmount(); app = mount()
+    assert.equal(setup.locked.value, true, '切页后仍保留重算锁')
+    setup.options.workStart = '10:00'
+    finishReplan({ ok: true, plan: structuredClone(plan) })
+    await updating
+    assert.equal(state.leave.plan, null, '旧响应不能复活配置变化前的方案')
+    assert.equal(setup.locked.value, false)
+    window.gitReport.leaveRestore = async () => ({ ok: true, plan: structuredClone(plan) })
+    app.unmount(); app = mount()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(state.leave.plan, null, '配置变化后切页也不能重新恢复旧方案')
+
+    // 接入真实业务服务，核对显式假种跨页面和后台恢复后仍可继续调整。
+    const { LeaveService } = require('../electron/leave-service')
+    const data = { staffId: 'staff-test', staffName: '测试员工', attendance: [{ id: 'a', date: '2026-10-15', firstCard: '2026-10-15 09:10:00', dayType: '1', remark: '' }], leaves: [], balances: [{ name: '调休假', id: 'comp', hours: 10, available: true }, { name: '年假', id: 'annual', hours: 10, available: true }] }
+    let saved
+    const planStore = { load: () => structuredClone(saved), save: value => { saved = structuredClone(value) }, clear: () => { saved = null } }
+    let service = new LeaveService({ adapter: { read: async () => structuredClone(data) }, planStore, now: () => Date.parse('2026-10-15T06:00:00Z') })
+    const generated = await service.plan({})
+    const forced = await service.replan({ planId: generated.plan.id, overrides: { '2026-10-15': { typeId: 'annual', countLate: true } } })
+    state.leave.plan = forced.plan
+    app.unmount(); app = mount()
+    let replanDone
+    window.gitReport.leaveReplan = async payload => { replanDone = service.replan(payload); return { ok: true, ...await replanDone } }
+    setup.setCountLate(state.leave.plan.rows[0], false)
+    await replanDone; await new Promise(resolve => setImmediate(resolve))
+    assert.equal(state.leave.plan.entries[0].typeId, 'annual', '切页后更改迟到不能丢失手选年假')
+    assert.equal(state.leave.plan.entries[0].hours, 1)
+    service = new LeaveService({ adapter: { read: async () => structuredClone(data) }, planStore, now: () => Date.parse('2026-10-15T06:00:00Z') })
+    state.leave.plan = null
+    state.leave.invalidated = false // 模拟应用重启后的全新界面状态。
+    window.gitReport.leaveRestore = async () => ({ ok: true, ...await service.restore() })
+    app.unmount(); app = mount()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(setup.options.workStart, '08:30', '恢复时同步留存方案的工作时间')
+    assert.equal(setup.typeOverrides.value['2026-10-15'].typeId, 'annual')
+    setup.setCountLate(state.leave.plan.rows[0], true)
+    await replanDone; await new Promise(resolve => setImmediate(resolve))
+    assert.equal(state.leave.plan.entries[0].typeId, 'annual', '后台重启恢复后仍保留手选假种')
+
+    const realNow = Date.now
+    try {
+      await setup.showBookmarklet()
+      Date.now = () => realNow() + 61000
+      await new Promise(resolve => setTimeout(resolve, 2600))
+      assert.equal(setup.loginWaiting.value, false)
+      assert.match(state.leave.error, /本地网络访问/)
+      assert.match(state.leave.error, /连接北森/)
+    } finally { Date.now = realNow; setup.stopLoginWatcher() }
+    console.log('一键请假界面自测通过：确认门、跨页重算锁、过期响应丢弃、手选假种恢复与浏览器权限提示。')
   } finally { app.unmount(); global.window = originalWindow }
 }
 main().catch(error => { console.error(error); process.exitCode = 1 })

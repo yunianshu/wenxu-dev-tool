@@ -13,21 +13,21 @@
     <section class="leave-toolbar">
       <div class="leave-field">
         <span class="leave-field-label">考勤日期</span>
-        <el-date-picker v-model="range" type="daterange" value-format="YYYY-MM-DD" :clearable="false" :disabled="busy" :disabled-date="futureDate" :shortcuts="shortcuts" range-separator="至" start-placeholder="开始日期" end-placeholder="截止日期" aria-label="考勤日期范围" class="leave-range" />
+        <el-date-picker v-model="range" type="daterange" value-format="YYYY-MM-DD" :clearable="false" :disabled="locked" :disabled-date="futureDate" :shortcuts="shortcuts" range-separator="至" start-placeholder="开始日期" end-placeholder="截止日期" aria-label="考勤日期范围" class="leave-range" />
       </div>
       <div class="leave-field">
         <span class="leave-field-label">工作时间</span>
-        <el-time-select v-model="options.workStart" start="00:00" end="23:30" step="00:30" :clearable="false" :disabled="busy" aria-label="上班时间" class="leave-time" />
+        <el-time-select v-model="options.workStart" start="00:00" end="23:30" step="00:30" :clearable="false" :disabled="locked" aria-label="上班时间" class="leave-time" />
         <span class="leave-time-sep">至</span>
-        <el-time-select v-model="options.workEnd" start="00:00" end="23:30" step="00:30" :clearable="false" :disabled="busy" aria-label="下班时间" class="leave-time" />
+        <el-time-select v-model="options.workEnd" start="00:00" end="23:30" step="00:30" :clearable="false" :disabled="locked" aria-label="下班时间" class="leave-time" />
       </div>
       <div class="leave-field leave-field-reason">
         <span class="leave-field-label">默认事由</span>
-        <el-input v-model="options.reason" :disabled="busy" maxlength="1000" placeholder="选填" class="leave-reason" aria-label="默认请假事由" />
+        <el-input v-model="options.reason" :disabled="locked" maxlength="1000" placeholder="选填" class="leave-reason" aria-label="默认请假事由" />
       </div>
       <div class="leave-connect-group">
-        <el-button :disabled="busy" @click="showBookmarklet">浏览器书签</el-button>
-        <el-button :disabled="busy" @click="connect">连接北森</el-button>
+        <el-button :disabled="locked" @click="showBookmarklet">浏览器书签</el-button>
+        <el-button :disabled="locked" @click="connect">连接北森</el-button>
       </div>
     </section>
 
@@ -40,6 +40,9 @@
         <el-button link class="leave-bookmarklet-copy" @click="copyBookmarklet">复制</el-button>
       </template>
     </div>
+
+    <p v-if="loginWaiting && loginMode === 'bookmarklet'" class="leave-muted leave-network-help">首次连接请允许北森页面访问本机网络。若之前拒绝，请在地址栏的网站设置中允许「本地网络访问」后重新点击书签；也可使用「连接北森」登录。旧版书签升级后需重新复制一次。</p>
+    <el-button v-if="loginWaiting" link @click="stopLoginWatcher">停止等待</el-button>
 
     <el-alert v-if="leave.error" :title="leave.error" type="error" show-icon :closable="false" />
     <div v-if="leave.running || leave.submitting" class="leave-phase" role="status"><el-icon class="is-loading"><Loading /></el-icon>{{ leave.submitting ? '正在重新核对，并按日期倒序提交；请等待平台回查…' : '正在读取出勤、核对余额和校验请假时长…' }}</div>
@@ -183,9 +186,9 @@
         <p>{{ resolveTarget.date }} · {{ resolveTarget.typeName }} · {{ resolveTarget.start.slice(11) }}–{{ resolveTarget.end.slice(11) }} · {{ resolveTarget.hours }} 小时</p>
         <p class="leave-muted">{{ resolveTarget.message }}</p>
         <el-alert v-if="leave.error" :title="leave.error" type="error" :closable="false" show-icon />
-        <el-checkbox v-model="resolveChecked" :disabled="busy" class="leave-confirm-missing">我已在北森确认，此时段没有审批中或已通过的请假申请</el-checkbox>
+        <el-checkbox v-model="resolveChecked" :disabled="locked" class="leave-confirm-missing">我已在北森确认，此时段没有审批中或已通过的请假申请</el-checkbox>
       </template>
-      <template #footer><el-button :disabled="busy" @click="resolveTarget = null">返回核对</el-button><el-button type="primary" :disabled="busy || !resolveChecked" :loading="leave.running" @click="resolvePending">解除标记并重新生成</el-button></template>
+      <template #footer><el-button :disabled="locked" @click="resolveTarget = null">返回核对</el-button><el-button type="primary" :disabled="busy || !resolveChecked" :loading="leave.running" @click="resolvePending">解除标记并重新生成</el-button></template>
     </el-dialog>
   </div>
 </template>
@@ -212,7 +215,7 @@ const range = computed({ get: () => [options.since, options.until], set: (value)
 const plan = computed(() => leave.plan)
 const shownBalances = computed(() => (plan.value?.balances || []).filter(balance => balance.available !== false))
 const reviewVisible = ref(false)
-const replanning = ref(false)
+const replanning = computed(() => leave.replanning)
 const busy = computed(() => leave.running || leave.submitting)
 // 重算期间只禁用控件，不显示整页加载条，避免布局抖动。
 const locked = computed(() => busy.value || replanning.value)
@@ -227,7 +230,7 @@ function toggleDate(date) {
 }
 // 确认弹窗里按天覆盖的请假事由；空值回落「默认事由」。
 const dateReasons = ref({})
-const typeOverrides = ref({})
+const typeOverrides = computed(() => plan.value?.overrides || {})
 const reasonPlaceholder = computed(() => (plan.value?.options.reason ? `默认：${plan.value.options.reason}` : '默认事由选填'))
 const resolveTarget = ref(null)
 const resolveChecked = ref(false)
@@ -255,7 +258,7 @@ const shortcuts = [
   { text: '本月至今天', value: () => [new Date(`${today().slice(0, 7)}-01T00:00:00`), new Date(`${today()}T00:00:00`)] },
   { text: '今天', value: () => [new Date(`${today()}T00:00:00`), new Date(`${today()}T00:00:00`)] },
 ]
-watch(options, () => { leave.plan = null; leave.results = []; leave.error = ''; leave.consumed = false; reviewVisible.value = false; resolveTarget.value = null; dateReasons.value = {}; typeOverrides.value = {}; selectedDates.value = [] })
+watch(options, () => { leave.invalidated = true; leave.plan = null; leave.results = []; leave.error = ''; leave.consumed = false; reviewVisible.value = false; resolveTarget.value = null; dateReasons.value = {}; selectedDates.value = [] }, { flush: 'sync' })
 
 function statusOf(row) {
   const results = leave.results.filter(result => result.date === row.date)
@@ -268,11 +271,15 @@ function statusOf(row) {
 }
 let italentWindow = null
 let loginWatcher = null
+let loginStartedAt = 0
+let loginPolling = false
+let loginGeneration = 0
 const loginWaiting = ref(false)
 const loginMode = ref('window')
 const bookmarkletHref = ref('')
 
 function stopLoginWatcher() {
+  loginGeneration++
   loginWaiting.value = false
   if (loginWatcher) { clearInterval(loginWatcher); loginWatcher = null }
 }
@@ -298,10 +305,24 @@ async function openItalentWindow() {
 // 等待任一通道就绪：内嵌窗口登录成功（隐藏窗口）、书签桥连接或浏览器会话恢复。
 function startLoginWatcher() {
   stopLoginWatcher()
+  const generation = loginGeneration
+  loginStartedAt = Date.now()
   loginWaiting.value = true
   loginWatcher = setInterval(async () => {
+    if (generation !== loginGeneration || loginPolling || locked.value) return
+    if (Date.now() - loginStartedAt >= 60000) {
+      stopLoginWatcher()
+      leave.error = loginMode.value === 'bookmarklet'
+        ? '书签尚未连接。请确认应用正在运行，在北森页面的网站设置中允许本地网络访问，再点击「浏览器书签」重试；也可使用「连接北森」登录。'
+        : '尚未检测到北森登录，请完成登录后重新点击「连接北森」。'
+      return
+    }
     let result = null
-    try { result = await window.gitReport.leaveConnect() } catch { return }
+    loginPolling = true
+    try { result = await window.gitReport.leaveConnect({ statusOnly: true, ...(loginMode.value === 'bookmarklet' ? { mode: 'bookmarklet' } : {}) }) }
+    catch { return }
+    finally { loginPolling = false }
+    if (generation !== loginGeneration) return
     if (result?.ok && result.loggedIn) {
       stopLoginWatcher()
       if (result.mode === 'embedded') {
@@ -320,15 +341,22 @@ function startLoginWatcher() {
 onUnmounted(stopLoginWatcher)
 // 恢复上次未提交的方案（后台留存），重新进入页面不必重新生成。
 onMounted(async () => {
-  if (state.leave.plan || state.leave.running || state.leave.submitting) return
+  if (state.leave.plan || locked.value || leave.invalidated) return
+  const snapshot = JSON.stringify(options)
   try {
     const result = await window.gitReport.leaveRestore?.()
-    if (result?.ok && result.plan) state.leave.plan = result.plan
+    if (JSON.stringify(options) !== snapshot || locked.value || leave.plan) return
+    if (result?.ok && result.plan) {
+      if (result.plan.options) Object.assign(options, result.plan.options)
+      state.leave.plan = result.plan
+      leave.invalidated = false
+    } else if (result?.notice) leave.error = result.notice
   } catch { /* 无留存或读取失败时保持空方案 */ }
 })
 
 async function connect() {
-  if (busy.value || loginWaiting.value) return
+  if (locked.value) return
+  stopLoginWatcher()
   leave.running = true; leave.error = ''; leave.plan = null; leave.results = []
   try {
     const first = await window.gitReport.leaveConnect()
@@ -350,10 +378,11 @@ async function connect() {
   finally { leave.running = false }
 }
 async function showBookmarklet() {
-  if (busy.value || loginWaiting.value) return
+  if (locked.value) return
+  stopLoginWatcher()
   leave.running = true; leave.error = ''
   try {
-    const result = await window.gitReport.leaveConnect()
+    const result = await window.gitReport.leaveConnect({ statusOnly: true, mode: 'bookmarklet' })
     if (!result?.ok) throw new Error(result?.error || '连接失败')
     if (result.loggedIn) { ElMessage.success(result.mode === 'bookmarklet' ? '已通过书签连接北森' : '北森已连接'); return }
     bookmarkletHref.value = result.bookmarklet || ''
@@ -371,12 +400,14 @@ async function copyBookmarklet() {
 }
 async function generate() {
   if (locked.value) return
+  stopLoginWatcher()
   leave.running = true; leave.error = ''; leave.plan = null; leave.results = []; leave.consumed = false
-  typeOverrides.value = {}; dateReasons.value = {}; selectedDates.value = []
+  dateReasons.value = {}; selectedDates.value = []
   try {
     const result = await window.gitReport.leavePlan(toPlain(options))
     if (!result?.ok) throw new Error(result?.error || '生成请假方案失败')
     leave.plan = result.plan
+    leave.invalidated = false
   } catch (error) {
     leave.error = error.message
     // 会话过期：自动弹出登录窗口并开始等待，登录成功后重试生成即可。
@@ -406,13 +437,16 @@ function applyPlan(next) {
 }
 async function replanPlan(overrides = buildOverrides()) {
   if (locked.value || leave.consumed || !plan.value) return
-  replanning.value = true; leave.error = ''
+  const id = plan.value.id
+  const snapshot = JSON.stringify(options)
+  leave.replanning = true; leave.error = ''
   try {
-    const result = await window.gitReport.leaveReplan({ planId: plan.value.id, overrides })
+    const result = await window.gitReport.leaveReplan({ planId: id, overrides })
+    if (plan.value?.id !== id || JSON.stringify(options) !== snapshot) return
     if (!result?.ok) throw new Error(result?.error || '调整方案失败')
     applyPlan(result.plan)
-  } catch (error) { leave.error = error.message }
-  finally { replanning.value = false }
+  } catch (error) { if (plan.value?.id === id && JSON.stringify(options) === snapshot) leave.error = error.message }
+  finally { leave.replanning = false }
 }
 function setCountLate(row, value) {
   const overrides = buildOverrides()
@@ -428,15 +462,16 @@ function selectedTypeId(row) {
   return AUTO_TYPE
 }
 function setType(row, value) {
-  const next = { ...typeOverrides.value }
-  if (!value || value === AUTO_TYPE) delete next[row.date]
+  if (locked.value) return
+  const next = buildOverrides()
+  next[row.date] = { ...(next[row.date] || {}) }
+  if (!value || value === AUTO_TYPE) { delete next[row.date].typeId; delete next[row.date].typeName }
   else {
     const balance = shownBalances.value.find(item => item.id === value)
     if (!balance) return
-    next[row.date] = { typeId: balance.id, typeName: balance.name }
+    next[row.date] = { ...next[row.date], typeId: balance.id }
   }
-  typeOverrides.value = next
-  void replanPlan()
+  void replanPlan(next)
 }
 function openReview() {
   if (locked.value || leave.consumed || !reviewRows.value.length) return

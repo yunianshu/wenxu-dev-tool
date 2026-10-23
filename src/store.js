@@ -133,6 +133,8 @@ export const state = reactive({
     plan: null,
     results: [],
     running: false,
+    replanning: false,
+    invalidated: false,
     submitting: false,
     consumed: false,
     error: '',

@@ -10,6 +10,7 @@ const { ItalentBrowser } = require('../electron/italent-browser')
 const { ItalentEmbedded, ItalentBookmarklet } = require('../electron/italent-embedded')
 const { ItalentAdapter } = require('../electron/italent-adapter')
 const { ChromeSSOWatcher } = require('../electron/italent-history')
+const { createBookmarkletConfig, bookmarkletStart } = require('../electron/italent-bridge')
 const { DatabaseSync } = require('node:sqlite')
 
 const NOW = Date.parse('2026-10-15T06:00:00Z')
@@ -167,6 +168,47 @@ async function main() {
     const early = source([card('08', '08:50:00')])
     early.leaves.push(leave('08', { end: '2026-10-08 08:50', hoursText: '0.5小时' }))
     assert.equal(buildPlan(early, OPTIONS).quota['2026-10'], undefined)
+  })
+  await test('仅选一天仍核对整月额度，区间外事实占额且不生成区间外申请', async () => {
+    const data = source(['01', '02', '05', '06', '07'].map(day => card(day, '09:10:00')).concat(card('15', '08:40:00')))
+    data.leaves = data.attendance.slice(0, 5).map((row, index) => leave(row.date.slice(-2), { id: `existing-${index}`, end: `${row.date} 09:00`, hoursText: '0.5小时' }))
+    const env = setupService(data)
+    const reads = []
+    env.adapter.read = async options => { reads.push(options); return clone(data) }
+    const { plan } = await env.service.plan({ since: '2026-10-15', until: '2026-10-15' })
+    assert.deepEqual([reads[0].since, reads[0].until], ['2026-10-01', '2026-10-15'])
+    assert.deepEqual(plan.quota['2026-10'], { days: 5, minutes: 50 })
+    assert.deepEqual(plan.rows.map(row => row.date), ['2026-10-15'])
+    assert.equal(plan.entries[0].hours, 0.5)
+    // 选区外没有申请的十分钟迟到也必须占额。
+    data.attendance[0].firstCard = '2026-10-01 08:40:00'; data.leaves.shift()
+    assert.deepEqual(buildPlan(data, plan.options).quota['2026-10'], { days: 5, minutes: 50 })
+    await assert.rejects(env.service.submit({ planId: plan.id, confirmed: true }), /发生变化/)
+    assert.equal(env.calls.length, 0, '选区外变化也参与提交指纹')
+    await env.service.plan({ since: '2026-09-10', until: '2026-10-01' })
+    assert.deepEqual([reads.at(-1).since, reads.at(-1).until], ['2026-09-01', '2026-10-15'])
+    await env.service.plan({ since: '2026-09-10', until: '2026-09-10' })
+    assert.deepEqual([reads.at(-1).since, reads.at(-1).until], ['2026-09-01', '2026-09-30'])
+  })
+  await test('调休明细高于总余额时，多日与指定假种均受总额限制', () => {
+    const data = source([card('15', '10:00:00'), card('14', '09:10:00')], 0.5, 0.5, true, [{ id: 'detail', earnedDate: '2026-10-01', expires: '2026-11-30', hours: 2 }])
+    for (const overrides of [{}, { '2026-10-15': { typeId: 'comp' } }]) {
+      const plan = buildPlan(data, OPTIONS, {}, new Set(), overrides)
+      assert.equal(plan.balances[0].used, 0.5)
+      assert.equal(plan.balances[0].remaining, 0)
+      assert.equal(plan.entries.filter(item => item.typeId === 'comp').reduce((sum, item) => sum + item.hours, 0), 0.5)
+      assert(plan.entries.some(item => item.typeId === 'personal'))
+      assert(plan.balances.every(item => item.unlimited || item.remaining >= 0))
+    }
+  })
+  await test('旧版非整月快照拒绝恢复，连接状态轮询不清除待确认方案', async () => {
+    const env = setupService()
+    const { plan } = await env.service.plan({})
+    await env.service.connect({ statusOnly: true })
+    assert.equal(env.service.pending.publicPlan.id, plan.id)
+    const old = setupService(source(), {}, { load: () => ({ publicPlan: plan, source: source() }), clear() {}, save() {} })
+    assert.match((await old.service.restore()).notice, /重新生成/)
+    assert.equal(old.service.pending, null)
   })
   await test('调休按获得日与有效期限制：当日获得可用于当天、不可用于之前，过期不可用', () => {
     const entries = [
@@ -623,7 +665,7 @@ async function main() {
     // 页面上下文里：北森接口走夹具，127.0.0.1 回调走真实网络送回适配器。
     const realFetch = globalThis.fetch.bind(globalThis)
     const pageFetch = fixture.context.fetch
-    fixture.context.fetch = (input, opts) => String(input).startsWith('http://127.0.0.1') ? realFetch(input, opts) : pageFetch(input, opts)
+    fixture.context.fetch = (input, opts) => String(input).startsWith('http://127.0.0.1') ? realFetch(input, { ...opts, headers: { ...opts?.headers, Origin: fixture.context.location.origin } }) : pageFetch(input, opts)
     const requests = []
     const host = {
       call: async (action, payload) => {
@@ -649,7 +691,7 @@ async function main() {
     const fixture = pageFixture({ applyError: '平台拒绝本次申请' })
     const realFetch = globalThis.fetch.bind(globalThis)
     const pageFetch = fixture.context.fetch
-    fixture.context.fetch = (input, opts) => String(input).startsWith('http://127.0.0.1') ? realFetch(input, opts) : pageFetch(input, opts)
+    fixture.context.fetch = (input, opts) => String(input).startsWith('http://127.0.0.1') ? realFetch(input, { ...opts, headers: { ...opts?.headers, Origin: fixture.context.location.origin } }) : pageFetch(input, opts)
     const host = { call: async (_action, payload) => { vm.runInContext(payload.code, fixture.context) } }
     const adapter = new ItalentEmbedded({ host, timeout: 8000 })
     const entry = buildPlan(source(), OPTIONS).entries[0]
@@ -661,7 +703,7 @@ async function main() {
     await assert.rejects(silent.read(OPTIONS), /超时/)
     // 页面请求失败时错误正文里的北森地址必须被隐藏后再回传。
     const leakyFixture = pageFixture()
-    leakyFixture.context.fetch = (input, opts) => String(input).startsWith('http://127.0.0.1') ? realFetch(input, opts) : Promise.reject(new Error('请求 https://cloud.italent.cn/api/v2/UI/IndexPage 失败'))
+    leakyFixture.context.fetch = (input, opts) => String(input).startsWith('http://127.0.0.1') ? realFetch(input, { ...opts, headers: { ...opts?.headers, Origin: leakyFixture.context.location.origin } }) : Promise.reject(new Error('请求 https://cloud.italent.cn/api/v2/UI/IndexPage 失败'))
     const leaky = new ItalentEmbedded({ host: { call: async (_action, payload) => { vm.runInContext(payload.code, leakyFixture.context) } }, timeout: 8000 })
     await assert.rejects(leaky.read(OPTIONS), error => !error.message.includes('cloud.italent.cn') && !error.message.includes('http') && /请求地址已隐藏/.test(error.message))
     // 已认证请求失败（会话过期）与登录页来源都报告未登录，而不是报错。
@@ -670,7 +712,7 @@ async function main() {
     const loginFixture = pageFixture()
     const loginPageFetch = loginFixture.context.fetch
     loginFixture.context.location = { origin: 'https://www.italent.cn' }
-    loginFixture.context.fetch = (input, opts) => String(input).startsWith('http://127.0.0.1') ? realFetch(input, opts) : loginPageFetch(input, opts)
+    loginFixture.context.fetch = (input, opts) => String(input).startsWith('http://127.0.0.1') ? realFetch(input, { ...opts, headers: { ...opts?.headers, Origin: loginFixture.context.location.origin } }) : loginPageFetch(input, opts)
     const loggedOut = await new ItalentEmbedded({ host: { call: async (_action, payload) => { vm.runInContext(payload.code, loginFixture.context) } }, timeout: 8000 }).connect()
     assert.equal(loggedOut.loggedIn, false)
     assert.equal(loggedOut.origin, 'https://www.italent.cn')
@@ -679,39 +721,124 @@ async function main() {
     const fixture = pageFixture()
     const realFetch = globalThis.fetch.bind(globalThis)
     const pageFetch = fixture.context.fetch
-    fixture.context.fetch = (input, opts) => String(input).startsWith('http://127.0.0.1') ? realFetch(input, opts) : pageFetch(input, opts)
+    fixture.context.fetch = (input, opts) => String(input).startsWith('http://127.0.0.1') ? realFetch(input, { ...opts, headers: { ...opts?.headers, Origin: fixture.context.location.origin } }) : pageFetch(input, opts)
     const bridge = new ItalentBookmarklet({ timeout: 8000 })
-    const reading = bridge.read(OPTIONS)
-    const answer = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('未取到任务')), 8000)
-      ;(async () => {
-        for (let i = 0; i < 40; i++) {
-          const response = await realFetch(`http://127.0.0.1:${bridge.port}/bridge/next?b=selftest`, { method: 'GET' }).catch(() => null)
-          if (response && response.status === 200) { clearTimeout(timer); resolve(await response.json()) ; return }
-          await new Promise((r) => setTimeout(r, 100))
-        }
-        clearTimeout(timer); reject(new Error('轮询超时'))
-      })()
-    })
-    assert.equal(typeof answer.code, 'string')
-    assert.equal(bridge.attached(), true)
-    await vm.runInContext(answer.code, fixture.context)
-    const data = await reading
-    assert.equal(data.attendance.length, 2)
-    const script = await (await realFetch(`http://127.0.0.1:${bridge.port}/bridge.js`)).text()
-    assert(script.includes(`127.0.0.1:${bridge.port}/bridge/next`))
-    // 新版浏览器从公网页面访问 localhost 会先发私有网络预检；必须放行并声明 allow-private-network。
-    const preflight = await realFetch(`http://127.0.0.1:${bridge.port}/bridge.js`, { method: 'OPTIONS', headers: { Origin: 'https://cloud.italent.cn', 'Access-Control-Request-Method': 'GET', 'Access-Control-Request-Private-Network': 'true' } })
-    assert.equal(preflight.status, 204)
-    assert.equal(preflight.headers.get('access-control-allow-private-network'), 'true')
-    assert.equal(preflight.headers.get('access-control-allow-origin'), 'https://cloud.italent.cn')
-    const bridged = await realFetch(`http://127.0.0.1:${bridge.port}/bridge.js`, { headers: { Origin: 'https://cloud.italent.cn' } })
-    assert.equal(bridged.headers.get('access-control-allow-private-network'), 'true')
-    assert(bridge.href().startsWith('javascript:'))
-    bridge.close()
+    Object.assign(fixture.context, { AbortController, setTimeout, clearTimeout, alert: message => { throw new Error(message) } })
+    try {
+      await bridge.ensureServer()
+      await vm.runInContext(bridge.href().slice('javascript:void('.length, -1), fixture.context)
+      const deadline = Date.now() + 2000
+      while (!bridge.attached() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
+      assert.equal(bridge.attached(), true)
+      assert.equal((await bridge.read(OPTIONS)).attendance.length, 2)
+      const preflight = await realFetch(`http://127.0.0.1:${bridge.port}/bridge.js`, { method: 'OPTIONS', headers: { Origin: 'https://cloud.italent.cn', 'Access-Control-Request-Method': 'GET', 'Access-Control-Request-Headers': 'authorization', 'Access-Control-Request-Private-Network': 'true' } })
+      assert.equal(preflight.status, 204)
+      assert.equal(preflight.headers.get('access-control-allow-private-network'), 'true')
+      assert.equal(preflight.headers.get('access-control-allow-origin'), 'https://cloud.italent.cn')
+      assert.match(preflight.headers.get('access-control-allow-headers'), /Authorization/)
+    } finally { fixture.context.window.__plmLeaveBridge?.stop(); await bridge.close() }
     const idle = new ItalentBookmarklet({ timeout: 200 })
     await assert.rejects(idle.read(OPTIONS), /书签桥未连接/)
     idle.close()
+  })
+  await test('书签鉴权拒绝其它来源、伪造 Host、无凭据和过期会话；伪造回包不改变结果', async () => {
+    const bridge = new ItalentBookmarklet({ timeout: 2000 })
+    await bridge.ensureServer()
+    const base = `http://127.0.0.1:${bridge.port}`
+    const request = (route, token, options = {}) => fetch(base + route, { ...options, headers: { Origin: 'https://cloud.italent.cn', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...options.headers } })
+    try {
+      assert.equal((await request('/bridge.js')).status, 401)
+      const hostile = await request('/bridge.js', bridge.pairToken, { headers: { Origin: 'https://untrusted.example' } })
+      assert.equal(hostile.status, 403)
+      assert.equal(hostile.headers.get('access-control-allow-origin'), null)
+      // fetch 会重写 Host，使用原生 HTTP 才能真正构造 DNS 重绑定请求。
+      const forgedHost = await new Promise((resolve, reject) => {
+        const req = require('node:http').get(base + '/bridge.js', { headers: { Host: 'attacker.example', Origin: 'https://cloud.italent.cn', Authorization: `Bearer ${bridge.pairToken}` } }, response => { response.resume(); resolve(response.statusCode) })
+        req.on('error', reject)
+      })
+      assert.equal(forgedHost, 403)
+      const malformed = await new Promise((resolve, reject) => {
+        const req = require('node:http').get({ hostname: '127.0.0.1', port: bridge.port, path: 'http://[invalid' }, response => { response.resume(); resolve(response.statusCode) })
+        req.on('error', reject)
+      })
+      assert.equal(malformed, 400, '未认证的异常地址不能导致后台崩溃')
+      assert.equal((await request('/bridge.js', bridge.pairToken, { method: 'OPTIONS', headers: { Origin: 'https://untrusted.example', 'Access-Control-Request-Method': 'GET' } })).status, 403)
+      assert.equal((await request('/bridge.js', bridge.pairToken)).status, 200)
+      const session = bridge.client.token
+      const polling = request('/bridge/next', session)
+      await new Promise(resolve => setTimeout(resolve, 20))
+      const reading = bridge.read(OPTIONS)
+      const answer = await (await polling).json()
+      const id = /id:"([^"]+)"/.exec(answer.code)[1]
+      const body = JSON.stringify({ id, success: true, data: { staffId: 'forged' } })
+      assert.equal((await request('/leave-callback', bridge.pairToken, { method: 'POST', body })).status, 401)
+      assert.equal((await request('/leave-callback', session, { method: 'POST', headers: { Origin: 'https://untrusted.example' }, body })).status, 403)
+      assert.equal(bridge.pending.has(id), true)
+      assert.equal((await request('/bridge.js', bridge.pairToken)).status, 409, '进行中的操作不能被重新配对打断')
+      assert.equal((await request('/leave-callback', session, { method: 'POST', body: JSON.stringify({ id, success: true, data: { staffId: 'paired-fixture' } }) })).status, 204)
+      assert.equal((await reading).staffId, 'paired-fixture')
+      const aborter = new AbortController()
+      const abandoned = request('/bridge/next', session, { signal: aborter.signal }).catch(error => error)
+      await new Promise(resolve => setTimeout(resolve, 20))
+      aborter.abort(); await abandoned
+      await new Promise(resolve => setTimeout(resolve, 20))
+      assert.equal(bridge.polls.size, 0, '取消长轮询必须回收计时器')
+      assert.equal(bridge.attached(), false, '标签页断开后不能继续报告已连接')
+      await request('/bridge.js', bridge.pairToken)
+      assert.equal((await request('/bridge/next', session)).status, 401)
+      assert.equal((await request('/bridge.js/extra', bridge.pairToken)).status, 404)
+    } finally { await bridge.close() }
+  })
+  await test('新书签跨重启自动配对，同一页面重连会停止旧轮询且不重复发送申请', async () => {
+    const first = new ItalentBookmarklet({ timeout: 2000 })
+    const fixture = pageFixture()
+    const pageFetch = fixture.context.fetch
+    fixture.context.fetch = (input, opts) => String(input).startsWith('http://127.0.0.1') ? fetch(input, { ...opts, headers: { ...opts?.headers, Origin: fixture.context.location.origin } }) : pageFetch(input, opts)
+    Object.assign(fixture.context, { AbortController, setTimeout, clearTimeout, alert: message => { throw new Error(message) } })
+    let second
+    try {
+      await first.ensureServer()
+      const configuration = { port: first.port, token: first.pairToken }
+      const href = first.href()
+      const occupied = new ItalentBookmarklet({ loadConfig: () => configuration })
+      await assert.rejects(occupied.ensureServer(), /端口.*占用/)
+      await occupied.close()
+      const runBookmark = () => vm.runInContext(href.slice('javascript:void('.length, -1), fixture.context)
+      await runBookmark()
+      await new Promise(resolve => setTimeout(resolve, 50))
+      const oldController = fixture.context.window.__plmLeaveBridge
+      await runBookmark()
+      assert.equal(oldController.stopped, true)
+      await first.close()
+      second = new ItalentBookmarklet({ loadConfig: () => configuration, timeout: 3000 })
+      await second.ensureServer()
+      assert.equal(second.href(), href)
+      const deadline = Date.now() + 5000
+      while (!second.attached() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20))
+      assert.equal(second.attached(), true, '旧页面应自动恢复读取通道')
+      assert.equal((await second.read(OPTIONS)).staffId, 'staff-test')
+      assert.equal(fixture.calls.filter(item => item.path.endsWith('/ApplyVacation')).length, 0)
+    } finally { fixture.context.window.__plmLeaveBridge?.stop(); await first.close(); await second?.close() }
+  })
+  await test('配对配置只保存凭据引用，权限拒绝时给出可操作提示', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'leave-pairing-'))
+    let credential
+    try {
+      const codec = { encryptText: text => { credential = text; return { keyRef: 'isolated-credential' } }, decryptText: () => credential }
+      const config = createBookmarkletConfig(directory, codec)()
+      assert.deepEqual(createBookmarkletConfig(directory, codec)(), config)
+      assert.equal(fs.readFileSync(path.join(directory, 'leave-bridge.json'), 'utf8').includes(config.token), false)
+      assert.throws(() => createBookmarkletConfig(path.join(directory, 'plain'), { encryptText: text => ({ plain: text }) })(), /不会明文保存/)
+      const alerts = []
+      await vm.runInNewContext(`(${bookmarkletStart.toString()})('http://127.0.0.1:12345','synthetic')`, { location: { origin: 'https://cloud.italent.cn' }, AbortSignal, fetch: async () => { throw new TypeError('Permission denied') }, alert: message => alerts.push(message) })
+      assert.match(alerts[0], /网站设置.*本地网络访问/)
+      assert.match(alerts[0], /连接北森/)
+      assert.equal(alerts[0].includes('synthetic'), false)
+    } finally {
+      const resolved = fs.realpathSync(directory)
+      assert.equal(path.dirname(resolved).toLowerCase(), fs.realpathSync(os.tmpdir()).toLowerCase())
+      fs.rmSync(resolved, { recursive: true, force: true })
+    }
   })
   await test('通道链：默认只走书签桥与内嵌（不碰 Kimi），强制 browser 才用浏览器桥', async () => {
     const embeddedStub = { connect: async () => ({ connected: true, origin: 'https://cloud.italent.cn', loggedIn: false }) }
@@ -729,6 +856,26 @@ async function main() {
     const forcedResult = await forced.connect()
     assert.equal(forcedResult.mode, 'browser')
     assert.equal(forcedResult.loggedIn, true)
+  })
+  await test('提交固定准备时的通道与标签会话，端口或凭据库失败时可使用内嵌登录', async () => {
+    let attached = true
+    let applies = 0
+    const bookmarklet = { client: { id: 'tab-one' }, ensureServer: async () => {}, attached: () => attached, evaluate: async () => ({ loggedIn: true }), href: () => 'javascript:fixture', prepare: async () => ({ key: 'prepared' }), apply: async () => { applies++; return { sent: true } } }
+    const adapter = new ItalentAdapter({ bookmarklet, embedded: { apply: async () => { throw new Error('不得切换到其它页面提交') } } })
+    await adapter.prepare({})
+    attached = false
+    assert.deepEqual(await adapter.apply({ key: 'prepared' }), { sent: true })
+    assert.equal(applies, 1)
+    attached = true
+    await adapter.prepare({})
+    bookmarklet.client = { id: 'tab-two' }
+    assert.throws(() => adapter.apply({ key: 'prepared' }), error => error.submissionState === 'notSubmitted')
+    assert.equal(applies, 1)
+    const unavailable = new ItalentAdapter({ bookmarklet: { ensureServer: async () => { throw new Error('isolated-unavailable') } }, embedded: { connect: async () => ({ loggedIn: false, connected: true }) } })
+    const fallback = await unavailable.connect()
+    assert.equal(fallback.mode, 'embedded')
+    assert.match(fallback.bookmarkletError, /系统凭据库/)
+    await assert.rejects(unavailable.connect({ mode: 'bookmarklet' }), /系统凭据库/)
   })
   await test('Chrome 历史捕获：新签名 URL 触发回调，旧的忽略，超时返回空', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'leave-sso-'))
