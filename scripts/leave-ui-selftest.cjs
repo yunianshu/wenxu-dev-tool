@@ -298,16 +298,12 @@ async function main() {
       window.gitReport.leaveConnect = notLoggedIn
     }
 
-    const realNow = Date.now
-    try {
-      await setup.showBookmarklet()
-      Date.now = () => realNow() + 61000
-      await new Promise(resolve => setTimeout(resolve, 2600))
-      assert.equal(setup.loginWaiting.value, false)
-      assert.match(state.leave.error, /本地网络访问/)
-      assert.match(state.leave.error, /连接北森/)
-    } finally { Date.now = realNow; setup.stopLoginWatcher() }
-    console.log('一键请假界面自测通过：确认门、跨页重算锁、过期响应丢弃、手选假种恢复、权限提示及北森窗口收起/重开/迟到响应/监听清理。')
+    const connectionArguments = []
+    window.gitReport.leaveConnect = async (...args) => { connectionArguments.push(args); return notLoggedIn() }
+    await setup.showBookmarklet()
+    assert.deepEqual(connectionArguments, [[]], '书签入口恢复旧版无参数连接契约')
+    setup.stopLoginWatcher()
+    console.log('一键请假界面自测通过：旧连接契约、确认门、跨页重算锁、过期响应丢弃、手选假种恢复及北森窗口收起/重开/迟到响应/监听清理。')
   } finally { app.unmount(); global.window = originalWindow }
 }
 main().catch(error => { console.error(error); process.exitCode = 1 })

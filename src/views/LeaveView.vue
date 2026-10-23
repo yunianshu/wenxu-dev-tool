@@ -41,7 +41,6 @@
       </template>
     </div>
 
-    <p v-if="loginWaiting && loginMode === 'bookmarklet'" class="leave-muted leave-network-help">首次连接请允许北森页面访问本机网络。若之前拒绝，请在地址栏的网站设置中允许「本地网络访问」后重新点击书签；也可使用「连接北森」登录。旧版书签升级后需重新复制一次。</p>
     <el-button v-if="loginWaiting" link @click="loginMode === 'window' ? closeItalentWindow() : stopLoginWatcher()">{{ loginMode === 'window' ? '收起登录窗口' : '停止等待' }}</el-button>
 
     <el-alert v-if="leave.error" :title="leave.error" type="error" show-icon :closable="false" />
@@ -271,7 +270,6 @@ function statusOf(row) {
 }
 let italentWindow = null
 let loginWatcher = null
-let loginStartedAt = 0
 let loginPolling = false
 let loginGeneration = 0
 const loginWaiting = ref(false)
@@ -320,20 +318,12 @@ async function closeItalentWindow() {
 function startLoginWatcher() {
   stopLoginWatcher()
   const generation = loginGeneration
-  loginStartedAt = Date.now()
   loginWaiting.value = true
   loginWatcher = setInterval(async () => {
     if (generation !== loginGeneration || loginPolling || locked.value) return
-    if (Date.now() - loginStartedAt >= 60000) {
-      stopLoginWatcher()
-      leave.error = loginMode.value === 'bookmarklet'
-        ? '书签尚未连接。请确认应用正在运行，在北森页面的网站设置中允许本地网络访问，再点击「浏览器书签」重试；也可使用「连接北森」登录。'
-        : '尚未检测到北森登录，请完成登录后重新点击「连接北森」。'
-      return
-    }
     let result = null
     loginPolling = true
-    try { result = await window.gitReport.leaveConnect({ statusOnly: true, ...(loginMode.value === 'bookmarklet' ? { mode: 'bookmarklet' } : {}) }) }
+    try { result = await window.gitReport.leaveConnect() }
     catch { return }
     finally { loginPolling = false }
     if (generation !== loginGeneration) return
@@ -383,8 +373,7 @@ onMounted(async () => {
 })
 
 async function connect() {
-  if (locked.value) return
-  stopLoginWatcher()
+  if (locked.value || loginWaiting.value) return
   leave.running = true; leave.error = ''; leave.plan = null; leave.results = []
   try {
     const first = await window.gitReport.leaveConnect()
@@ -406,11 +395,10 @@ async function connect() {
   finally { leave.running = false }
 }
 async function showBookmarklet() {
-  if (locked.value) return
-  stopLoginWatcher()
+  if (locked.value || loginWaiting.value) return
   leave.running = true; leave.error = ''
   try {
-    const result = await window.gitReport.leaveConnect({ statusOnly: true, mode: 'bookmarklet' })
+    const result = await window.gitReport.leaveConnect()
     if (!result?.ok) throw new Error(result?.error || '连接失败')
     if (result.loggedIn) { ElMessage.success(result.mode === 'bookmarklet' ? '已通过书签连接北森' : '北森已连接'); return }
     bookmarkletHref.value = result.bookmarklet || ''

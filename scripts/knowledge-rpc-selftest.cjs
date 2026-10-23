@@ -152,12 +152,12 @@ async function main() {
   try {
     backend = await startBackend(userData)
     const electron = electronApi(backend.rpc), tauri = tauriApi(backend.rpc)
-    // 仅检查参数传递，不启动配对服务或写入真实凭据库。
+    // 连接恢复为旧版无参数契约，只检查桥接，不启动真实连接。
     for (const createApi of [electronApi, tauriApi]) {
       const api = createApi(async (channel, payload) => ({ channel, payload }))
-      const result = await api.leaveConnect({ statusOnly: true, mode: 'bookmarklet' })
+      const result = await api.leaveConnect()
       assert.equal(result.channel, 'leave:connect')
-      assert.equal(JSON.stringify(result.payload), JSON.stringify({ statusOnly: true, mode: 'bookmarklet' }))
+      assert.equal(result.payload, createApi === tauriApi ? null : undefined)
     }
     for (const api of [electron, tauri]) {
       assert.equal(typeof api.leaveConnect, 'function')

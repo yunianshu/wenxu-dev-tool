@@ -1,7 +1,6 @@
 const http = require('node:http')
-const { randomUUID, randomBytes, timingSafeEqual } = require('node:crypto')
+const { randomUUID } = require('node:crypto')
 const { italentPage } = require('./italent-page')
-const { bookmarkletStart, bookmarkletLoop } = require('./italent-bridge')
 
 const LABEL = 'leave-italent'
 const MAX_BODY = 20 * 1024 * 1024
@@ -23,61 +22,38 @@ class ItalentEmbedded {
     this.pending = new Map()
     this.jobs = []
     this.lastPoll = 0
-    this.callbackToken = randomBytes(32).toString('hex')
-    this.starting = null
-    this.polls = new Set()
   }
 
   async ensureServer() {
     if (this.server) return
-    if (this.starting) return this.starting
-    this.starting = this.startServer()
-    try { await this.starting } finally { this.starting = null }
-  }
-
-  async startServer() {
-    const configuration = this.loadConfig?.()
-    if (configuration) this.pairToken = configuration.token
     const server = http.createServer((request, response) => {
-      let url
-      try { url = new URL(request.url || '/', 'http://127.0.0.1') }
-      catch { response.writeHead(400); response.end(); return }
-      const bridgePath = this.pairToken && ['/bridge.js', '/bridge/next'].includes(url.pathname)
-      const callback = url.pathname === '/leave-callback'
-      if (!bridgePath && !callback) { response.writeHead(404); response.end(); return }
-      if (request.headers.host !== `127.0.0.1:${this.port}` || !this.allowedOrigin(request.headers.origin)) { response.writeHead(403); response.end(); return }
-      this.setCors(request, response)
-      const method = callback ? 'POST' : 'GET'
-      if (request.method === 'OPTIONS') {
-        const headers = String(request.headers['access-control-request-headers'] || '').toLowerCase().split(',').map(item => item.trim()).filter(Boolean)
-        if (request.headers['access-control-request-method'] !== method || headers.some(name => !['content-type', 'authorization'].includes(name))) { response.writeHead(403); response.end(); return }
-        response.writeHead(204); response.end(); return
-      }
-      if (request.method !== method) { response.writeHead(405); response.end(); return }
-      const token = url.pathname === '/bridge.js' ? this.pairToken : this.client ? this.client.token : this.callbackToken
-      if (!this.authorized(request, token) || (this.pairToken && url.pathname !== '/bridge.js' && !this.client)) { response.writeHead(401); response.end(); return }
-      if (url.pathname === '/bridge.js') return this.serveBridgeScript(request, response)
-      if (url.pathname === '/bridge/next') return this.serveBridgeNext(request, response)
+      const url = request.url || ''
+      // 新版 Chrome/Edge 从公网页面访问 localhost 会先发 Private Network Access 预检；
+      // 不处理 OPTIONS 并返回 allow-private-network，书签桥会被浏览器直接拒绝。
+      if (request.method === 'OPTIONS') return this.serveCorsPreflight(request, response)
+      if (request.method === 'GET' && url.startsWith('/bridge.js')) return this.serveBridgeScript(request, response)
+      if (request.method === 'GET' && url.startsWith('/bridge/next')) return void this.serveBridgeNext(request, response)
+      if (request.method !== 'POST' || url !== '/leave-callback') { response.writeHead(404); response.end(); return }
       let body = ''
       request.setEncoding('utf8')
       request.on('data', (chunk) => { body += chunk; if (body.length > MAX_BODY) request.destroy() })
       request.on('end', () => {
-        let payload
-        try { payload = JSON.parse(body) } catch { response.writeHead(400); response.end(); return }
-        if (!payload || typeof payload !== 'object' || typeof payload.id !== 'string') { response.writeHead(400); response.end(); return }
-        const waiter = this.pending.get(payload.id)
-        if (!waiter || waiter.token !== token) { response.writeHead(409); response.end(); return }
-        this.pending.delete(payload.id)
-        clearTimeout(waiter.timer)
+        this.setCors(request, response)
         response.writeHead(204)
         response.end()
+        let payload
+        try { payload = JSON.parse(body) } catch { return }
+        const waiter = this.pending.get(payload.id)
+        if (!waiter) return
+        this.pending.delete(payload.id)
+        clearTimeout(waiter.timer)
         waiter.resolve(payload)
       })
     })
     server.on('clientError', (_error, socket) => socket.destroy())
     await new Promise((resolve, reject) => {
-      server.once('error', () => reject(new Error('北森本机连接端口不可用或已被占用，请关闭重复应用后重试，或使用「连接北森」登录')))
-      server.listen(configuration?.port || 0, '127.0.0.1', resolve)
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', resolve)
     })
     // 回调端口只服务于存活的待回传请求，不阻止后台进程退出。
     server.unref()
@@ -86,81 +62,59 @@ class ItalentEmbedded {
   }
 
   setCors(request, response) {
-    response.setHeader('Access-Control-Allow-Origin', request.headers.origin)
+    response.setHeader('Access-Control-Allow-Origin', String(request.headers.origin || '*'))
     response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-    // 兼容旧版预检；新版浏览器仍由用户授予本地网络访问权限。
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type')
     response.setHeader('Access-Control-Allow-Private-Network', 'true')
     response.setHeader('Access-Control-Max-Age', '600')
     response.setHeader('Vary', 'Origin')
-    response.setHeader('Cache-Control', 'no-store')
   }
 
-  allowedOrigin(origin) {
-    if (this.pairToken) return origin === 'https://cloud.italent.cn'
-    try {
-      const url = new URL(origin)
-      return url.origin === origin && url.protocol === 'https:' && !url.port && (url.hostname === 'italent.cn' || url.hostname.endsWith('.italent.cn'))
-    } catch { return false }
-  }
-
-  authorized(request, token) {
-    const expected = Buffer.from(`Bearer ${token || ''}`)
-    const actual = Buffer.from(String(request.headers.authorization || ''))
-    return !!token && expected.length === actual.length && timingSafeEqual(expected, actual)
+  serveCorsPreflight(request, response) {
+    this.setCors(request, response)
+    response.writeHead(204)
+    response.end()
   }
 
   /** 书签桥注入脚本：在已登录北森的页面里长轮询任务并执行，结果走 /leave-callback 回传。 */
   serveBridgeScript(request, response) {
-    if (this.pending.size) { response.writeHead(409); response.end(); return }
-    this.client = { id: randomUUID(), token: randomBytes(32).toString('hex') }
-    this.lastPoll = 0
-    for (const poll of this.polls) poll.finish(409)
-    const script = `(${bookmarkletLoop.toString()})(${JSON.stringify(`http://127.0.0.1:${this.port}`)},${JSON.stringify(this.pairToken)},${JSON.stringify(this.client.token)},${bookmarkletStart.toString()})`
+    this.setCors(request, response)
+    const script = `(function(){if(window.__plmLeaveBridge)return;window.__plmLeaveBridge=true;var b=Math.random().toString(36).slice(2);function pump(){fetch('http://127.0.0.1:${this.port}/bridge/next?b='+b,{credentials:'omit'}).then(function(r){if(r.status===204)return pump();if(!r.ok)throw new Error('poll '+r.status);return r.json().then(function(job){if(job&&job.code){try{(0,eval)(job.code)}catch(e){}}pump()})}).catch(function(){setTimeout(pump,2000)})}pump()})()`
     response.setHeader('Content-Type', 'text/javascript; charset=utf-8')
     response.writeHead(200)
     response.end(script)
   }
 
-  serveBridgeNext(request, response) {
-    const client = this.client
+  async serveBridgeNext(request, response) {
+    this.setCors(request, response)
     this.lastPoll = Date.now()
     const deadline = Date.now() + 20000
-    const poll = { finish: (status, data) => {
-      clearInterval(timer)
-      this.polls.delete(poll)
-      if (response.destroyed || response.writableEnded) return
-      response.writeHead(status)
-      response.end(data === undefined ? undefined : JSON.stringify(data))
-    } }
     const timer = setInterval(() => {
-      if (this.client !== client) { poll.finish(401); return }
+      this.lastPoll = Date.now()
       const job = this.jobs.find((item) => !item.served)
       if (job) {
         job.served = true
+        clearInterval(timer)
         response.setHeader('Content-Type', 'application/json; charset=utf-8')
-        poll.finish(200, { code: job.code })
+        response.writeHead(200)
+        response.end(JSON.stringify({ code: job.code }))
       } else if (Date.now() >= deadline) {
-        poll.finish(204)
+        clearInterval(timer)
+        response.writeHead(204)
+        response.end()
       }
     }, 100)
     timer.unref?.()
-    this.polls.add(poll)
-    response.once('close', () => {
-      clearInterval(timer)
-      this.polls.delete(poll)
-      if (this.client === client && !response.writableEnded && !this.polls.size) this.lastPoll = 0
-    })
   }
 
   /** 书签是否已连接（20 秒长轮询周期内有过拉取）。 */
   attached() {
-    return !!this.server && !!this.client && Date.now() - this.lastPoll < 45000
+    return !!this.server && Date.now() - this.lastPoll < 45000
   }
 
   /** 书签地址：拖到浏览器书签栏，在已登录北森的标签页点击。 */
   href() {
-    return `javascript:void((${bookmarkletStart.toString()})(${JSON.stringify(`http://127.0.0.1:${this.port}`)},${JSON.stringify(this.pairToken)}))`
+    return `javascript:void(fetch('http://127.0.0.1:${this.port}/bridge.js').then(function(r){return r.text()}).then(function(t){(0,eval)(t)}))`
   }
 
   close() {
@@ -172,20 +126,12 @@ class ItalentEmbedded {
       reject(new Error('内嵌北森适配器已关闭'))
     }
     this.pending.clear()
-    for (const poll of this.polls) poll.finish(503)
-    this.client = null
-    this.lastPoll = 0
-    this.jobs = []
-    return new Promise(resolve => {
-      if (!server) { resolve(); return }
-      server.close(() => resolve())
-      server.closeIdleConnections?.()
-    })
+    server?.close()
   }
 
   buildCode(id, action, options) {
     const callback = JSON.stringify(`http://127.0.0.1:${this.port}/leave-callback`)
-    const report = `function(r){try{fetch(${callback},{method:'POST',credentials:'omit',headers:{'Content-Type':'text/plain',Authorization:${JSON.stringify(`Bearer ${this.client?.token || this.callbackToken}`)}},body:JSON.stringify({id:${JSON.stringify(id)},success:r.success,data:r.data,message:r.message,submissionState:r.submissionState})}).catch(()=>{})}catch(e){}}`
+    const report = `function(r){try{fetch(${callback},{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({id:${JSON.stringify(id)},success:r.success,data:r.data,message:r.message,submissionState:r.submissionState})})}catch(e){}}`
     // 与旧 Kimi 桥接相同的错误口径：正文截断、隐藏请求地址、区分未提交与未知。
     const body = `const report=${report};try{const data=await (${italentPage.toString()})(${JSON.stringify(action)},${JSON.stringify(options || {})});report({success:true,data})}catch(e){report({success:false,message:String(e&&e.message||'北森操作失败').replace(/https?:\\/\\/\\S+/g,'[请求地址已隐藏]').slice(0,300),submissionState:e&&e.submissionState==='notSubmitted'?'notSubmitted':'unknown'})}`
     return `(async()=>{${body}})();0`
@@ -197,14 +143,14 @@ class ItalentEmbedded {
         if (!this.pending.delete(id)) return
         reject(new Error(timeoutMessage))
       }, this.timeout)
-      this.pending.set(id, { resolve, reject, timer, token: this.client?.token || this.callbackToken })
+      this.pending.set(id, { resolve, reject, timer })
     })
   }
 
   async evaluate(action, options) {
     await this.ensureServer()
     const id = randomUUID()
-    const waiting = this.waitCallback(id, '北森页面执行超时，请确认窗口仍打开且已登录；若提示本地网络访问，请允许后重试')
+    const waiting = this.waitCallback(id, '北森页面执行超时，请确认北森窗口仍打开且已登录')
     this.host.call('leave-eval', { label: this.label, code: this.buildCode(id, action, options) }).catch((error) => {
       const waiter = this.pending.get(id)
       if (!waiter) return
@@ -287,13 +233,10 @@ class ItalentEmbedded {
 class ItalentBookmarklet extends ItalentEmbedded {
   constructor(options = {}) {
     super({ ...options, host: { call: async () => { throw new Error('书签桥不经桌面宿主执行') } } })
-    this.pairToken = randomBytes(32).toString('hex')
-    this.loadConfig = options.loadConfig
   }
 
   async evaluate(action, options) {
     await this.ensureServer()
-    if (!this.attached()) throw new Error('书签桥未连接，请在已登录北森的考勤页面点击连接书签，并允许本地网络访问')
     const id = randomUUID()
     const job = { code: this.buildCode(id, action, options), served: false }
     this.jobs.push(job)

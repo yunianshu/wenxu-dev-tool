@@ -398,10 +398,7 @@ class LeaveService {
     try { return await fn() } finally { this.busy = false }
   }
 
-  connect(input = {}) { return this.exclusive(() => {
-    if (!input.statusOnly) { this.pending = null; this.planStore.clear() }
-    return this.adapter.connect(input)
-  }) }
+  connect() { return this.exclusive(() => { this.pending = null; this.planStore.clear(); return this.adapter.connect() }) }
 
   readSource(options) { return this.adapter.read(monthlyOptions(options, this.now())) }
 
