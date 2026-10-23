@@ -4,7 +4,7 @@
       <div class="topbar-page">
         <h1 class="topbar-page-title">一键请假</h1>
         <span class="page-scope">北森 · {{ plan?.staffName?.split('(')[0] || '本人出勤' }}</span>
-        <el-button type="primary" class="page-primary" :loading="leave.running" :disabled="busy" @click="generate">
+        <el-button type="primary" class="page-primary" :loading="leave.running" :disabled="locked" @click="generate">
           <el-icon><MagicStick /></el-icon><span>{{ plan ? '重新生成方案' : '生成请假方案' }}</span>
         </el-button>
       </div>
@@ -42,7 +42,7 @@
     </div>
 
     <el-alert v-if="leave.error" :title="leave.error" type="error" show-icon :closable="false" />
-    <div v-if="busy" class="leave-phase" role="status"><el-icon class="is-loading"><Loading /></el-icon>{{ leave.submitting ? '正在重新核对，并按日期倒序提交；请等待平台回查…' : replanning ? '正在重新计算方案…' : '正在读取出勤、核对余额和校验请假时长…' }}</div>
+    <div v-if="leave.running || leave.submitting" class="leave-phase" role="status"><el-icon class="is-loading"><Loading /></el-icon>{{ leave.submitting ? '正在重新核对，并按日期倒序提交；请等待平台回查…' : '正在读取出勤、核对余额和校验请假时长…' }}</div>
 
     <div v-if="!plan && !busy" class="leave-empty">
       <el-icon><Calendar /></el-icon>
@@ -51,12 +51,31 @@
 
     <template v-if="plan">
       <section class="leave-stats">
-        <div v-for="balance in shownBalances" :key="balance.name" class="leave-stat">
-          <span class="leave-stat-label">{{ balance.name }}可用</span>
-          <strong v-if="balance.unlimited">不限</strong>
-          <strong v-else>{{ balance.hours }}<small> 小时</small></strong>
-          <span class="leave-stat-sub">本次 {{ balance.used }} · 剩余 {{ balance.unlimited ? '不限' : balance.remaining }}<template v-if="balance.name === '调休假' && plan.compValidUntil"> · 有效至 {{ plan.compValidUntil }}</template></span>
-        </div>
+        <template v-for="balance in shownBalances" :key="balance.name">
+          <el-popover v-if="balance.name === '调休假' && plan.compEntries?.length" placement="bottom" trigger="click" width="380" popper-class="leave-comp-popover">
+            <template #reference>
+              <div class="leave-stat leave-stat-click">
+                <span class="leave-stat-label">{{ balance.name }}可用</span>
+                <strong v-if="balance.unlimited">不限</strong>
+                <strong v-else>{{ balance.hours }}<small> 小时</small></strong>
+                <span class="leave-stat-sub">本次 {{ balance.used }} · 剩余 {{ balance.unlimited ? '不限' : balance.remaining }}<template v-if="plan.compValidUntil"> · 有效至 {{ plan.compValidUntil }}</template></span>
+              </div>
+            </template>
+            <div class="leave-comp-records">
+              <div v-for="entry in plan.compEntries" :key="entry.id" class="leave-comp-row">
+                <b>{{ entry.earnedDate }} 加班</b>
+                <span>剩余 {{ entry.remaining }} 小时</span>
+                <span class="leave-muted">可用 {{ entry.earnedDate }} ~ {{ entry.expires }}</span>
+              </div>
+            </div>
+          </el-popover>
+          <div v-else class="leave-stat">
+            <span class="leave-stat-label">{{ balance.name }}可用</span>
+            <strong v-if="balance.unlimited">不限</strong>
+            <strong v-else>{{ balance.hours }}<small> 小时</small></strong>
+            <span class="leave-stat-sub">本次 {{ balance.used }} · 剩余 {{ balance.unlimited ? '不限' : balance.remaining }}</span>
+          </div>
+        </template>
         <div v-if="quotaNow" class="leave-stat">
           <span class="leave-stat-label">本月迟到额度 · {{ quotaNow.month }}</span>
           <strong>还可用 {{ quotaNow.daysLeft }}<small> 次 · {{ quotaNow.minutesLeft }} 分钟</small></strong>
@@ -84,10 +103,10 @@
       <section class="leave-card leave-detail">
         <div class="leave-detail-head">
           <div class="leave-detail-title">
-            <h2>出勤与请假明细</h2>
+            <h2>出勤与请假明细<el-icon v-if="replanning" class="is-loading leave-replan-spin"><Loading /></el-icon></h2>
             <span class="leave-muted">{{ plan.options.since }} 至 {{ plan.options.until }} · 方案有效 10 分钟</span>
           </div>
-          <el-button type="primary" :disabled="busy || leave.consumed || !reviewRows.length" @click="openReview">核对并提交 {{ plan.entries.length }} 笔</el-button>
+          <el-button type="primary" :disabled="locked || leave.consumed || !reviewRows.length" @click="openReview">核对并提交 {{ plan.entries.length }} 笔</el-button>
         </div>
         <!-- 列宽全部固定：重算方案时不因内容变化重排列，避免点击“计算迟到”时抖动。 -->
         <el-table :data="plan.rows" row-key="date" class="leave-table leave-table-fixed">
@@ -99,7 +118,7 @@
             <span v-if="!row.allocations.length" class="leave-muted">—</span>
           </template></el-table-column>
           <el-table-column label="计算迟到" width="88" align="center"><template #default="{ row }">
-            <el-checkbox v-if="row.residualLate > 0 && (row.status === 'ready' || row.status === 'tolerated' || (row.status === 'blocked' && /^所选假种|^平台已拒绝所选假种/.test(row.reason)))" :model-value="row.countLate !== false" :disabled="busy || leave.consumed" @change="value => setCountLate(row, value)" />
+            <el-checkbox v-if="row.residualLate > 0 && (row.status === 'ready' || row.status === 'tolerated' || (row.status === 'blocked' && /^所选假种|^平台已拒绝所选假种/.test(row.reason)))" :model-value="row.countLate !== false" :disabled="locked || leave.consumed" @change="value => setCountLate(row, value)" />
             <span v-else class="leave-muted">—</span>
           </template></el-table-column>
           <el-table-column label="剩余迟到" width="88" align="center"><template #default="{ row }">{{ row.remainingLate ? `${row.remainingLate} 分钟` : '—' }}</template></el-table-column>
@@ -118,7 +137,7 @@
     </template>
 
     <el-dialog v-model="reviewVisible" title="确认请假方案" width="1000px" :close-on-click-modal="false" :close-on-press-escape="!leave.submitting" :show-close="!leave.submitting">
-      <div v-loading="leave.submitting || replanning" :element-loading-text="leave.submitting ? `正在提交 ${selectedEntries.length} 笔，逐笔写入北森并回查…` : '正在重新计算方案…'" class="leave-review-body">
+      <div v-loading="leave.submitting" element-loading-text="正在提交，逐笔写入北森并回查…" class="leave-review-body">
       <template v-if="plan">
         <p>{{ plan.staffName?.split('(')[0] }} · 已选 {{ selectedDates.length }} 天 · {{ selectedEntries.length }} 笔、{{ selectedHours }} 小时</p>
         <el-table :data="reviewRows" row-key="date" max-height="420" class="leave-review-table">
@@ -194,7 +213,9 @@ const plan = computed(() => leave.plan)
 const shownBalances = computed(() => (plan.value?.balances || []).filter(balance => balance.available !== false))
 const reviewVisible = ref(false)
 const replanning = ref(false)
-const busy = computed(() => leave.running || leave.submitting || replanning.value)
+const busy = computed(() => leave.running || leave.submitting)
+// 重算期间只禁用控件，不显示整页加载条，避免布局抖动。
+const locked = computed(() => busy.value || replanning.value)
 // 确认弹窗里勾选要提交的日期；同一天的分段（调休+年假+事假）整体提交。
 const selectedDates = ref([])
 const selectedEntries = computed(() => (plan.value?.entries || []).filter(entry => selectedDates.value.includes(entry.date)))
@@ -349,7 +370,7 @@ async function copyBookmarklet() {
   catch { ElMessage.error('复制失败，请用鼠标拖动书签') }
 }
 async function generate() {
-  if (busy.value) return
+  if (locked.value) return
   leave.running = true; leave.error = ''; leave.plan = null; leave.results = []; leave.consumed = false
   typeOverrides.value = {}; dateReasons.value = {}; selectedDates.value = []
   try {
@@ -384,7 +405,7 @@ function applyPlan(next) {
   selectedDates.value = selectedDates.value.filter(date => ready.has(date))
 }
 async function replanPlan(overrides = buildOverrides()) {
-  if (leave.running || leave.submitting || replanning.value || leave.consumed || !plan.value) return
+  if (locked.value || leave.consumed || !plan.value) return
   replanning.value = true; leave.error = ''
   try {
     const result = await window.gitReport.leaveReplan({ planId: plan.value.id, overrides })
@@ -418,7 +439,7 @@ function setType(row, value) {
   void replanPlan()
 }
 function openReview() {
-  if (busy.value || leave.consumed || !reviewRows.value.length) return
+  if (locked.value || leave.consumed || !reviewRows.value.length) return
   dateReasons.value = Object.fromEntries(reviewRows.value.map(row => [row.date, dateReasons.value[row.date] ?? '']))
   selectedDates.value = reviewRows.value.filter(row => row.status === 'ready' && row.allocations.length).map(row => row.date)
   reviewVisible.value = true
@@ -482,10 +503,15 @@ async function resolvePending() {
 .leave-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
 /* 固定高度并截断副文本：数值变化不会撑高卡片导致页面抖动。 */
 .leave-stat { display: flex; flex-direction: column; gap: 6px; padding: 16px 20px; height: 124px; overflow: hidden; background: var(--surface); }
+.leave-stat-click { cursor: pointer; }
 .leave-stat-label { color: var(--text-muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .leave-stat strong { font-size: 26px; color: var(--brand-accent); font-variant-numeric: tabular-nums; line-height: 1.1; white-space: nowrap; }
 .leave-stat small { font-size: 13px; font-weight: 400; color: var(--text-muted); }
 .leave-stat-sub { color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.leave-comp-records { display: flex; flex-direction: column; max-height: 320px; overflow: auto; }
+.leave-comp-row { display: flex; flex-direction: column; gap: 2px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; font-variant-numeric: tabular-nums; }
+.leave-comp-row:last-child { border-bottom: 0; }
+.leave-comp-row b { font-weight: 500; }
 .leave-unresolved h2, .leave-detail-head h2 { font-size: 16px; margin: 0; }
 .leave-unresolved-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding-top: 14px; }
 .leave-unresolved-row b { font-size: 13px; font-weight: 500; }
@@ -497,6 +523,9 @@ async function resolvePending() {
 .leave-detail-title { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .leave-table { width: 100%; }
 .leave-allocation { line-height: 1.9; font-variant-numeric: tabular-nums; }
+.leave-table :deep(td .cell), .leave-review-table :deep(td .cell) { vertical-align: top; }
+.leave-table :deep(td .cell) { min-height: 42px; }
+.leave-replan-spin { margin-left: 6px; vertical-align: -2px; }
 .leave-allocation b { font-weight: 500; }
 .leave-row-status.is-ready, .leave-row-status.is-covered, .leave-row-status.is-success { color: var(--brand-accent); }
 .leave-row-status.is-tolerated, .leave-row-status.is-skipped { color: var(--text-muted); }

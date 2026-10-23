@@ -195,7 +195,8 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
   const annual = balances.find((item) => item.name === '年假')
   const fallback = balances.find((item) => item.unlimited && item.available !== false)
   // 调休可用性按请假日计算：条目获得日须早于请假日（当晚加班次日起可用）且请假日未过有效期。
-  const compValid = (entry, date) => entry.earnedDate < date && date <= entry.expires
+  // 调休可用性按请假日计算：获得日 ≤ 请假日 ≤ 有效期（当天加班可用于当天迟到，之前的日期不可）。
+  const compValid = (entry, date) => entry.earnedDate <= date && date <= entry.expires
   const compFor = (date) => {
     if (comp.available === false || banned.has(`${date}|${comp.id}`)) return 0
     if (!compEntries) return Math.max(0, comp.usable - comp.used)
@@ -228,7 +229,7 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
   }
   const reasonFor = (row, segments) => {
     if (row.typeFallback) return `${row.typeFallback}余额不足，自动改用 ${segments.map((item) => item.balance.name).join('+')}`
-    if (row.compRestricted) return `调休获得日晚于当天或已过期，改用 ${segments.map((item) => item.balance.name).join('+')}`
+    if (row.compRestricted) return `调休获得日晚于请假日或已过期，改用 ${segments.map((item) => item.balance.name).join('+')}`
     if (!row.countLate && row.residualLate > 0) return '不计算迟到，多请 0.5 小时'
     if (row.remainingLate > 0) return `${row.leaveEnd.slice(11)} 后仍有 ${row.remainingLate} 分钟迟到，计入本月额度`
     if (segments.length > 1) return `${segments.map((item) => item.balance.name).join('+')} 分段拼够`
@@ -290,6 +291,7 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
     totalHours: rows.reduce((sum, row) => sum + row.allocations.reduce((total, entry) => total + entry.hours, 0), 0),
     quota: Object.fromEntries([...quota.entries()].map(([month, used]) => [month, { ...used }])),
     quotaLimits: { days: MAX_TOLERATED_DAYS_PER_MONTH, minutes: MAX_TOLERATED_MINUTES_PER_MONTH },
+    compEntries: compEntries ? compEntries.map(({ id, earnedDate, expires, hours, usable, used }) => ({ id, earnedDate, expires, hours, remaining: Math.round((usable - used) * 1000000) / 1000000 })) : [],
     compValidUntil: compLeftEntries.length ? compLeftEntries.reduce((min, entry) => entry.expires < min ? entry.expires : min, compLeftEntries[0].expires) : null,
   }
 }
@@ -412,27 +414,12 @@ class LeaveService {
         message: entry.message || '旧版只保留了待核对标记，未记录具体错误', canRetry: this.now() - Date.parse(entry.at) >= MINUTE,
       }))
       for (const entry of unresolved) blocked[entry.date] = '上次提交结果待核对，请先核查下方记录'
-      const prepared = new Map()
-      const banned = new Set()
-      let plan = buildPlan(source, options, blocked)
-      // 平台拒绝某假种时当天改用下一假种重算；全部不可用才阻断当天，余额留给较旧日期。
-      while (true) {
-        const entry = plan.entries.find((item) => !prepared.has(preparedKey(item)))
-        if (!entry) break
-        try {
-          const result = await this.adapter.prepare({ staffId: source.staffId, entry, reason: options.reason })
-          this.verifyPrepared(entry, result)
-          prepared.set(preparedKey(entry), true)
-        } catch (error) {
-          banned.add(`${entry.date}|${entry.typeId}`)
-          plan = buildPlan(source, options, blocked, banned)
-          const row = plan.rows.find((item) => item.date === entry.date)
-          if (row && row.status === 'blocked') row.reason = `北森校验未通过：${error.message}`
-        }
-      }
+      // 不在生成阶段逐笔做平台表单预校验（每笔 4–6 次请求，多天时极慢）；
+      // 提交时仍逐笔 prepare + 比对时长，不一致会安全中止。
+      const plan = buildPlan(source, options, blocked)
       const createdAt = this.now()
       const publicPlan = { ...plan, unresolved, id: randomUUID(), createdAt, expiresAt: createdAt + PLAN_TTL }
-      this.pending = { publicPlan, fingerprint: fingerprint(source), blocked, source, banned: [...banned] }
+      this.pending = { publicPlan, fingerprint: fingerprint(source), blocked, source, banned: [] }
       this.planStore.save(this.pending)
       return { plan: publicPlan }
     })

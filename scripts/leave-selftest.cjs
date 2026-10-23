@@ -168,20 +168,25 @@ async function main() {
     early.leaves.push(leave('08', { end: '2026-10-08 08:50', hoursText: '0.5小时' }))
     assert.equal(buildPlan(early, OPTIONS).quota['2026-10'], undefined)
   })
-  await test('调休按获得日与有效期限制：当日获得不可用于之前/当天，过期不可用', () => {
+  await test('调休按获得日与有效期限制：当日获得可用于当天、不可用于之前，过期不可用', () => {
     const entries = [
       { id: 'today', earnedDate: '2026-10-15', expires: '2026-11-30', hours: 1 },
       { id: 'expired', earnedDate: '2026-10-01', expires: '2026-10-14', hours: 1 },
       { id: 'ok', earnedDate: '2026-09-01', expires: '2026-11-30', hours: 1 },
     ]
-    // 10-15 只能用 9 月获得的条目；10-16 起当日条目也可用。
+    // 当天加班获得的调休可用于当天迟到（获得日 ≤ 请假日）。
     const plan = buildPlan(source([card('15', '09:10:00'), card('16', '09:10:00')], 3, 36.5, true, entries), { ...OPTIONS, until: '2026-10-16' })
     assert.deepEqual(plan.entries.map(item => [item.date, item.typeName, item.hours]), [['2026-10-16', '调休假', 0.5], ['2026-10-15', '调休假', 0.5]])
     assert.equal(plan.compValidUntil, '2026-11-30', '已过期条目不计入有效至')
-    // 只有“当天获得”的条目时当天不可用调休，改年假并说明原因。
+    assert.equal(plan.compEntries.length, 3, '方案携带调休条目明细')
+    assert.equal(plan.compEntries.find(item => item.id === 'ok').remaining, 0)
+    // 只有“当天获得”的条目时当天可用（当天晚上加班抵当天早上迟到）。
     const onlyToday = buildPlan(source([card('15', '09:10:00')], 1, 36.5, true, [{ id: 'today', earnedDate: '2026-10-15', expires: '2026-11-30', hours: 1 }]), OPTIONS)
-    assert.deepEqual(onlyToday.entries.map(item => [item.typeName, item.hours]), [['年假', 0.5]])
-    assert.match(onlyToday.rows[0].reason, /调休获得日晚于当天或已过期/)
+    assert.deepEqual(onlyToday.entries.map(item => [item.typeName, item.hours]), [['调休假', 0.5]])
+    // 获得日之后的请假日不可用：改年假并说明原因。
+    const before = buildPlan(source([card('14', '09:10:00')], 1, 36.5, true, [{ id: 'today', earnedDate: '2026-10-15', expires: '2026-11-30', hours: 1 }]), OPTIONS)
+    assert.deepEqual(before.entries.map(item => [item.typeName, item.hours]), [['年假', 0.5]])
+    assert.match(before.rows[0].reason, /调休获得日晚于请假日或已过期/)
     // 全部过期时同口径；指定调休也被限制。
     const forced = buildPlan(source([card('15', '09:10:00')], 1, 36.5, true, [{ id: 'old', earnedDate: '2026-10-01', expires: '2026-10-10', hours: 1 }]), OPTIONS, {}, new Set(), { '2026-10-15': { typeId: 'comp' } })
     assert.deepEqual(forced.entries.map(item => [item.typeName, item.hours]), [['年假', 0.5]])
@@ -471,24 +476,37 @@ async function main() {
     assert.deepEqual(result.results.map(item => [item.typeName, item.status]), [['调休假', 'success'], ['年假', 'success']])
     assert.equal(env.calls.length, 2)
   })
-  await test('平台拒绝调休时当天自动改用年假', async () => {
+  await test('生成不再逐笔预校验（快速出方案），平台拒绝在提交时安全中止', async () => {
     const env = setupService(source([card('15'), card('14')], 1, 1))
+    let prepareCalls = 0
     const prepare = env.adapter.prepare
-    env.adapter.prepare = async (options) => { if (options.entry.date.endsWith('15') && options.entry.typeName === '调休假') throw new Error('平台要求手工校对'); return prepare(options) }
+    env.adapter.prepare = async (options) => { prepareCalls++; if (options.entry.date.endsWith('15') && options.entry.typeName === '调休假') throw new Error('平台要求手工校对'); return prepare(options) }
     const { plan } = await env.service.plan({})
+    assert.equal(prepareCalls, 0, '生成阶段不调用平台表单预校验')
     assert.deepEqual(plan.rows.map(item => item.status), ['ready', 'ready'])
-    assert.deepEqual(plan.entries.map(item => [item.date, item.typeName]), [['2026-10-15', '年假'], ['2026-10-14', '调休假']])
+    assert.deepEqual(plan.entries.map(item => [item.date, item.typeName]), [['2026-10-15', '调休假'], ['2026-10-14', '调休假']])
+    env.changes.appliedEntries = plan.entries
+    const result = await env.service.submit({ planId: plan.id, confirmed: true })
+    assert.deepEqual(result.results.map(item => item.status), ['failed', 'notSubmitted'])
+    assert.match(result.results[0].message, /平台要求手工校对/)
+    assert.equal(env.calls.length, 0, '被拒的条目不写入北森')
     env.service.busy = true
     await assert.rejects(env.service.plan({}), /进行中/)
     await assert.rejects(env.service.submit({ confirmed: true, planId: plan.id }), /进行中/)
   })
-  await test('并发生成/提交被拒绝，两个假种都被拒后当天阻断', async () => {
+  await test('两个假种都被平台拒绝时提交中止，手动改假种后可重新提交', async () => {
     const env = setupService(source([card('15'), card('14')], 1, 1))
     const prepare = env.adapter.prepare
     env.adapter.prepare = async (options) => { if (options.entry.date.endsWith('15')) throw new Error('平台要求手工校对'); return prepare(options) }
     const { plan } = await env.service.plan({})
-    assert.deepEqual(plan.rows.map(item => item.status), ['blocked', 'ready'])
-    assert.match(plan.rows[0].reason, /平台要求手工校对/)
+    assert.deepEqual(plan.rows.map(item => item.status), ['ready', 'ready'], '生成阶段不做平台校验，不预阻断')
+    env.changes.appliedEntries = plan.entries
+    const result = await env.service.submit({ planId: plan.id, confirmed: true })
+    assert.equal(result.results[0].status, 'failed')
+    assert.equal(env.calls.length, 0)
+    // 改成事假后重新生成提交，准备通过。
+    const next = await env.service.replan({ planId: (await env.service.plan({})).plan.id, overrides: { '2026-10-15': { typeId: 'personal' } } })
+    assert.equal(next.plan.entries[0].typeName, '事假')
     env.service.busy = true
     await assert.rejects(env.service.plan({}), /进行中/)
   })
