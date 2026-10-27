@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const crypto = require('node:crypto')
 const { pathToFileURL } = require('node:url')
 const { execFileSync } = require('node:child_process')
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deploy-openclaw-'))
@@ -69,6 +70,41 @@ function write(file, text) { fs.mkdirSync(path.dirname(file), { recursive: true 
     fs.unlinkSync(path.join(projectDir, '.deployignore'))
     fs.symlinkSync(path.join(projectDir, 'openclaw/plugin'), path.join(projectDir, 'linked-plugin'), process.platform === 'win32' ? 'junction' : 'dir')
     assert.throws(() => prepareOpenClaw(project, { openclaw: { ...config, pluginDir: 'linked-plugin' } }), /符号链接/)
+  })
+  check('声明构建清单后校验产物、全部源码与依赖锁定，同时兼容换行和发布版本变更', () => {
+    const plugin = path.join(projectDir, 'openclaw/plugin')
+    const pkgFile = path.join(plugin, 'package.json')
+    const oldPackage = fs.readFileSync(pkgFile, 'utf8')
+    const pkg = JSON.parse(oldPackage)
+    pkg.projectTool = { openclawArtifactManifest: 'build-manifest.json' }
+    write(pkgFile, JSON.stringify(pkg))
+    const source = 'src/business.mjs', artifact = 'openclaw/plugin/dist/index.mjs', lockName = 'package-lock.json'
+    const textHash = value => crypto.createHash('sha256').update(value.replace(/\r\n/g, '\n')).digest('hex')
+    const lockHash = value => { const data = JSON.parse(value); delete data.version; delete data.packages[''].version; return textHash(JSON.stringify(data)) }
+    const code = 'export const value = 1;\n', output = fs.readFileSync(path.join(projectDir, artifact), 'utf8')
+    let lock = JSON.stringify({ version: '1.0.0', packages: { '': { version: '1.0.0' }, 'node_modules/example': { version: '2.0.0' } } })
+    write(path.join(projectDir, source), code); write(path.join(projectDir, lockName), lock)
+    const manifest = { format: 1, artifact: { path: artifact, sha256: textHash(output) }, inputs: [
+      { path: source, format: 'text', sha256: textHash(code) }, { path: lockName, format: 'npm-lock', sha256: lockHash(lock) },
+    ] }
+    const manifestFile = path.join(plugin, 'build-manifest.json')
+    write(manifestFile, JSON.stringify(manifest))
+    assert(prepareOpenClaw(project, { openclaw: config }))
+    write(path.join(projectDir, artifact), '过期产物\n')
+    assert.throws(() => prepareOpenClaw(project, { openclaw: config }), /构建产物或源码已变化/)
+    write(path.join(projectDir, artifact), output)
+    write(path.join(projectDir, source), 'export const value = 2;\n')
+    assert.throws(() => prepareOpenClaw(project, { openclaw: config }), /构建产物或源码已变化/)
+    write(path.join(projectDir, source), code.replace(/\n/g, '\r\n'))
+    lock = JSON.stringify({ version: '1.0.1', packages: { '': { version: '1.0.1' }, 'node_modules/example': { version: '2.0.0' } } })
+    write(path.join(projectDir, lockName), lock)
+    assert(prepareOpenClaw(project, { openclaw: config }))
+    write(path.join(projectDir, lockName), lock.replace('2.0.0', '2.0.1'))
+    assert.throws(() => prepareOpenClaw(project, { openclaw: config }), /构建产物或源码已变化/)
+    write(path.join(projectDir, lockName), lock)
+    write(manifestFile, JSON.stringify({ ...manifest, inputs: [{ ...manifest.inputs[0], path: '../outside' }] }))
+    assert.throws(() => prepareOpenClaw(project, { openclaw: config }), /路径无效/)
+    write(pkgFile, oldPackage)
   })
   check('只为开启的环境传递同步参数，独立进度阶段存在', () => {
     const base = { ...project, composeFile: 'docker-compose.yml' }

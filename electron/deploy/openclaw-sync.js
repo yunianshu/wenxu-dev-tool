@@ -31,6 +31,51 @@ function containerPath(value) {
   return /^\/[\w./-]+$/.test(value) && value.split('/').every(s => s !== '.' && s !== '..')
     && !['/', '/root', '/home', '/tmp', '/etc', '/usr', '/var', '/opt'].includes(value.replace(/\/+$/, ''))
 }
+// 项目可声明构建清单；部署工具只核对文件，不执行项目提供的命令。
+function verifyArtifactManifest(projectDir, pluginDir, declaration) {
+  if (declaration === undefined) return null
+  if (typeof declaration !== 'string' || !declaration || declaration.includes('/') || declaration.includes('\\') || declaration === '.' || declaration === '..') {
+    throw new Error('OpenClaw 构建清单名称无效')
+  }
+  const root = fs.realpathSync(projectDir)
+  function fileAt(relative) {
+    if (typeof relative !== 'string' || !relative || path.posix.isAbsolute(relative) || relative.includes('\\')
+      || /^[A-Za-z]:/.test(relative) || relative.split('/').some(part => !part || part === '.' || part === '..')) {
+      throw new Error('OpenClaw 构建清单路径无效')
+    }
+    let file = root
+    for (const part of relative.split('/')) {
+      file = path.join(file, part)
+      if (fs.lstatSync(file).isSymbolicLink()) throw new Error('OpenClaw 构建清单不能经过符号链接')
+    }
+    if (!fs.statSync(file).isFile()) throw new Error('OpenClaw 构建清单引用的文件不存在')
+    return file
+  }
+  const manifest = JSON.parse(fs.readFileSync(fileAt(`${pluginDir}/${declaration}`), 'utf8'))
+  if (manifest.format !== 1 || !manifest.artifact || !Array.isArray(manifest.inputs)
+    || !manifest.inputs.length || manifest.inputs.length > 10000
+    || typeof manifest.artifact.path !== 'string' || !manifest.artifact.path.startsWith(`${pluginDir}/`)) {
+    throw new Error('OpenClaw 构建清单格式无效')
+  }
+  const entries = [{ ...manifest.artifact, format: 'text' }, ...manifest.inputs]
+  if (new Set(entries.map(entry => entry.path)).size !== entries.length) throw new Error('OpenClaw 构建清单包含重复文件')
+  for (const entry of entries) {
+    if (!entry || !['text', 'npm-lock'].includes(entry.format) || !/^[0-9a-f]{64}$/.test(entry.sha256 || '')) {
+      throw new Error('OpenClaw 构建清单校验项无效')
+    }
+    let content = fs.readFileSync(fileAt(entry.path), 'utf8').replace(/\r\n/g, '\n')
+    if (entry.format === 'npm-lock') {
+      const lock = JSON.parse(content)
+      delete lock.version
+      if (lock.packages?.['']) delete lock.packages[''].version
+      content = JSON.stringify(lock)
+    }
+    if (crypto.createHash('sha256').update(content).digest('hex') !== entry.sha256) {
+      throw new Error(`OpenClaw 构建产物或源码已变化：${entry.path}；请重新生成插件产物和构建清单`)
+    }
+  }
+  return { path: manifest.artifact.path.slice(pluginDir.length + 1), sha256: manifest.artifact.sha256 }
+}
 function prepareOpenClaw(project, target) {
   const config = normalizeOpenClaw(target?.openclaw)
   if (!config.enabled) return null
@@ -50,11 +95,12 @@ function prepareOpenClaw(project, target) {
       if (fs.lstatSync(file).isSymbolicLink() || !fs.statSync(file).isFile()) throw new Error('OpenClaw 元数据必须是来源目录内的普通文件')
       return fs.readFileSync(file, 'utf8')
     }
-    let id, version = '', publishMatcher = null
+    let id, version = '', publishMatcher = null, checkedArtifact = null
     if (kind === 'plugin') {
       const meta = JSON.parse(metadata('openclaw.plugin.json'))
       const pkg = JSON.parse(metadata('package.json'))
       id = meta.id; version = pkg.version
+      checkedArtifact = verifyArtifactManifest(project.localPath, relative, pkg.projectTool?.openclawArtifactManifest)
       if (Array.isArray(pkg.files)) {
         publishMatcher = createMatcher(['*', ...['package.json', 'openclaw.plugin.json', 'README*', 'LICENSE*', ...pkg.files]
           .filter(p => typeof p === 'string').map(p => '!/' + p.replace(/^\.\//, ''))], { includeBuild: true })
@@ -95,6 +141,14 @@ function prepareOpenClaw(project, target) {
     walk(source)
     const required = kind === 'plugin' ? ['package.json', 'openclaw.plugin.json', ...JSON.parse(fs.readFileSync(path.join(source, 'package.json'))).openclaw.extensions.map(p => p.replace(/^\.\//, ''))] : ['SKILL.md']
     if (required.some(p => !entries.some(e => e.path === p))) throw new Error('OpenClaw 必需文件被发布忽略规则排除，请调整来源或 .deployignore')
+    if (checkedArtifact) {
+      const collected = files.find(file => file.path === `${PREFIX}/plugin/${checkedArtifact.path}`)
+      if (!collected) throw new Error('OpenClaw 已校验的构建产物未进入发布包')
+      const packagedHash = crypto.createHash('sha256').update(collected.content.toString('utf8').replace(/\r\n/g, '\n')).digest('hex')
+      if (packagedHash !== checkedArtifact.sha256) throw new Error('OpenClaw 构建产物在打包期间发生变化，请重试')
+      const rechecked = verifyArtifactManifest(project.localPath, relative, JSON.parse(fs.readFileSync(path.join(source, 'package.json'))).projectTool.openclawArtifactManifest)
+      if (!rechecked || rechecked.path !== checkedArtifact.path || rechecked.sha256 !== checkedArtifact.sha256) throw new Error('OpenClaw 构建清单在打包期间发生变化，请重试')
+    }
     resources.push({ kind, id, version, files: entries })
   }
   if (config.pluginDir) collect(config.pluginDir, 'plugin')
