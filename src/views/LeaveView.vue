@@ -504,6 +504,8 @@ async function submit() {
     const result = await window.gitReport.leaveSubmit({ planId: plan.value.id, confirmed: true, dates: [...selectedDates.value], reasons })
     if (!result?.ok) throw new Error(result?.error || '提交失败，请核对北森记录')
     leave.results = result.results
+    // 提交后服务端回读平台重算方案：待申请卡片、按钮与余额随提交结果更新，剩余日期可继续提交。
+    if (result.plan) { leave.plan = result.plan; leave.consumed = false; leave.invalidated = false }
   } catch (error) { leave.error = error.message }
   finally { leave.submitting = false; reviewVisible.value = false }
 }

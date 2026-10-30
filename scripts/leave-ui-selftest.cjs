@@ -110,13 +110,15 @@ async function main() {
     app.unmount(); app = mount()
     assert.equal(setup.plan.value.id, plan.id)
     assert.equal(setup.busy.value, true, '切换视图保留执行状态')
-    finishSubmit({ ok: true, results: [{ date: '2026-10-15', status: 'success', message: '已提交' }], completed: true })
+    finishSubmit({ ok: true, results: [{ date: '2026-10-15', status: 'success', message: '已提交' }], completed: true, plan: { ...structuredClone(plan), id: 'refreshed-plan', totalHours: 0, entries: [], rows: [{ ...structuredClone(plan.rows[0]), status: 'covered', reason: '已有审批中或已通过的请假覆盖', allocations: [] }] } })
     await sending
     assert.equal(state.leave.submitting, false)
     assert.equal(setup.allSucceeded.value, true)
+    assert.equal(state.leave.plan.id, 'refreshed-plan', '提交后应用平台最新重算的方案')
+    assert.equal(state.leave.consumed, false)
     setup.reviewVisible.value = true
     await setup.submit()
-    assert.equal(submitCalls, 1, '已经使用的方案不能重发')
+    assert.equal(submitCalls, 1, '已提交方案没有剩余条目，不能再次提交')
     await setup.generate()
     const marker = { id: 'isolated-marker', canRetry: true }
     setup.openResolve({ ...marker, canRetry: false })

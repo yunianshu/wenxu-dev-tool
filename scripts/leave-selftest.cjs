@@ -316,7 +316,7 @@ async function main() {
     assert.equal(grown.rows[0].status, 'ready')
     assert.deepEqual(grown.rows[0].allocations.map(item => [item.typeName, item.hours]), [['调休假', 0.5], ['年假', 0.5]])
   })
-  await test('方案留存与恢复：重启后台后直接提交，提交后留存清除', async () => {
+  await test('方案留存与恢复：重启后台后直接提交，提交后留存更新为平台最新方案', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'leave-plan-store-'))
     try {
       const store = createPlanStore(directory)
@@ -332,7 +332,9 @@ async function main() {
       reborn.changes.appliedEntries = adjusted.plan.entries
       const result = await reborn.service.submit({ planId: restored.plan.id, confirmed: true })
       assert.equal(result.completed, true)
-      assert.equal((await setupService(env.data, {}, createPlanStore(directory)).service.restore()).plan, null, '提交后留存清除')
+      assert.equal(result.plan.rows[0].status, 'covered', '提交后返回平台最新方案，已提交日期不再计入待申请')
+      assert.equal(result.plan.entries.length, 0)
+      assert.equal((await setupService(env.data, {}, createPlanStore(directory)).service.restore()).plan.entries.length, 0, '提交后留存不再复活已提交条目')
     } finally {
       fs.rmSync(fs.realpathSync(directory), { recursive: true, force: true })
     }
@@ -444,15 +446,30 @@ async function main() {
     assert.deepEqual(result.results.map(item => [item.date, item.status]), [['2026-10-15', 'success'], ['2026-10-13', 'success']])
     assert.equal(env.calls.length, 2)
     assert.equal(env.data.leaves.some(item => item.start.startsWith('2026-10-14')), false, '未勾选的日期不写入北森')
+    // 提交后返回平台最新重算的方案：已提交日期转为 covered，余额按扣减后展示。
+    assert.notEqual(result.plan.id, plan.id)
+    assert.equal(result.plan.rows.find(item => item.date === '2026-10-15').status, 'covered')
+    assert.equal(result.plan.rows.find(item => item.date === '2026-10-13').status, 'covered')
+    assert.deepEqual(result.plan.entries.map(item => item.date), ['2026-10-14'], '未提交日期仍在待申请中')
+    assert.equal(result.plan.balances.find(item => item.id === 'comp').hours, 9, '余额卡片按平台扣减后的余额展示')
+    assert.equal(result.plan.balances.find(item => item.id === 'comp').remaining, 8.5, '剩余 = 扣减后可用减去仍在待申请中的本次用量')
     await assert.rejects(env.service.submit({ planId: plan.id, confirmed: true, dates: ['2026-10-14'] }), /确认/)
+    // 剩余日期无需重新生成，直接用重算后的方案继续提交（夹具按累计写入序号取条目）。
+    env.changes.appliedEntries = [...chosen, ...result.plan.entries]
+    const rest = await env.service.submit({ planId: result.plan.id, confirmed: true, dates: ['2026-10-14'] })
+    assert.equal(rest.completed, true)
+    assert.equal(rest.plan.totalHours, 0, '全部提交后本次待申请清零')
+    assert.equal(rest.plan.entries.length, 0)
+    assert.equal(env.calls.length, 3)
     const next = (await env.service.plan({})).plan
-    assert.deepEqual(next.entries.map(item => item.date), ['2026-10-14'], '未提交的日期仍可在重新生成后提交')
+    assert.deepEqual(next.entries, [], '重新生成也没有待申请条目')
   })
   await test('HTTP 接受后未能回查属于待核对，不能标记成功或自动重发', async () => {
     const env = setupService(); env.adapter.apply = async () => { env.calls.push('sent'); return { sent: true } }
     const { plan } = await env.service.plan({})
     const result = await env.service.submit({ planId: plan.id, confirmed: true })
     assert.equal(result.results[0].status, 'unknown')
+    assert.equal(result.plan, null, '无成功笔不刷新方案，待核对标记保持原状')
     assert.equal(env.calls.length, 1)
     assert.equal(env.ledger.load().length, 1)
     assert.match(env.ledger.load()[0].message, /尚未确认/)
@@ -463,6 +480,7 @@ async function main() {
     const { plan } = await env.service.plan({})
     const result = await env.service.submit({ planId: plan.id, confirmed: true })
     assert.equal(result.results[0].status, 'failed')
+    assert.equal(result.plan, null, '全部失败不刷新方案，仍需重新生成')
     assert.deepEqual(env.ledger.load(), [])
     const next = await env.service.plan({})
     assert.equal(next.plan.entries.length, 1)

@@ -420,21 +420,27 @@ class LeaveService {
     })
   }
 
+  /** 从台账算待核对记录与阻断原因；平台已入库的申请自动核销本地标记（生成方案与提交后刷新共用）。 */
+  unresolvedFrom(source, options) {
+    const previous = this.ledger.load()
+    // 平台迟到入库的申请可以自动核销本地标记；查不到记录时仍需本人确认。
+    const ledger = previous.filter((entry) => entry.staffId !== source.staffId || !source.leaves.some((leave) => matchesMarker(leave, entry)))
+    if (ledger.length !== previous.length) this.ledger.save(ledger)
+    const unresolved = ledger.filter((entry) => entry.staffId === source.staffId && entry.date >= options.since && entry.date <= options.until).map((entry) => ({
+      id: markerId(entry), date: entry.date, typeName: entry.typeName, start: entry.start, end: entry.end, hours: entry.hours, at: entry.at,
+      message: entry.message || '旧版只保留了待核对标记，未记录具体错误', canRetry: this.now() - Date.parse(entry.at) >= MINUTE,
+    }))
+    const blocked = {}
+    for (const entry of unresolved) blocked[entry.date] = '上次提交结果待核对，请先核查下方记录'
+    return { unresolved, blocked }
+  }
+
   plan(input) {
     return this.exclusive(async () => {
       this.pending = null
       const options = normalizeOptions(input, this.now())
       const source = await this.readSource(options)
-      const blocked = {}
-      const previous = this.ledger.load()
-      // 平台迟到入库的申请可以自动核销本地标记；查不到记录时仍需本人确认。
-      const ledger = previous.filter((entry) => entry.staffId !== source.staffId || !source.leaves.some((leave) => matchesMarker(leave, entry)))
-      if (ledger.length !== previous.length) this.ledger.save(ledger)
-      const unresolved = ledger.filter((entry) => entry.staffId === source.staffId && entry.date >= options.since && entry.date <= options.until).map((entry) => ({
-        id: markerId(entry), date: entry.date, typeName: entry.typeName, start: entry.start, end: entry.end, hours: entry.hours, at: entry.at,
-        message: entry.message || '旧版只保留了待核对标记，未记录具体错误', canRetry: this.now() - Date.parse(entry.at) >= MINUTE,
-      }))
-      for (const entry of unresolved) blocked[entry.date] = '上次提交结果待核对，请先核查下方记录'
+      const { unresolved, blocked } = this.unresolvedFrom(source, options)
       // 不在生成阶段逐笔做平台表单预校验（每笔 4–6 次请求，多天时极慢）；
       // 提交时仍逐笔 prepare + 比对时长，不一致会安全中止。
       const plan = buildPlan(source, options, blocked)
@@ -568,7 +574,23 @@ class LeaveService {
           break
         }
       }
-      return { results, completed: results.every((item) => item.status === 'success') }
+      const completed = results.every((item) => item.status === 'success')
+      // 有成功笔时回读平台重算方案并顶替 pending：界面待申请/余额随之更新，剩余日期无需重新生成即可继续提交。
+      let nextPlan = null
+      if (results.some((item) => item.status === 'success')) {
+        try {
+          const fresh = await this.readSource(options)
+          if (fresh.staffId === plan.staffId) {
+            const { unresolved, blocked } = this.unresolvedFrom(fresh, plan.options)
+            const rebuilt = buildPlan(fresh, plan.options, blocked, new Set(pending.banned || []), pending.overrides || {})
+            const createdAt = this.now()
+            nextPlan = { ...rebuilt, unresolved, id: randomUUID(), createdAt, expiresAt: createdAt + PLAN_TTL }
+            this.pending = { publicPlan: nextPlan, fingerprint: fingerprint(fresh), blocked, source: fresh, banned: pending.banned || [], overrides: pending.overrides || {}, monthlyCoverage: true }
+            this.planStore.save(this.pending)
+          }
+        } catch { /* 刷新失败不影响提交结果；界面保持旧方案，重新生成即可 */ }
+      }
+      return { results, completed, plan: nextPlan }
     })
   }
 }
