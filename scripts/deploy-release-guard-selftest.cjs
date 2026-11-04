@@ -89,12 +89,12 @@ const targetOf = (id) => projects.list().find((p) => p.id === id).targets[0]
   const chain = () => base({ localPath: src, version: { strategy: 'manual', manual: '1.1.58' }, docker: { requireReleaseEvidence: true } })
 
   const missing = service.releaseContentProblems(base({ docker: { requireReleaseEvidence: true } }), { version: '1.1.57' })
-  assert.equal(missing.length, 2, '版本漂移与缺凭证都要指出')
-  assert(missing.some((p) => p.includes('release-evidence.json')), missing.join('\n'))
+  assert.equal(missing.length, 1, '凭证拦截时只报 prepare 指引，不叠加版本漂移误导')
+  assert(missing[0].includes('release-evidence.json') && missing[0].includes('prepare'), missing.join('\n'))
 
   const mismatch = service.releaseContentProblems(chain(), { version: '1.1.59' })
-  assert.equal(mismatch.length, 2, '发布版本漂移时包内版本与凭证版本各报一个问题')
-  assert(mismatch.every((p) => p.includes('1.1.59')), mismatch.join('\n'))
+  assert.equal(mismatch.length, 1, '凭证版本不符同样只报凭证问题')
+  assert(mismatch[0].includes('1.1.58') && mismatch[0].includes('1.1.59'), mismatch[0])
 
   assert.equal(service.releaseContentProblems(chain(), { version: '1.1.58' }).length, 0, '发布链形态（source 副本 + 凭证版本一致）必须放行')
   fs.writeFileSync(path.join(src, 'release-evidence.json'), 'not-json')

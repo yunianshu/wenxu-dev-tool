@@ -689,15 +689,19 @@ function releaseContentProblems(project, ver) {
   if (!root || !fs.existsSync(root)) return problems // 目录缺失由 preCheckLocal 先报错
   // 发布副本凭证：开启后发布目录根必须含 release-evidence.json 且版本一致，
   // 拒绝工作区目录直传（凭证问题放最前，作为此类项目的主指引）
+  let evidenceBlocked = false
   if (project.docker?.requireReleaseEvidence) {
     const evidence = readEvidence(root)
     if (!evidence || evidence.version !== ver.version) {
+      evidenceBlocked = true
       const found = evidence?.version ? `凭证版本为 ${evidence.version}` : '缺少可用的 release-evidence.json'
       problems.push(`已启用发布副本凭证校验：${found}，与发布版本 ${ver.version} 不符；请先运行项目发布链的 prepare 生成该版本的发布副本（output/<发布目录>/source），不要直接发布工作区目录`)
     }
   }
-  // 手动版本与项目内版本声明错位：auto 策略的版本本就取自同一目录，天然一致
-  if (project.version?.strategy === 'manual') {
+  // 手动版本与项目内版本声明错位：auto 策略的版本本就取自同一目录，天然一致。
+  // 凭证项目已被拦下时不再叠加此检查——其版本由发布副本的凭证保证，
+  // 此时提示「对齐项目版本文件」会诱导手改工作区（1.1.57 事故的成因）
+  if (!evidenceBlocked && project.version?.strategy === 'manual') {
     const det = detectVersion(root)
     if (det.version && det.version !== ver.version) {
       problems.push(`项目版本声明为 ${det.version}（${det.source}），与发布版本 ${ver.version} 不一致；请先对齐项目版本文件，或改用自动识别版本`)
