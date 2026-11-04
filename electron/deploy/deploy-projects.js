@@ -115,6 +115,9 @@ function defaultProject() {
     productionTargetId: '',
     autoDeploy: { port: 0 },
     composeFile: 'docker-compose.yml',
+    // Docker 形态内容门禁：开启后发布目录根必须含 release-evidence.json 且版本一致，
+    // 即只允许上传项目自有发布链（prepare→deploy）产出的发布副本，拒绝工作区直传
+    docker: { requireReleaseEvidence: false },
     // 脚本部署：产物目录（相对项目根，放 tar.gz/tgz/zip 发布包）与升级入口脚本名；
     // 环境引导开关：服务器缺 Java17 / pg_dump 时自动装用户态环境（不动系统）；
     // 打包命令：配置后每次在隔离项目副本中执行（如 bash package.sh）；
@@ -148,6 +151,7 @@ function normalizeProject(p) {
     version: { ...defaults.version, ...(source.version || {}) },
     deploy: { ...defaults.deploy, ...(source.deploy || {}) },
     scriptMode: { ...defaults.scriptMode, ...(source.scriptMode || {}) },
+    docker: { ...defaults.docker, ...(source.docker || {}) },
   }
   // 数据库备份配置原为项目级（deploy.backupDatabase/dbType/dbContainer/dbName/dbUser）：
   // 多环境下测试库与生产库是两个实例，现将该组配置改为按部署目标存放。
@@ -192,6 +196,8 @@ function normalizeProject(p) {
   c.scriptMode.autoBumpVersion = c.scriptMode.autoBumpVersion !== false
   // 打包前自动生成缺失的发布说明初稿（项目有 release-notes-*.md 约定时），默认开
   c.scriptMode.autoReleaseNotes = c.scriptMode.autoReleaseNotes !== false
+  // 发布副本凭证校验（docker 形态内容门禁），默认关，仅项目显式开启
+  c.docker.requireReleaseEvidence = c.docker.requireReleaseEvidence === true
   c.name = String(c.name || '').trim()
   c.description = String(c.description || '')
   c.localPath = String(c.localPath || '')

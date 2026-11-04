@@ -69,6 +69,9 @@
           <span class="f-label">Compose</span>
           <el-input v-model="form.composeFile" placeholder="docker-compose.yml（支持 compose.yaml 等常见命名自动回退）" style="flex: 1" />
         </div>
+        <div v-if="form.deployMode === 'docker'" class="f-row check-row">
+          <el-checkbox v-model="form.docker.requireReleaseEvidence">发布副本凭证校验（release-evidence.json）</el-checkbox>
+        </div>
         <template v-else-if="form.deployMode === 'script'">
           <div class="f-row">
             <span class="f-label">产物目录</span>

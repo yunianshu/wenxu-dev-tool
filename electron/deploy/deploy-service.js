@@ -645,6 +645,36 @@ function preCheckLocal(project, target, version, autoMode = false) {
   return problems
 }
 
+/**
+ * 发布内容门禁（docker 形态，check 阶段、连服务器之前执行）：
+ * 上传内容自带的版本声明必须与发布版本一致，开启凭证校验的项目只允许
+ * 上传发布链产出的发布副本，避免工作区快照带着陈旧版本号被打成「成功」发布。
+ */
+function releaseContentProblems(project, ver) {
+  const problems = []
+  if (!ver.version) return problems
+  const root = project.localPath
+  if (!root || !fs.existsSync(root)) return problems // 目录缺失由 preCheckLocal 先报错
+  // 手动版本与项目内版本声明错位：auto 策略的版本本就取自同一目录，天然一致
+  if (project.version?.strategy === 'manual') {
+    const det = detectVersion(root)
+    if (det.version && det.version !== ver.version) {
+      problems.push(`项目版本声明为 ${det.version}（${det.source}），与发布版本 ${ver.version} 不一致；请先对齐项目版本文件，或改用自动识别版本`)
+    }
+  }
+  // 发布副本凭证：开启后发布目录根必须含 release-evidence.json 且版本一致
+  // （项目自有 prepare→deploy 发布链的凭证契约），拒绝工作区目录直传
+  if (project.docker?.requireReleaseEvidence) {
+    let evidence = null
+    try { evidence = JSON.parse(fs.readFileSync(path.join(root, 'release-evidence.json'), 'utf8')) } catch { /* 缺失/损坏按无凭证处理 */ }
+    if (!evidence || evidence.version !== ver.version) {
+      const found = evidence?.version ? `凭证版本为 ${evidence.version}` : '缺少可用的 release-evidence.json'
+      problems.push(`已启用发布副本凭证校验：${found}，与发布版本 ${ver.version} 不符；请使用项目发布链产出的发布副本，不要直接发布工作区目录`)
+    }
+  }
+  return problems
+}
+
 /** 从项目取部署目标（targetId 省略时用第一个目标） */
 function getTarget(project, targetId) {
   const targets = Array.isArray(project.targets) ? project.targets : []
@@ -817,6 +847,7 @@ async function run(projectId, targetId) {
     }
     const mode = deployModeOf(project)
     const problems = preCheckLocal(project, target, ver.version, autoMode)
+    if (mode === 'docker' && !autoMode) problems.push(...releaseContentProblems(project, ver))
     if (!autoMode && list.some((p) => p.id !== project.id && p.targets.some((t) => t.server?.host === target.server.host && Number(t.server.port || 22) === Number(target.server.port || 22) && String(t.remotePath).replace(/\/+$/, '') === String(target.remotePath).replace(/\/+$/, '')))) {
       problems.push('该服务器部署目录已被其他项目配置使用，请为当前项目设置独立目录')
     }
@@ -1565,7 +1596,7 @@ async function rollback(projectId, version, targetId) {
 module.exports = {
   run, cancel, isBusy, testConnection, listReleases, rollback,
   listDbBackups, restoreDbBackup, assertDbBackupName,
-  setEmitter, STAGES, resolveVersion, buildDeployArgs, preCheckLocal,
+  setEmitter, STAGES, resolveVersion, buildDeployArgs, preCheckLocal, releaseContentProblems,
   resolveCompose, resolveArtifact, sha256File, releaseDirNameOf, deployModeOf, runPackageCommand,
   findGitBashDir, localShellEnv,
   getDataSync, validateDataSync, buildDataSyncCommand,

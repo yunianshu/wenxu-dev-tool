@@ -45,6 +45,7 @@ const SUITES = [
   'deploy-release-notes-selftest.cjs',
   'syntax-check-selftest.cjs',
   'deploy-version-guard-selftest.cjs',
+  'deploy-release-guard-selftest.cjs',
   'deploy-packager-symlink-selftest.cjs',
   'deploy-package-shell-selftest.cjs',
   'deploy-package-workspace-selftest.cjs',

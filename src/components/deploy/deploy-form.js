@@ -42,6 +42,8 @@ export function emptyProject() {
     productionTargetId: '',
     autoDeploy: { port: 0 },
     composeFile: 'docker-compose.yml',
+    // 与主进程 normalizeProject 的默认值镜像：docker 形态发布副本凭证校验，默认关
+    docker: { requireReleaseEvidence: false },
     scriptMode: { artifactDir: 'release', upgradeScript: 'upgrade.sh', bootstrapJava: false, bootstrapPgdump: false, packageCommand: '', packageTimeoutSec: 900, autoBumpVersion: true, autoReleaseNotes: true },
     deploy: {
       backupCode: true, autoRollback: true, deleteUploadAfterSuccess: true,

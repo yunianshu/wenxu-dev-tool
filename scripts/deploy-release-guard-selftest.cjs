@@ -1,0 +1,144 @@
+/** docker 形态发布内容门禁：版本一致性 + 发布副本凭证（release-evidence.json），
+ *  拒绝工作区快照直传打出「成功」（PlmInsight 1.1.57 事故回归）。 */
+const assert = require('assert'), fs = require('fs'), os = require('os'), path = require('path'), crypto = require('crypto')
+const { Writable } = require('stream')
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deploy-release-guard-'))
+const electronPath = require.resolve('electron')
+require.cache[electronPath] = { id: electronPath, filename: electronPath, loaded: true, exports: {
+  app: { getPath: () => path.join(root, 'userdata') }, safeStorage: { isEncryptionAvailable: () => false },
+} }
+const projects = require('../electron/deploy/deploy-projects')
+const service = require('../electron/deploy/deploy-service')
+
+const ssh = require('../electron/deploy/ssh-service')
+const remote = new Map(), connections = []
+ssh.connect = async (config) => {
+  connections.push({ host: config.host, port: config.port })
+  return { sftp: (cb) => cb(null, { end() {}, createWriteStream(file, options) {
+    assert.equal(options.mode, 0o600)
+    const chunks = []
+    return new Writable({ write(chunk, _, done) { chunks.push(chunk); done() }, final(done) { remote.set(file, Buffer.concat(chunks)); done() } })
+  } }) }
+}
+ssh.close = () => {}
+ssh.mkdirp = async () => {}
+ssh.upload = async (_, local, target) => { remote.set(target, fs.readFileSync(local)) }
+ssh.exec = async (_, command, onLine) => {
+  if (command.startsWith('sha256sum')) {
+    const file = command.match(/^sha256sum '([^']+)'/)[1]
+    assert(remote.has(file), `校验的文件必须已上传: ${file}`)
+    return { code: 0, stdout: crypto.createHash('sha256').update(remote.get(file)).digest('hex') }
+  }
+  if (command.includes('/deploy.sh') && command.startsWith('bash ')) {
+    const output = '__STAGE__:build\n__STAGE__:start\n__STAGE__:health\n__DEPLOY_OK__:1.1.58\n'
+    onLine?.(output)
+    return { code: 0, stdout: output }
+  }
+  return { code: 0, stdout: '', stderr: '' }
+}
+
+const writeTree = (dir, files) => {
+  for (const [rel, content] of Object.entries(files)) {
+    const full = path.join(dir, rel)
+    fs.mkdirSync(path.dirname(full), { recursive: true })
+    fs.writeFileSync(full, content)
+  }
+}
+const pkg = (version) => `${JSON.stringify({ name: 'app', version }, null, 2)}\n`
+const COMPOSE = 'services:\n  app:\n    image: demo:latest\n    build: .\n'
+const EVIDENCE = JSON.stringify({ version: '1.1.58', commit: 'd1c9bf1', imageTag: 'demo:1.1.58-d1c9bf1', hashes: {} })
+
+function seedProject(name, localDir, { manual = '', evidence = false } = {}) {
+  const project = projects.defaultProject()
+  project.configMode = 'manual'
+  project.deployMode = 'docker'
+  project.name = name
+  project.localPath = localDir
+  if (manual) project.version = { strategy: 'manual', manual }
+  project.docker.requireReleaseEvidence = evidence
+  Object.assign(project.targets[0], {
+    server: { host: 'guard.example.invalid', port: 22, username: 'root', authType: 'password', keyPath: '', secret: '', passphrase: '' },
+    remotePath: `/home/test/${name}`,
+    health: { strategy: 'manual', enabled: false, url: '', timeout: 90, interval: 3 },
+    db: { strategy: 'manual', enabled: false, type: 'postgres', container: '', name: '', user: '' },
+  })
+  assert(projects.save(project).ok)
+  return project.id
+}
+const targetOf = (id) => projects.list().find((p) => p.id === id).targets[0]
+
+;(async () => {
+  // ── 单元：releaseContentProblems 门禁矩阵 ──
+  const ws = path.join(root, 'unit-ws')
+  writeTree(ws, { 'docker-compose.yml': COMPOSE, 'plm-bi-dashboard/package.json': pkg('1.1.33') })
+  const base = (extra = {}) => ({ localPath: ws, version: { strategy: 'manual', manual: '1.1.57' }, docker: {}, ...extra })
+
+  const drift = service.releaseContentProblems(base(), { version: '1.1.57' })
+  assert.equal(drift.length, 1, '手动版本与包内版本漂移必须拦截')
+  assert(drift[0].includes('1.1.33') && drift[0].includes('1.1.57') && drift[0].includes('plm-bi-dashboard'), drift[0])
+
+  assert.equal(service.releaseContentProblems(base(), { version: '1.1.33' }).length, 0, '手动版本与包内一致时放行')
+  assert.equal(service.releaseContentProblems({ localPath: ws, version: { strategy: 'auto' }, docker: {} }, { version: '9.9.9' }).length, 0, 'auto 策略版本同源自洽，不校验')
+  assert.equal(service.releaseContentProblems(base(), { version: '' }).length, 0, '无版本由前置检查报错，此处不重复')
+  assert.equal(service.releaseContentProblems({ localPath: path.join(root, 'nope'), version: { strategy: 'manual', manual: '1.0.0' }, docker: {} }, { version: '1.0.0' }).length, 0, '目录缺失由前置检查报错')
+
+  // ── 单元：发布副本凭证（PlmInsight 发布链契约） ──
+  const src = path.join(root, 'chain-src')
+  writeTree(src, { 'docker-compose.yml': COMPOSE, 'plm-bi-dashboard/package.json': pkg('1.1.58'), 'release-evidence.json': EVIDENCE })
+  const chain = () => base({ localPath: src, version: { strategy: 'manual', manual: '1.1.58' }, docker: { requireReleaseEvidence: true } })
+
+  const missing = service.releaseContentProblems(base({ docker: { requireReleaseEvidence: true } }), { version: '1.1.57' })
+  assert.equal(missing.length, 2, '版本漂移与缺凭证都要指出')
+  assert(missing.some((p) => p.includes('release-evidence.json')), missing.join('\n'))
+
+  const mismatch = service.releaseContentProblems(chain(), { version: '1.1.59' })
+  assert.equal(mismatch.length, 2, '发布版本漂移时包内版本与凭证版本各报一个问题')
+  assert(mismatch.every((p) => p.includes('1.1.59')), mismatch.join('\n'))
+
+  assert.equal(service.releaseContentProblems(chain(), { version: '1.1.58' }).length, 0, '发布链形态（source 副本 + 凭证版本一致）必须放行')
+  fs.writeFileSync(path.join(src, 'release-evidence.json'), 'not-json')
+  assert.equal(service.releaseContentProblems(chain(), { version: '1.1.58' }).length, 1, '凭证损坏按无凭证处理')
+  fs.writeFileSync(path.join(src, 'release-evidence.json'), EVIDENCE)
+
+  // ── 配置归一化：docker.requireReleaseEvidence 默认关、布尔清洗、存取往返 ──
+  assert.equal(projects.defaultProject().docker.requireReleaseEvidence, false)
+  const dirty = projects.defaultProject()
+  dirty.name = 'dirty'; dirty.localPath = ws; dirty.configMode = 'manual'; dirty.deployMode = 'docker'
+  dirty.docker.requireReleaseEvidence = 'yes'
+  assert(projects.save(dirty).ok)
+  assert.equal(projects.list().find((p) => p.name === 'dirty').docker.requireReleaseEvidence, false, '非布尔强制为 false')
+  const kept = projects.list().find((p) => p.name === 'dirty')
+  kept.docker.requireReleaseEvidence = true
+  assert(projects.save(kept).ok)
+  assert.equal(projects.list().find((p) => p.name === 'dirty').docker.requireReleaseEvidence, true, '开启后往返保留')
+
+  // ── 集成：门禁在 check 阶段（SSH 连接之前）拦截，失败运行不碰服务器 ──
+  const wsBad = path.join(root, 'ws-bad')
+  writeTree(wsBad, { 'docker-compose.yml': COMPOSE, 'package.json': pkg('0.9.0') })
+  const a = seedProject('guard-drift', wsBad, { manual: '1.1.57' })
+  let record = await service.run(a, targetOf(a).id)
+  assert.equal(record.status, 'failed')
+  assert.equal(record.stages.check.status, 'failed')
+  assert(record.message.includes('0.9.0') && record.message.includes('1.1.57'), record.message)
+  assert.equal(connections.length, 0, '版本漂移必须在连接服务器前失败')
+
+  const wsNoEvidence = path.join(root, 'ws-no-evidence')
+  writeTree(wsNoEvidence, { 'docker-compose.yml': COMPOSE, 'package.json': pkg('1.0.0') })
+  const b = seedProject('guard-evidence', wsNoEvidence, { manual: '1.0.0', evidence: true })
+  record = await service.run(b, targetOf(b).id)
+  assert.equal(record.status, 'failed')
+  assert.equal(record.stages.check.status, 'failed')
+  assert(record.message.includes('release-evidence.json'), record.message)
+  assert.equal(connections.length, 0, '缺凭证必须在连接服务器前失败')
+
+  // ── 集成：发布链形态全流程成功（不破坏 PlmInsight deploy.cjs 的调用契约） ──
+  const c = seedProject('guard-chain', src, { manual: '1.1.58', evidence: true })
+  record = await service.run(c, targetOf(c).id)
+  assert.equal(record.status, 'success', record.message)
+  assert.equal(record.version, '1.1.58')
+  assert.equal(connections.length, 1)
+
+  console.log('PASS 发布内容门禁：手动版本漂移拦截、发布副本凭证校验、check 阶段先于连接、发布链形态放行')
+})().catch((e) => { console.error(e.stack); process.exitCode = 1 }).finally(() => {
+  if (path.dirname(root) === path.resolve(os.tmpdir()) && path.basename(root).startsWith('deploy-release-guard-')) fs.rmSync(root, { recursive: true, force: true })
+})
