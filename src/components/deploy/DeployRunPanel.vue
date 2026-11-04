@@ -28,7 +28,7 @@
         plain
         @click="openDbBackups"
       ><el-icon><Coin /></el-icon>数据库备份</el-button>
-      <el-button :disabled="!form.id || state.deploy.running" @click="newVersion"><el-icon><Plus /></el-icon>新版本</el-button>
+      <el-button :disabled="!form.id || state.deploy.running || dirty" @click="newVersion"><el-icon><Plus /></el-icon>新版本</el-button>
       <el-button v-if="state.deploy.running" type="warning" plain @click="cancelRun">取消发布</el-button>
       <el-tooltip v-else :disabled="canPublish" :content="publishBlockedReason" placement="top">
         <span class="publish-button-wrap"><el-button type="primary" class="publish-btn" :disabled="!canPublish" @click="publish"><el-icon><Promotion /></el-icon>发布 {{ publishVersion || '' }}</el-button></span>

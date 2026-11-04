@@ -466,11 +466,30 @@ function mergeSecret(s, oldSecret, key, clearKey) {
 
 /**
  * 保存项目（新增或更新）。targets 为完整数组，按 id 匹配旧目标保留凭据。
+ * 仅传 id、version 时只更新已有项目的版本，避免旧界面快照覆盖最新部署配置。
  */
 function save(input) {
   const doc = loadDocument()
   const projects = doc.projects
-  const incoming = normalizeProject(JSON.parse(JSON.stringify(input || {})))
+  const source = JSON.parse(JSON.stringify(input || {}))
+  if (Object.hasOwn(source, 'id') && Object.hasOwn(source, 'version') && Object.keys(source).length === 2) {
+    const project = projects.find((p) => p.id === source.id)
+    if (!project) return { ok: false, error: '项目配置不存在，请重新选择' }
+    if (!source.version || typeof source.version !== 'object' || Array.isArray(source.version)) return { ok: false, error: '版本配置无效' }
+    const version = normalizeProject({ version: { ...project.version, ...source.version } }).version
+    if (!['auto', 'manual'].includes(version.strategy) || (version.strategy === 'manual' && !version.manual)) {
+      return { ok: false, error: '请填写有效的发布版本号' }
+    }
+    // 完成必要迁移后只改磁盘对象中的版本，不归一化目标或重新合并凭据。
+    const savedDocument = JSON.parse(fs.readFileSync(file(), 'utf8'))
+    const savedProject = savedDocument.projects.find((p) => p.id === source.id)
+    if (!savedProject) return { ok: false, error: '项目配置不存在，请重新选择' }
+    savedProject.version = version
+    savedProject.updatedAt = Date.now()
+    writeDocument(savedDocument)
+    return { ok: true, id: savedProject.id }
+  }
+  const incoming = normalizeProject(source)
   if (!incoming.id) incoming.id = genId()
   if (!incoming.createdAt) incoming.createdAt = Date.now()
   incoming.updatedAt = Date.now()

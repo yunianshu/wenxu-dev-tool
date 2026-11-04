@@ -385,12 +385,23 @@ async function onServersChanged() {
 
 /** 发布卡「新版本」（spec R7）：切手动版本并保存，发布按钮立即生效 */
 async function onNewVersion(version) {
-  form.version.strategy = 'manual'
-  form.version.manual = version
-  const saved = await saveProject(`新版本 ${version} 已保存，可直接发布`)
-  // 版本已切换＝进入新一轮发布准备，复位上一轮的阶段/日志/进度展示；
-  // 否则下方发布进程状态仍停在上一次的 ✓/✗，与「即将发布新版本」的预期不符
-  if (saved) resetRunDisplay()
+  if (state.deploy.running) { ElMessage.warning('部署任务进行中，请完成后修改版本'); return }
+  if (dirty.value) { ElMessage.warning('请先保存部署设置中的修改'); return }
+  const projectId = form.id
+  if (!projectId) return
+  try {
+    // 版本操作只写版本，准备命令等配置始终以磁盘中的最新值为准。
+    const r = await window.gitReport.deployProjectsSave({ id: projectId, version: { strategy: 'manual', manual: version } })
+    if (!r?.ok) { ElMessage.error(r?.error || '版本保存失败'); return }
+    if (disposed || form.id !== projectId) return
+    await loadProjects({ preserveDraft: true })
+    if (disposed || form.id !== projectId) return
+    ElMessage.success(`新版本 ${version} 已保存，可直接发布`)
+    // 进入新一轮发布准备，复位上一轮的阶段、日志与进度展示。
+    resetRunDisplay()
+  } catch (error) {
+    ElMessage.error(error.message || '版本保存失败')
+  }
 }
 
 async function removeProject() {

@@ -252,6 +252,69 @@ async function main() {
     assert.equal(state.deploy.currentVersion, '保持当前版本')
     await done('A', targetId, '3.0.0')
     assert.equal(state.deploy.currentVersion, '3.0.0')
+
+    // 页面加载后磁盘配置可能被外部修复；切换版本不得用旧表单覆盖准备命令。
+    const deployProjects = load('electron/deploy/deploy-projects.js')
+    const previousList = api.projectsList
+    const previousSave = api.deployProjectsSave
+    const versionSaves = []
+    try {
+      assert(deployProjects.save({ ...projects[0], configMode: 'manual' }).ok)
+      api.projectsList = async () => deployProjects.list()
+      api.deployProjectsSave = async (payload) => {
+        versionSaves.push(structuredClone(payload))
+        return deployProjects.save(payload)
+      }
+      delete state.deploy.configDrafts.A
+      await deployView.setup.loadProjects()
+      deployView.setup.activeTargetId.value = 'production'
+      assert.equal(deployView.setup.form.docker.prepareCommand, '')
+      assert.equal(deployView.setup.dirty.value, false, '复现起点为已保存且无草稿的旧页面')
+      const fresh = deployProjects.list().find((project) => project.id === 'A')
+      fresh.docker = { requireReleaseEvidence: true, prepareCommand: 'node scripts/release/prepare.cjs --version {version}', prepareTimeoutSec: 1200 }
+      fresh.composeFile = 'compose.production.yml'
+      fresh.targets[0].health.url = 'http://127.0.0.1:9000/health'
+      assert(deployProjects.save(fresh).ok)
+      const readRaw = () => JSON.parse(fs.readFileSync(path.join(root, 'deploy-projects.json'), 'utf8')).projects.find((project) => project.id === 'A')
+      const beforeVersion = readRaw()
+      await deployView.setup.onNewVersion('1.1.63')
+      const afterVersion = readRaw()
+      assert.equal(afterVersion.docker.prepareCommand, fresh.docker.prepareCommand, '新版本操作必须保留磁盘上的准备命令，不能由旧表单清空')
+      assert.equal(afterVersion.version.manual, '1.1.63')
+      assert.equal(afterVersion.version.strategy, 'manual')
+      const withoutVersion = (project) => {
+        const copy = structuredClone(project)
+        delete copy.version
+        delete copy.updatedAt
+        return copy
+      }
+      assert.deepEqual(withoutVersion(afterVersion), withoutVersion(beforeVersion), '切换版本必须完整保留部署参数和存储凭据')
+      assert.deepEqual(Object.keys(versionSaves[0]).sort(), ['id', 'version'], '版本操作只提交项目标识和版本')
+      assert.equal(deployView.setup.form.docker.prepareCommand, fresh.docker.prepareCommand, '保存后页面必须回填最新准备命令')
+      assert.equal(deployView.setup.activeTargetId.value, 'production', '切换版本保留当前环境')
+
+      const oldVersion = deployView.setup.form.version.manual
+      deployView.setup.form.name = '尚未保存的项目名称'
+      await deployView.setup.onNewVersion('1.1.64')
+      assert.equal(versionSaves.length, 1, '有未保存编辑时不能通过版本操作隐式保存整份配置')
+      assert.equal(deployView.setup.form.name, '尚未保存的项目名称', '未保存编辑必须保留')
+      deployView.setup.form.name = afterVersion.name
+      api.deployProjectsSave = async () => ({ ok: false, error: '模拟版本保存失败' })
+      await deployView.setup.onNewVersion('1.1.64')
+      assert.equal(deployView.setup.form.version.manual, oldVersion, '保存失败不能把页面版本提前切换')
+      assert(errors.includes('模拟版本保存失败'))
+      assert.equal(deployProjects.save({ id: 'A', version: { strategy: 'manual', manual: '../bad' } }).ok, false, '非法版本必须在写入前拒绝')
+      assert.equal(deployProjects.save({ id: 'missing-project', version: { strategy: 'manual', manual: '1.1.64' } }).ok, false, '版本操作不能新建缺少配置的项目')
+      assert.equal(readRaw().version.manual, '1.1.63')
+    } finally {
+      api.projectsList = previousList
+      if (previousSave) api.deployProjectsSave = previousSave
+      else delete api.deployProjectsSave
+      delete state.deploy.configDrafts.A
+      await deployView.setup.loadProjects()
+    }
+    console.log('  ✓ 真实旧表单切换版本只更新版本，保留最新准备命令、配置、凭据和环境，失败保留原版本')
+
     // 本段验证「自动发布模式」换服务器清探测：新项目默认极简配置（quick 保留用户填写的
     // 项目地址），显式切回完整配置 + 自动发布以保持既有语义
     deployView.setup.form.configMode = 'manual'
