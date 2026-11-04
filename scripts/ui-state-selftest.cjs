@@ -274,9 +274,13 @@ async function main() {
       fresh.docker = { requireReleaseEvidence: true, prepareCommand: 'node scripts/release/prepare.cjs --version {version}', prepareTimeoutSec: 1200 }
       fresh.composeFile = 'compose.production.yml'
       fresh.targets[0].health.url = 'http://127.0.0.1:9000/health'
+      fresh.targets[0].dataSync.importSecret = '测试导入凭据'
+      const sharedServer = deployProjects.listServers().find((server) => server.id === fresh.targets[0].serverId)
+      assert(deployProjects.saveServer({ ...sharedServer, secret: '测试服务器凭据' }).ok)
       assert(deployProjects.save(fresh).ok)
       const readRaw = () => JSON.parse(fs.readFileSync(path.join(root, 'deploy-projects.json'), 'utf8')).projects.find((project) => project.id === 'A')
       const beforeVersion = readRaw()
+      const serversBeforeVersion = JSON.parse(fs.readFileSync(path.join(root, 'deploy-projects.json'), 'utf8')).servers
       await deployView.setup.onNewVersion('1.1.63')
       const afterVersion = readRaw()
       assert.equal(afterVersion.docker.prepareCommand, fresh.docker.prepareCommand, '新版本操作必须保留磁盘上的准备命令，不能由旧表单清空')
@@ -289,6 +293,9 @@ async function main() {
         return copy
       }
       assert.deepEqual(withoutVersion(afterVersion), withoutVersion(beforeVersion), '切换版本必须完整保留部署参数和存储凭据')
+      assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'deploy-projects.json'), 'utf8')).servers, serversBeforeVersion, '共享服务器密文必须原样保留')
+      assert.equal(deployProjects.getCredentials('A', 'test').password, '测试服务器凭据')
+      assert.equal(deployProjects.getDataSyncCredentials('A', 'test'), '测试导入凭据')
       assert.deepEqual(Object.keys(versionSaves[0]).sort(), ['id', 'version'], '版本操作只提交项目标识和版本')
       assert.equal(deployView.setup.form.docker.prepareCommand, fresh.docker.prepareCommand, '保存后页面必须回填最新准备命令')
       assert.equal(deployView.setup.activeTargetId.value, 'production', '切换版本保留当前环境')
