@@ -72,6 +72,12 @@
         <div v-if="form.deployMode === 'docker'" class="f-row check-row">
           <el-checkbox v-model="form.docker.requireReleaseEvidence">发布副本凭证校验（release-evidence.json）</el-checkbox>
         </div>
+        <div v-if="form.deployMode === 'docker' && form.docker.requireReleaseEvidence" class="f-row">
+          <span class="f-label">准备命令</span>
+          <el-input v-model="form.docker.prepareCommand" placeholder="node scripts/prepare-release.cjs --version {version}（留空则发布前手动 prepare）" style="flex: 1; font-family: monospace" />
+          <el-input-number v-model="form.docker.prepareTimeoutSec" :min="30" :max="3600" controls-position="right" style="width: 110px" />
+          <span class="f-mini">秒超时</span>
+        </div>
         <template v-else-if="form.deployMode === 'script'">
           <div class="f-row">
             <span class="f-label">产物目录</span>

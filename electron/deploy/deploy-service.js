@@ -613,6 +613,76 @@ function runPackageCommand(project, sourceDir) {
   })
 }
 
+/**
+ * 执行发布副本准备命令（docker 形态、开启凭证校验且未发现匹配副本时）：
+ * 在项目根运行，{version} 占位符替换为本次发布版本。命令由项目方提供
+ * （把发布链的 prepare 参数化成稳定脚本），产出 output/<发布目录>/source/release-evidence.json。
+ * 进程管理与打包命令一致：超时杀进程树、取消终止、行缓冲与 GBK 兼容日志。
+ */
+function runReleasePrepare(project, ver) {
+  const docker = project.docker || {}
+  const cmd = String(docker.prepareCommand || '').trim().replaceAll('{version}', ver.version)
+  const timeoutMs = Math.max(30, Number(docker.prepareTimeoutSec) || 900) * 1000
+  return new Promise((resolve) => {
+    let child
+    try {
+      child = spawn(cmd, { shell: true, cwd: project.localPath, env: localShellEnv(process.env), windowsHide: true })
+    } catch (e) {
+      return resolve({ ok: false, problem: `准备命令无法启动: ${(e && e.message) || e}` })
+    }
+    if (activeRun) activeRun.pkgChild = child
+    let settled = false
+    const finish = (r) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (activeRun && activeRun.pkgChild === child) activeRun.pkgChild = null
+      resolve(r)
+    }
+    const timer = setTimeout(() => {
+      log('error', `准备命令超时（>${timeoutMs / 1000}s），终止进程树……`)
+      killTree(child)
+      finish({ ok: false, problem: `准备命令超时（>${Math.round(timeoutMs / 1000)} 秒）已终止，可调整超时或检查准备脚本` })
+    }, timeoutMs)
+    // 按字节缓冲完整行，避免多字节字符跨数据块丢失；Windows 工具链兼容 GBK 输出。
+    const utf8 = new TextDecoder('utf-8', { fatal: true })
+    const legacy = process.platform === 'win32' ? new TextDecoder('gb18030') : null
+    const decode = (bytes) => {
+      try { return utf8.decode(bytes) } catch { return legacy ? legacy.decode(bytes) : bytes.toString('utf8') }
+    }
+    const writeLine = (bytes) => {
+      const line = decode(bytes).replace(/\s+$/, '')
+      if (line.trim()) log('info', `[发布副本] ${line.slice(0, 500)}`)
+    }
+    const pending = { out: Buffer.alloc(0), err: Buffer.alloc(0) }
+    const pump = (key, chunk) => {
+      if (isCanceled()) { killTree(child); return }
+      const bytes = Buffer.concat([pending[key], chunk])
+      let start = 0
+      let end
+      while ((end = bytes.indexOf(10, start)) !== -1) {
+        writeLine(bytes.subarray(start, end))
+        start = end + 1
+      }
+      pending[key] = bytes.subarray(start)
+    }
+    child.stdout.on('data', (c) => pump('out', c))
+    child.stderr.on('data', (c) => pump('err', c))
+    child.on('error', (e) => finish({ ok: false, problem: `准备命令执行失败: ${(e && e.message) || e}` }))
+    child.on('close', (code) => {
+      for (const key of ['out', 'err']) {
+        if (pending[key].length) writeLine(pending[key])
+      }
+      if (isCanceled()) return finish({ ok: false, problem: '准备命令已取消' })
+      if (code === 0) {
+        log('success', '准备命令执行完成')
+        return finish({ ok: true })
+      }
+      finish({ ok: false, problem: `准备命令退出码 ${code}（详见上方 [发布副本] 日志）` })
+    })
+  })
+}
+
 /** 发布前本地检查（方案 §23 的关键项；按部署形态分别校验） */
 function preCheckLocal(project, target, version, autoMode = false) {
   const problems = []
@@ -884,8 +954,25 @@ async function run(projectId, targetId) {
     const problems = preCheckLocal(project, target, ver.version, autoMode)
     if (mode === 'docker' && !autoMode) {
       // 发布链 prepare 产出的发布副本就绪时自动改用该副本：工具只做传输，内容以副本为准，
-      // 工作区保持不动（与发布链 deploy.cjs 覆盖 localPath 的调用方式等价）
-      const copy = findReleaseCopy(project, ver)
+      // 工作区保持不动（与发布链 deploy.cjs 覆盖 localPath 的调用方式等价）。
+      // 未就绪且配置了准备命令时先执行它生成副本——一键发布不需要去别处跑 prepare
+      let copy = findReleaseCopy(project, ver)
+      if (!copy && project.docker?.requireReleaseEvidence && String(project.docker?.prepareCommand || '').trim()) {
+        log('info', `未发现版本 ${ver.version} 的发布副本，执行准备命令生成……`)
+        const prep = await runReleasePrepare(project, ver)
+        if (!prep.ok) {
+          log('error', prep.problem)
+          tracker.end('check', 'failed', t0)
+          return finish('failed', prep.problem)
+        }
+        copy = findReleaseCopy(project, ver)
+        if (!copy) {
+          const msg = `准备命令执行完成，但未生成版本 ${ver.version} 的发布副本（output/<发布目录>/source/release-evidence.json）`
+          log('error', msg)
+          tracker.end('check', 'failed', t0)
+          return finish('failed', msg)
+        }
+      }
       if (copy) {
         log('info', `发现版本 ${ver.version} 的发布副本：${copy.rel}，本次发布该副本（工作区保持不动）`)
         project.localPath = copy.dir
@@ -1640,7 +1727,7 @@ async function rollback(projectId, version, targetId) {
 module.exports = {
   run, cancel, isBusy, testConnection, listReleases, rollback,
   listDbBackups, restoreDbBackup, assertDbBackupName,
-  setEmitter, STAGES, resolveVersion, buildDeployArgs, preCheckLocal, releaseContentProblems, findReleaseCopy,
+  setEmitter, STAGES, resolveVersion, buildDeployArgs, preCheckLocal, releaseContentProblems, findReleaseCopy, runReleasePrepare,
   resolveCompose, resolveArtifact, sha256File, releaseDirNameOf, deployModeOf, runPackageCommand,
   findGitBashDir, localShellEnv,
   getDataSync, validateDataSync, buildDataSyncCommand,

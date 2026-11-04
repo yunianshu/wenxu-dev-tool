@@ -49,7 +49,7 @@ const pkg = (version) => `${JSON.stringify({ name: 'app', version }, null, 2)}\n
 const COMPOSE = 'services:\n  app:\n    image: demo:latest\n    build: .\n'
 const EVIDENCE = JSON.stringify({ version: '1.1.58', commit: 'd1c9bf1', imageTag: 'demo:1.1.58-d1c9bf1', hashes: {} })
 
-function seedProject(name, localDir, { manual = '', evidence = false } = {}) {
+function seedProject(name, localDir, { manual = '', evidence = false, prepare = '' } = {}) {
   const project = projects.defaultProject()
   project.configMode = 'manual'
   project.deployMode = 'docker'
@@ -57,6 +57,7 @@ function seedProject(name, localDir, { manual = '', evidence = false } = {}) {
   project.localPath = localDir
   if (manual) project.version = { strategy: 'manual', manual }
   project.docker.requireReleaseEvidence = evidence
+  project.docker.prepareCommand = prepare
   Object.assign(project.targets[0], {
     server: { host: 'guard.example.invalid', port: 22, username: 'root', authType: 'password', keyPath: '', secret: '', passphrase: '' },
     remotePath: `/home/test/${name}`,
@@ -182,7 +183,62 @@ const targetOf = (id) => projects.list().find((p) => p.id === id).targets[0]
   assert(names.includes('from-copy.txt'), `ZIP 应来自发布副本: ${names.join(',')}`)
   assert(!names.includes('from-ws.txt'), '工作区独有文件不得进入发布包')
 
-  console.log('PASS 发布内容门禁：版本漂移拦截、发布副本凭证校验与自动改用副本、check 阶段先于连接、发布链形态放行')
+  // ── 集成：无副本但配置了准备命令 → 自动执行生成副本再发布（一键） ──
+  const wsPrep = path.join(root, 'ws-prep')
+  writeTree(wsPrep, { 'docker-compose.yml': COMPOSE, 'package.json': pkg('1.9.0') })
+  fs.writeFileSync(path.join(wsPrep, 'make-release.cjs'), [
+    "const fs = require('fs'), path = require('path')",
+    'const version = process.argv[2]',
+    "const src = path.join(__dirname, 'output', 'auto-release', 'source')",
+    'fs.mkdirSync(src, { recursive: true })',
+    "fs.writeFileSync(path.join(src, 'docker-compose.yml'), 'services:\\n  app:\\n    image: demo:latest\\n    build: .\\n')",
+    "fs.writeFileSync(path.join(src, 'package.json'), JSON.stringify({ version }))",
+    "fs.writeFileSync(path.join(src, 'from-copy.txt'), 'copy ' + version)",
+    "fs.writeFileSync(path.join(src, 'release-evidence.json'), JSON.stringify({ version, preparedAt: new Date().toISOString(), hashes: {} }))",
+    "console.log('prepared ' + version)",
+  ].join('\n'))
+  const e = seedProject('guard-prepare', wsPrep, { manual: '3.0.0', evidence: true, prepare: 'node make-release.cjs {version}' })
+  record = await service.run(e, targetOf(e).id)
+  assert.equal(record.status, 'success', record.message)
+  assert.equal(connections.length, 3)
+  {
+    const zipKey = [...remote.keys()].find((k) => k.includes('/uploads/') && k.includes('guard-prepare') && k.endsWith('.zip'))
+    assert(zipKey, '准备命令路径的发布包已上传')
+    const tmp2 = path.join(root, 'prep-check')
+    fs.mkdirSync(tmp2, { recursive: true })
+    fs.writeFileSync(path.join(tmp2, 'pack.zip'), remote.get(zipKey))
+    const names2 = execFileSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), ['-tf', 'pack.zip'], { cwd: tmp2, encoding: 'utf8' }).split(/\r?\n/)
+    assert(names2.includes('from-copy.txt') && names2.some((n) => n.endsWith('release-evidence.json')), 'ZIP 来自准备命令产出的副本')
+    assert.equal(JSON.parse(fs.readFileSync(path.join(wsPrep, 'package.json'), 'utf8')).version, '1.9.0', '准备命令不得改写工作区版本文件')
+  }
+
+  // ── 集成：准备命令失败 / 未产出副本（用新版本号确保无现成副本） ──
+  fs.writeFileSync(path.join(wsPrep, 'make-release.cjs'), "console.error('boom'); process.exit(1)\n")
+  const f = seedProject('guard-prep-fail', wsPrep, { manual: '3.0.1', evidence: true, prepare: 'node make-release.cjs {version}' })
+  record = await service.run(f, targetOf(f).id)
+  assert.equal(record.status, 'failed')
+  assert(record.message.includes('准备命令退出码 1'), record.message)
+
+  fs.writeFileSync(path.join(wsPrep, 'make-release.cjs'), "console.log('nothing')\n")
+  const g = seedProject('guard-prep-none', wsPrep, { manual: '3.0.2', evidence: true, prepare: 'node make-release.cjs {version}' })
+  record = await service.run(g, targetOf(g).id)
+  assert.equal(record.status, 'failed')
+  assert(record.message.includes('未生成版本 3.0.2 的发布副本'), record.message)
+  assert.equal(connections.length, 3, '准备命令失败路径不得连接服务器')
+
+  // ── 归一化：docker.prepareCommand / prepareTimeoutSec ──
+  assert.equal(projects.defaultProject().docker.prepareCommand, '')
+  assert.equal(projects.defaultProject().docker.prepareTimeoutSec, 900)
+  const prepCfg = projects.defaultProject()
+  prepCfg.name = 'prep-cfg'; prepCfg.localPath = ws; prepCfg.configMode = 'manual'; prepCfg.deployMode = 'docker'
+  prepCfg.docker.prepareCommand = '  node x.cjs {version}  '
+  prepCfg.docker.prepareTimeoutSec = 5
+  assert(projects.save(prepCfg).ok)
+  const savedPrep = projects.list().find((p) => p.name === 'prep-cfg').docker
+  assert.equal(savedPrep.prepareCommand, 'node x.cjs {version}', '准备命令去除首尾空白')
+  assert.equal(savedPrep.prepareTimeoutSec, 900, '非法超时回退默认 900')
+
+  console.log('PASS 发布内容门禁：版本漂移拦截、发布副本凭证校验与自动改用副本、准备命令一键生成、check 阶段先于连接、发布链形态放行')
 })().catch((e) => { console.error(e.stack); process.exitCode = 1 }).finally(() => {
   if (path.dirname(root) === path.resolve(os.tmpdir()) && path.basename(root).startsWith('deploy-release-guard-')) fs.rmSync(root, { recursive: true, force: true })
 })
