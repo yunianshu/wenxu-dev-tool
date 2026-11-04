@@ -1,6 +1,7 @@
 /** docker 形态发布内容门禁：版本一致性 + 发布副本凭证（release-evidence.json），
  *  拒绝工作区快照直传打出「成功」（PlmInsight 1.1.57 事故回归）。 */
 const assert = require('assert'), fs = require('fs'), os = require('os'), path = require('path'), crypto = require('crypto')
+const { execFileSync } = require('child_process')
 const { Writable } = require('stream')
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deploy-release-guard-'))
 const electronPath = require.resolve('electron')
@@ -100,6 +101,26 @@ const targetOf = (id) => projects.list().find((p) => p.id === id).targets[0]
   assert.equal(service.releaseContentProblems(chain(), { version: '1.1.58' }).length, 1, '凭证损坏按无凭证处理')
   fs.writeFileSync(path.join(src, 'release-evidence.json'), EVIDENCE)
 
+  // ── 单元：发布副本自动发现（prepare 产物在 output/<发布目录>/source） ──
+  const wsPickup = path.join(root, 'pickup-ws')
+  writeTree(wsPickup, { 'docker-compose.yml': COMPOSE, 'package.json': pkg('1.9.0') })
+  const copyAt = (name, version, preparedAt) => {
+    writeTree(path.join(wsPickup, 'output', name, 'source'), {
+      'release-evidence.json': preparedAt === 'broken'
+        ? 'not-json' : JSON.stringify({ version, preparedAt, hashes: {} }),
+    })
+  }
+  copyAt('rel-old', '2.0.0', '2026-11-04T10:00:00.000Z')
+  copyAt('rel-wrong', '1.9.0', '2026-11-04T11:00:00.000Z')
+  copyAt('rel-new', '2.0.0', '2026-11-04T12:00:00.000Z')
+  copyAt('rel-broken', '2.0.0', 'broken')
+  const flagged = (dir) => ({ localPath: dir, docker: { requireReleaseEvidence: true } })
+  const picked = service.findReleaseCopy(flagged(wsPickup), { version: '2.0.0' })
+  assert.equal(picked && picked.rel, 'output/rel-new/source', '取凭证版本匹配且最新的副本')
+  assert.equal(service.findReleaseCopy(flagged(wsPickup), { version: '2.0.1' }), null, '无匹配副本时返回 null')
+  assert.equal(service.findReleaseCopy({ localPath: wsPickup, docker: {} }, { version: '2.0.0' }), null, '未开启凭证校验不查找')
+  assert.equal(service.findReleaseCopy(flagged(src), { version: '1.1.58' }), null, '根目录已带匹配凭证（链式调用）无需查找')
+
   // ── 配置归一化：docker.requireReleaseEvidence 默认关、布尔清洗、存取往返 ──
   assert.equal(projects.defaultProject().docker.requireReleaseEvidence, false)
   const dirty = projects.defaultProject()
@@ -138,7 +159,30 @@ const targetOf = (id) => projects.list().find((p) => p.id === id).targets[0]
   assert.equal(record.version, '1.1.58')
   assert.equal(connections.length, 1)
 
-  console.log('PASS 发布内容门禁：手动版本漂移拦截、发布副本凭证校验、check 阶段先于连接、发布链形态放行')
+  // ── 集成：工作区无凭证但 output 里有匹配发布副本 → 自动改用副本发布 ──
+  const wsMixed = path.join(root, 'ws-mixed')
+  writeTree(wsMixed, { 'docker-compose.yml': COMPOSE, 'package.json': pkg('1.9.0'), 'from-ws.txt': 'workspace' })
+  writeTree(path.join(wsMixed, 'output', 'rel-x', 'source'), {
+    'docker-compose.yml': COMPOSE,
+    'package.json': pkg('2.0.0'),
+    'release-evidence.json': JSON.stringify({ version: '2.0.0', preparedAt: '2026-11-04T12:00:00.000Z', hashes: {} }),
+    'from-copy.txt': 'copy',
+  })
+  const d = seedProject('guard-pickup', wsMixed, { manual: '2.0.0', evidence: true })
+  record = await service.run(d, targetOf(d).id)
+  assert.equal(record.status, 'success', record.message)
+  assert.equal(connections.length, 2)
+  // 上传的 ZIP 必须来自发布副本而非工作区（bsdtar 列包，System32 tar + cwd 避开盘符坑）
+  const zipKey = [...remote.keys()].find((k) => k.includes('/uploads/') && k.includes('guard-pickup') && k.endsWith('.zip'))
+  assert(zipKey, '发布包已上传')
+  const tmp = path.join(root, 'pickup-check')
+  fs.mkdirSync(tmp, { recursive: true })
+  fs.writeFileSync(path.join(tmp, 'pack.zip'), remote.get(zipKey))
+  const names = execFileSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), ['-tf', 'pack.zip'], { cwd: tmp, encoding: 'utf8' }).split(/\r?\n/)
+  assert(names.includes('from-copy.txt'), `ZIP 应来自发布副本: ${names.join(',')}`)
+  assert(!names.includes('from-ws.txt'), '工作区独有文件不得进入发布包')
+
+  console.log('PASS 发布内容门禁：版本漂移拦截、发布副本凭证校验与自动改用副本、check 阶段先于连接、发布链形态放行')
 })().catch((e) => { console.error(e.stack); process.exitCode = 1 }).finally(() => {
   if (path.dirname(root) === path.resolve(os.tmpdir()) && path.basename(root).startsWith('deploy-release-guard-')) fs.rmSync(root, { recursive: true, force: true })
 })
