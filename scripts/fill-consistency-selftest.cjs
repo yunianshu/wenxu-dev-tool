@@ -37,6 +37,12 @@ zentao.ensureClient = async () => ({
     }
     return { status: 200 }
   },
+  deleteEstimate: async (id) => {
+    for (const rows of efforts.values()) {
+      const index = rows.findIndex((row) => row.id === id)
+      if (index >= 0) rows.splice(index, 1)
+    }
+  },
 })
 hanprint.ensureClient = async () => ({
   getByDate: async () => hpRows.map((row) => ({ ...row })),
@@ -58,13 +64,25 @@ function payload(ids = [1, 2]) {
 let passed = 0
 async function test(name, fn) { reset(); await fn(); passed++; console.log(`  ✓ ${name}`) }
 async function main() {
-  await test('取消已写入项目时，预览和正式提交均在任何写入前阻止残留', async () => {
+  await test('取消已写入项目时，预览只提示、提交需确认后清理旧记录再写入', async () => {
     await fill.submit(payload())
     const count = writes.length
-    for (const dryRun of [true, false]) await assert.rejects(() => fill.submit({ ...payload([1]), dryRun }), /任务 #2.*4h.*本次未包含/)
+    hpRows = [] // 汉印旧记录另行处理，隔离本次禅道清理验证
+    // 预览带出待清理记录，不删除、不写入
+    const preview = await fill.submit({ ...payload([1]), dryRun: true })
+    assert.deepStrictEqual(preview.leftovers.map((item) => item.taskId), [2])
+    assert.strictEqual(preview.leftovers[0].hours, 4)
     assert.strictEqual(writes.length, count)
-    assert.strictEqual([...efforts.values()].flat().reduce((sum, row) => sum + row.consumed, 0), 8)
-    assert.strictEqual(hpRows.reduce((sum, row) => sum + row.Percent, 0), 100)
+    assert.strictEqual(efforts.get(2).length, 1)
+    // 未确认：正式提交仍阻止，旧记录保留
+    await assert.rejects(() => fill.submit(payload([1])), /任务 #2.*4h.*本次未包含/)
+    assert.strictEqual(efforts.get(2).length, 1)
+    // 确认后：只删本工具写入的旧记录，再写入当前计划
+    await fill.submit({ ...payload([1]), cleanupLeftovers: true })
+    assert.strictEqual(efforts.get(2).length, 0)
+    assert.strictEqual(efforts.get(1).length, 1)
+    assert.strictEqual(efforts.get(1)[0].consumed, 8)
+    assert.notStrictEqual(writes.length, count)
   })
   await test('同一任务减少工时行时，保留原记录并明确提示', async () => {
     efforts.set(1, [{ id: 21, date, consumed: 4 }, { id: 22, date, consumed: 4 }])
@@ -99,6 +117,7 @@ async function main() {
     const logs = JSON.parse(fs.readFileSync(logPath, 'utf8'))
     delete logs[0].platformScope
     fs.writeFileSync(logPath, JSON.stringify(logs))
+    hpRows = [] // 汉印旧记录另行处理，隔离禅道遗漏识别
     const count = writes.length
     await assert.rejects(() => fill.submit(payload([1])), /任务 #2.*本次未包含/)
     assert.strictEqual(writes.length, count)

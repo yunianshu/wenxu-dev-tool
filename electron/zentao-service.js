@@ -338,6 +338,20 @@ class ZentaoClient {
   }
 
   /**
+   * 删除一条工时记录（task-deleteEstimate，confirm=yes 才真正执行）。
+   * 平台接口不校验归属，调用方必须先确认记录属于当前账号且由本工具写入，删除后回查核实。
+   */
+  async deleteEstimate(effortId) {
+    const id = Number(effortId)
+    if (!Number.isInteger(id) || id <= 0) throw new Error('待删除的禅道工时记录 ID 无效')
+    const resp = await this.request(`/index.php?m=task&f=deleteEstimate&estimateID=${id}&confirm=yes`)
+    const body = await resp.text()
+    if (body.includes('登录已超时') || /user-login/.test(resp.finalUrl || '')) throw new Error('禅道会话已失效，请重新提交')
+    if (resp.status < 200 || resp.status >= 300) throw new Error(`禅道删除工时失败：HTTP ${resp.status}`)
+    return id
+  }
+
+  /**
    * 工时填报。rows: [{ date:'YYYY-MM-DD', work, consumed, left, effortId? }]
    * recordEstimate 始终追加，传已有 ID 也不会更新；已有记录必须逐条调用 editEstimate。
    * dryRun=true 只构造表单不发请求（预览用）。

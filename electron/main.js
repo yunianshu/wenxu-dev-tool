@@ -916,7 +916,8 @@ function registerIpc() {
     try {
       return { ok: true, ...(await fillService.submit(payload)) }
     } catch (err) {
-      return { ok: false, error: (err && err.message) || String(err) }
+      // code/leftovers：本次未包含的旧工时需渲染层确认后带 cleanupLeftovers 重试
+      return { ok: false, error: (err && err.message) || String(err), code: err && err.code, leftovers: err && err.leftovers }
     }
   })
   // 提交记录（fill-log 留痕摘要）与按记录重新提交（重放存档载荷，已有记录按 ID 更新覆盖）
@@ -927,11 +928,11 @@ function registerIpc() {
       return { ok: false, error: (err && err.message) || String(err) }
     }
   })
-  ipcMain.handle('fill:resubmit', async (_e, at) => {
+  ipcMain.handle('fill:resubmit', async (_e, at, options) => {
     try {
-      return { ok: true, ...(await fillService.resubmit(at)) }
+      return { ok: true, ...(await fillService.resubmit(at, options)) }
     } catch (err) {
-      return { ok: false, error: (err && err.message) || String(err) }
+      return { ok: false, error: (err && err.message) || String(err), code: err && err.code, leftovers: err && err.leftovers }
     }
   })
   // 删除一条提交记录（仅移除留痕，已写入平台的工时不受影响）

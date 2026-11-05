@@ -657,6 +657,8 @@ async function submitCore(payload, platformScope) {
   const history = readFillLog().filter((entry) => entry && !entry.dryRun && entry.date === date && entry.payload)
   // 分项进度：逐任务/汉印记录已写入的结果，失败时随错误带出（fill-log 分项留痕的数据源）
   const progress = { tasks: [], hp: null, stage: 'prepare' }
+  // 预览时带出的「本次未包含、提交会清理」的旧工时，渲染层据此提示；正式提交走确认后删除
+  let previewLeftovers = []
   try {
     const client = await zentao.ensureClient()
     progress.stage = 'zentao-query'
@@ -684,8 +686,8 @@ async function submitCore(payload, platformScope) {
       })
       prepared.push({ ...t, rows, consumed, updated: Math.min(today.length, rows.length), appended: Math.max(0, rows.length - today.length) })
     }
-    // 现有客户端没有删除接口；先查本工具历史涉及但本次遗漏的任务，禁止静默残留。
-    // 老日志没有账号范围，只凭工作内容与工时的精确匹配识别，不猜测记录归属。
+    // 旧工时归属：只按本工具留痕的工作内容与工时精确匹配，不猜测记录归属。
+    // 本次未包含但平台仍有本工具写入的工时 → 预览只提示；正式提交需用户确认后先删除再写入。
     const previous = new Map()
     for (const entry of history) {
       if (entry.platformScope && entry.platformScope.zentao !== platformScope.zentao) continue
@@ -697,12 +699,17 @@ async function submitCore(payload, platformScope) {
         previous.get(id).push(...(task.rows || []))
       }
     }
+    const leftovers = []
     for (const [id, oldRows] of previous) {
       const existing = (await client.getTaskEfforts(Number(id))).filter((row) => row.date === date && Number(row.consumed) > 0) // eslint-disable-line no-await-in-loop
       const owned = existing.filter((row) => oldRows.some((old) => row.work === old.work && Number(row.consumed) === Number(old.consumed)))
-      if (owned.length) {
-        throw new Error(`禅道任务 #${id} 在 ${date} 仍有本工具提交的 ${owned.length} 条工时（${round2(owned.reduce((sum, row) => sum + Number(row.consumed), 0))}h），本次未包含该任务。请重新选中相应项目，或先在禅道核对处理这些记录后再提交；本次未写入`)
-      }
+      if (!owned.length) continue
+      leftovers.push({
+        taskId: Number(id),
+        count: owned.length,
+        hours: round2(owned.reduce((sum, row) => sum + Number(row.consumed), 0)),
+        effortIds: owned.map((row) => row.id),
+      })
     }
     let hpClient = null
     let hpUpdated = 0
@@ -722,6 +729,30 @@ async function submitCore(payload, platformScope) {
       }
     }
     const results = []
+    // 全部校验通过后才清理旧工时：避免删除后又被后续校验拦下，留下半成品状态。
+    if (leftovers.length) {
+      const detail = leftovers.map((item) => `禅道任务 #${item.taskId} 在 ${date} 仍有本工具提交的 ${item.count} 条工时（${item.hours}h），本次未包含该任务`).join('；')
+      if (dryRun) {
+        previewLeftovers = leftovers
+      } else if (payload.cleanupLeftovers !== true) {
+        const error = new Error(`${detail}。继续提交会先删除这些记录，请确认后重试`)
+        error.code = 'zentao-leftovers'
+        error.leftovers = leftovers
+        throw error
+      } else {
+        progress.stage = 'zentao-cleanup'
+        for (const item of leftovers) {
+          for (const effortId of item.effortIds) {
+            await client.deleteEstimate(effortId) // eslint-disable-line no-await-in-loop
+          }
+        }
+        // 删除后回查：指定记录仍在则停止，不能再写入叠加
+        for (const item of leftovers) {
+          const remaining = (await client.getTaskEfforts(item.taskId)).filter((row) => item.effortIds.includes(row.id)) // eslint-disable-line no-await-in-loop
+          if (remaining.length) throw new Error(`禅道任务 #${item.taskId} 的旧工时删除未生效（仍有 ${remaining.length} 条），本次未写入`)
+        }
+      }
+    }
     for (const t of prepared) {
       progress.stage = `zentao#${t.taskId}`
       // eslint-disable-next-line no-await-in-loop
@@ -758,7 +789,7 @@ async function submitCore(payload, platformScope) {
         ? { sent: hpItems.length, error: hpResult.error }
         : { sent: hpItems.length, updated: hpResult.updated || 0, appended: hpResult.appended || 0 }
     }
-    return { dryRun: !!dryRun, results, hp: hpResult }
+    return { dryRun: !!dryRun, results, hp: hpResult, ...(previewLeftovers.length ? { leftovers: previewLeftovers } : {}) }
   } catch (e) {
     // 失败现场：已完成哪些任务、断在哪个环节、响应原文——随错误带出供日志留痕
     e.fillProgress = { tasks: progress.tasks, hp: progress.hp, stage: progress.stage, raw: e.rawBody }
@@ -839,7 +870,7 @@ function removeLog(at) {
 /** 按留痕时间重新提交：取该条日志存档的提交载荷原样重放（复用 submit，重新留痕）。
  * 载荷里的 left 是旧值，submit 会按平台最新剩余重算；禅道/汉印已有记录按 ID 复用
  * 更新覆盖，不会重复写入。仅失败记录可重放（成功的已写入并核实，重放无意义）。 */
-async function resubmit(at) {
+async function resubmit(at, options) {
   const entry = readFillLog().find((e) => e && e.at === at)
   if (!entry) throw new Error('没有这条提交记录')
   if (entry.dryRun) throw new Error('预览记录不能重新提交')
@@ -847,7 +878,7 @@ async function resubmit(at) {
   if (!entry.payload || !Array.isArray(entry.payload.tasks) || !entry.payload.tasks.length) {
     throw new Error('该记录没有存档提交载荷，请在填报页重新提交')
   }
-  return submit({ ...entry.payload, dryRun: false })
+  return submit({ ...entry.payload, dryRun: false, cleanupLeftovers: !!(options && options.cleanupLeftovers) })
 }
 
 /** 本机当天日期（YYYY-MM-DD） */
@@ -1016,20 +1047,23 @@ async function submitLogged(payload) {
       const total = tasksIn.length
       const done = prog.tasks.length
       if (done > 0) e.message = `${e.message}（已写入 ${done}/${total} 个禅道任务，可在提交记录中重新提交）`
-      appendFillLog({
-        at: localStamp(),
-        platformScope,
-        date,
-        dryRun: false,
-        tasks: prog.tasks,
-        hp: prog.hp,
-        ztTasks: done,
-        hpSent: prog.hp ? prog.hp.sent : 0,
-        error: (e && e.message) || String(e),
-        stage: prog.stage,
-        raw: prog.raw,
-        payload: { date, tasks: tasksIn, hp: hp && Array.isArray(hp.items) ? { items: hp.items } : null },
-      })
+      // 待用户确认的旧工时清理不是失败：确认后同一动作会重新提交，不在这里留痕免得误导
+      if (e.code !== 'zentao-leftovers') {
+        appendFillLog({
+          at: localStamp(),
+          platformScope,
+          date,
+          dryRun: false,
+          tasks: prog.tasks,
+          hp: prog.hp,
+          ztTasks: done,
+          hpSent: prog.hp ? prog.hp.sent : 0,
+          error: (e && e.message) || String(e),
+          stage: prog.stage,
+          raw: prog.raw,
+          payload: { date, tasks: tasksIn, hp: hp && Array.isArray(hp.items) ? { items: hp.items } : null },
+        })
+      }
     }
     delete e.fillProgress
     throw e

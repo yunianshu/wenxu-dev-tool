@@ -568,7 +568,11 @@ async function doResubmit(log) {
   resubmitting.value = log.at
   state.fillReport.submitting = true
   try {
-    const r = await window.gitReport.fillResubmit(log.at)
+    let r = await window.gitReport.fillResubmit(log.at)
+    if (!r.ok && r.code === 'zentao-leftovers' && Array.isArray(r.leftovers) && r.leftovers.length) {
+      if (!await confirmCleanupLeftovers(r.leftovers)) return
+      r = await window.gitReport.fillResubmit(log.at, { cleanupLeftovers: true })
+    }
     if (!r.ok) {
       ElMessage.error(r.error || '重新提交失败')
       return
@@ -799,6 +803,29 @@ async function doUnbind() {
   await unbindProject(bindDialog.value.projectId)
 }
 
+/** 本次未包含的旧工时：任务编号 + 计划里的项目名 + 条数/工时，确认弹窗与预览共用 */
+function leftoverLines(leftovers) {
+  const dayProjects = plan.value?.dayProjects || []
+  return (leftovers || []).map((item) => {
+    const project = dayProjects.find((p) => String(p.taskId) === String(item.taskId))
+    return `#${item.taskId}${project?.projectName ? ` ${project.projectName}` : ''} · ${item.count} 条 · ${item.hours}h`
+  })
+}
+
+/** 确认清理本工具今日写入、本次未包含的旧工时（删除不可恢复，主进程只删内容/工时完全匹配的记录） */
+async function confirmCleanupLeftovers(leftovers) {
+  try {
+    await ElMessageBox.confirm(
+      `本次未包含以下禅道任务，但它们今日已有本工具写入的工时：\n${leftoverLines(leftovers).join('\n')}\n\n继续提交会先删除这些记录，再按本次勾选写入。删除后无法恢复。`,
+      '清理旧工时',
+      { type: 'warning', confirmButtonText: '删除并提交', cancelButtonText: '取消', confirmButtonClass: 'el-button--danger', customClass: 'fill-cleanup-confirm' },
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function submitFill(preview) {
   if (state.fillReport.submitting || state.fillReport.running) return
   const p = plan.value
@@ -833,16 +860,24 @@ async function submitFill(preview) {
   try {
     const payload = { date: p.date, tasks, dryRun: preview }
     if (hpItems.length) payload.hp = { items: hpItems }
-    const r = await window.gitReport.fillSubmit(toPlain(payload))
+    let r = await window.gitReport.fillSubmit(toPlain(payload))
+    // 本次未包含但平台仍有本工具今日写入的旧工时：确认后删除这些记录再提交
+    if (!preview && !r.ok && r.code === 'zentao-leftovers' && Array.isArray(r.leftovers) && r.leftovers.length) {
+      if (!await confirmCleanupLeftovers(r.leftovers)) return
+      r = await window.gitReport.fillSubmit(toPlain({ ...payload, cleanupLeftovers: true }))
+    }
     if (!r.ok) {
       ElMessage.error(r.error || '提交失败')
       return
     }
     if (preview) {
       const hpPreview = r.hp && r.hp.json ? r.hp.json : hpItems
+      const cleanupNote = Array.isArray(r.leftovers) && r.leftovers.length
+        ? `\n\n【提交时将先删除的旧工时】\n${leftoverLines(r.leftovers).join('\n')}`
+        : ''
       previewDialog.value = {
         visible: true,
-        content: `【禅道工时】\n${JSON.stringify(r.results, null, 2)}\n\n【汉印 workhour/add】\n${JSON.stringify(hpPreview, null, 2)}`,
+        content: `【禅道工时】\n${JSON.stringify(r.results, null, 2)}\n\n【汉印 workhour/add】\n${JSON.stringify(hpPreview, null, 2)}${cleanupNote}`,
       }
     } else {
       state.fillReport.plan = { ...p, submittedAt: new Date().toTimeString().slice(0, 5) }
@@ -1065,4 +1100,6 @@ async function copyReport() {
 :root[data-theme='dark'] .fill-time-popper .el-select-dropdown__item.is-time-1.is-hovering { background: #48401f; }
 :root[data-theme='dark'] .fill-time-popper .el-select-dropdown__item.is-time-2.is-hovering { background: #2c3645; }
 :root[data-theme='dark'] .fill-time-popper .el-select-dropdown__item.is-time-3.is-hovering { background: #483325; }
+/* 旧工时清理确认：弹窗文案按行展示任务清单 */
+.fill-cleanup-confirm .el-message-box__message { white-space: pre-line; }
 </style>

@@ -497,6 +497,17 @@ await test('recordEfforts：无效或重复编辑 ID 在查询和写入前拒绝
   }
 })
 
+await test('deleteEstimate：confirm=yes 才发出删除请求，无效 ID 不访问平台', async () => {
+  const { client, ff } = makeClient(() => ({ body: '<script>reload()</script>' }))
+  for (const id of [0, -1, 'invalid', 1.5]) {
+    await assert.rejects(() => client.deleteEstimate(id), /ID 无效/)
+  }
+  assert.strictEqual(ff.calls.length, 0)
+  assert.strictEqual(await client.deleteEstimate(12513), 12513)
+  assert.match(ff.calls.at(-1).url, /m=task&f=deleteEstimate&estimateID=12513&confirm=yes/)
+  assert.strictEqual(ff.calls.at(-1).opts.method, 'GET')
+})
+
 await test('getTaskEfforts：容错解析（data 字符串 + efforts dict + 尾部脏数据）', async () => {
   const inner = JSON.stringify({ efforts: { '501': { id: '501', account: 'wgl', date: '2026-09-07 00:00:00', work: '旧内容', consumed: '2', left: '1' } } })
   const { client } = makeClient((url, opts) => {

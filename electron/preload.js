@@ -184,7 +184,7 @@ contextBridge.exposeInMainWorld('gitReport', {
   fillPlan: (payload) => ipcRenderer.invoke('fill:plan', toPlain(payload)),
   fillSubmit: (payload) => ipcRenderer.invoke('fill:submit', toPlain(payload)),
   fillLog: (limit) => ipcRenderer.invoke('fill:log', limit),
-  fillResubmit: (at) => ipcRenderer.invoke('fill:resubmit', at),
+  fillResubmit: (at, options) => ipcRenderer.invoke('fill:resubmit', at, toPlain(options)),
   fillLogDelete: (at) => ipcRenderer.invoke('fill:log:delete', at),
   fillRecords: (payload) => ipcRenderer.invoke('fill:records', toPlain(payload)),
   fillZtTasks: () => ipcRenderer.invoke('fill:ztTasks'),
