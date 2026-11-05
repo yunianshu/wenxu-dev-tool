@@ -617,8 +617,10 @@ async function resolvePending() {
 .leave-detail-title { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .leave-table { width: 100%; }
 .leave-allocation { line-height: 1.9; font-variant-numeric: tabular-nums; }
-.leave-table :deep(td .cell), .leave-review-table :deep(td .cell) { vertical-align: top; }
-.leave-table :deep(td .cell) { min-height: 42px; }
+.leave-review-table :deep(td .cell) { vertical-align: top; }
+/* 固定行高后内容垂直居中；勾选框是 flex 项目，需单独居中避免被拉伸到左侧。 */
+.leave-table :deep(td .cell) { min-height: 42px; display: flex; flex-direction: column; justify-content: center; }
+.leave-table :deep(td .cell > .el-checkbox) { align-self: center; }
 .leave-replan-spin { margin-left: 6px; vertical-align: -2px; }
 .leave-allocation b { font-weight: 500; }
 .leave-row-status.is-ready, .leave-row-status.is-covered, .leave-row-status.is-success { color: var(--brand-accent); }
