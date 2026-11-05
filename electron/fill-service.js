@@ -699,55 +699,107 @@ async function submitCore(payload, platformScope) {
         previous.get(id).push(...(task.rows || []))
       }
     }
-    const leftovers = []
+    const ztLeftovers = []
     for (const [id, oldRows] of previous) {
       const existing = (await client.getTaskEfforts(Number(id))).filter((row) => row.date === date && Number(row.consumed) > 0) // eslint-disable-line no-await-in-loop
       const owned = existing.filter((row) => oldRows.some((old) => row.work === old.work && Number(row.consumed) === Number(old.consumed)))
       if (!owned.length) continue
-      leftovers.push({
+      ztLeftovers.push({
+        platform: 'zentao',
         taskId: Number(id),
         count: owned.length,
         hours: round2(owned.reduce((sum, row) => sum + Number(row.consumed), 0)),
         effortIds: owned.map((row) => row.id),
       })
     }
+    // 汉印旧记录归属：只认本工具成功写入（整批 add 成功）的条目，按任务 + 类型 + 占比精确匹配
+    const hpPrevious = new Map()
+    for (const entry of history) {
+      if (entry.platformScope && entry.platformScope.hanprint !== platformScope.hanprint) continue
+      if (!entry.hp || !entry.hp.sent || entry.hp.error) continue
+      const items = entry.payload.hp && Array.isArray(entry.payload.hp.items) ? entry.payload.hp.items : []
+      for (const item of items) {
+        if (Number(item.Percent) <= 0) continue
+        const key = `${String(item.TaskId)}|${Number(item.ProjectType)}|${Number(item.Percent)}`
+        hpPrevious.set(key, (hpPrevious.get(key) || 0) + 1)
+      }
+    }
     let hpClient = null
     let hpUpdated = 0
+    const hpLeftovers = []
     const hadHp = history.some((entry) => entry.hp && entry.hp.sent && (!entry.platformScope || entry.platformScope.hanprint === platformScope.hanprint))
     if (hpItems.length || hadHp) {
       hpClient = await hanprint.ensureClient()
       const saved = (await hpClient.getByDate(date)).filter((r) => r && r.ProjectType !== -2)
       const matched = new Set()
+      // 更新已有报工时平台会校验归属；不带本人归属字段会被判成「修改其他人的报工记录」
+      // （2026-11-05 真实平台实测）。匹配到的记录一定来自当前账号的 GetByDate，原样带回。
+      const OWNER_FIELDS = ['UserId', 'UserNo', 'UserName', 'DepartId', 'DepartName']
       for (const item of hpItems) {
         const hit = saved.find((s) => String(s.TaskId) === String(item.TaskId) && !matched.has(s))
-        if (hit) { item.Id = hit.Id; hpUpdated += 1; matched.add(hit) }
+        if (hit) {
+          item.Id = hit.Id
+          for (const field of OWNER_FIELDS) {
+            if (hit[field] !== undefined) item[field] = hit[field]
+          }
+          hpUpdated += 1
+          matched.add(hit)
+        }
       }
       const leftover = saved.filter((item) => !matched.has(item) && Number(item.Percent) > 0)
-      if (leftover.length) {
-        const details = leftover.map((item) => `#${item.TaskId}（${item.Percent}%）`).join('、')
+      const quota = new Map(hpPrevious)
+      const foreignHp = []
+      for (const item of leftover) {
+        const key = `${String(item.TaskId)}|${Number(item.ProjectType)}|${Number(item.Percent)}`
+        const remain = quota.get(key) || 0
+        if (remain > 0) {
+          quota.set(key, remain - 1)
+          hpLeftovers.push({ platform: 'hanprint', taskId: Number(item.TaskId), count: 1, percent: Number(item.Percent), recordIds: [item.Id] })
+        } else {
+          foreignHp.push(item)
+        }
+      }
+      // 非本工具写入的记录不能删，仍按原有规则拦截
+      if (foreignHp.length) {
+        const details = foreignHp.map((item) => `#${item.TaskId}（${item.Percent}%）`).join('、')
         throw new Error(`汉印 ${date} 仍有本次未包含的记录：${details}。直接提交会遗留占比；请重新选中相应项目，或先在汉印核对处理这些记录后再提交。程序不会删除平台记录；本次两个平台均未写入`)
       }
     }
     const results = []
     // 全部校验通过后才清理旧工时：避免删除后又被后续校验拦下，留下半成品状态。
-    if (leftovers.length) {
-      const detail = leftovers.map((item) => `禅道任务 #${item.taskId} 在 ${date} 仍有本工具提交的 ${item.count} 条工时（${item.hours}h），本次未包含该任务`).join('；')
+    if (ztLeftovers.length || hpLeftovers.length) {
+      const leftovers = [...ztLeftovers, ...hpLeftovers]
+      const describe = (item) => item.platform === 'hanprint'
+        ? `汉印任务 #${item.taskId} 在 ${date} 仍有本工具提交的 ${item.percent}% 占比`
+        : `禅道任务 #${item.taskId} 在 ${date} 仍有本工具提交的 ${item.count} 条工时（${item.hours}h），本次未包含该任务`
+      const detail = leftovers.map(describe).join('；')
       if (dryRun) {
         previewLeftovers = leftovers
       } else if (payload.cleanupLeftovers !== true) {
         const error = new Error(`${detail}。继续提交会先删除这些记录，请确认后重试`)
-        error.code = 'zentao-leftovers'
+        error.code = 'leftovers'
         error.leftovers = leftovers
         throw error
       } else {
-        progress.stage = 'zentao-cleanup'
+        progress.stage = 'cleanup'
         for (const item of leftovers) {
-          for (const effortId of item.effortIds) {
-            await client.deleteEstimate(effortId) // eslint-disable-line no-await-in-loop
+          if (item.platform === 'hanprint') {
+            for (const recordId of item.recordIds) {
+              await hpClient.del(recordId) // eslint-disable-line no-await-in-loop
+            }
+          } else {
+            for (const effortId of item.effortIds) {
+              await client.deleteEstimate(effortId) // eslint-disable-line no-await-in-loop
+            }
           }
         }
         // 删除后回查：指定记录仍在则停止，不能再写入叠加
-        for (const item of leftovers) {
+        if (hpLeftovers.length) {
+          const saved = (await hpClient.getByDate(date)).filter((r) => r && r.ProjectType !== -2)
+          const remaining = saved.filter((row) => hpLeftovers.some((item) => item.recordIds.includes(row.Id)))
+          if (remaining.length) throw new Error(`汉印的旧报工删除未生效（仍有 ${remaining.length} 条），本次未写入`)
+        }
+        for (const item of ztLeftovers) {
           const remaining = (await client.getTaskEfforts(item.taskId)).filter((row) => item.effortIds.includes(row.id)) // eslint-disable-line no-await-in-loop
           if (remaining.length) throw new Error(`禅道任务 #${item.taskId} 的旧工时删除未生效（仍有 ${remaining.length} 条），本次未写入`)
         }
@@ -1048,7 +1100,7 @@ async function submitLogged(payload) {
       const done = prog.tasks.length
       if (done > 0) e.message = `${e.message}（已写入 ${done}/${total} 个禅道任务，可在提交记录中重新提交）`
       // 待用户确认的旧工时清理不是失败：确认后同一动作会重新提交，不在这里留痕免得误导
-      if (e.code !== 'zentao-leftovers') {
+      if (e.code !== 'leftovers') {
         appendFillLog({
           at: localStamp(),
           platformScope,

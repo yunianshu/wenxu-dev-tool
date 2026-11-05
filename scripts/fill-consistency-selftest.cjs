@@ -16,11 +16,11 @@ const hanprint = require('../electron/hanprint-service')
 const date = '2026-09-21'
 let cfg = { zentao: { baseUrl: 'https://zt.example.invalid', account: 'review' }, hanprint: { baseUrl: 'https://hp.example.invalid', account: 'review' } }
 store.load = () => cfg
-let efforts, hpRows, writes, nextId, failWrite, queryGate
+let efforts, hpRows, writes, nextId, failWrite, queryGate, hpItemsSent
 const logPath = path.join(root, 'fill-log.json')
 function reset() {
   efforts = new Map([[1, []], [2, []]])
-  hpRows = []; writes = []; nextId = 100; failWrite = false; queryGate = null
+  hpRows = []; writes = []; nextId = 100; failWrite = false; queryGate = null; hpItemsSent = []
   fs.writeFileSync(logPath, '[]')
 }
 zentao.ensureClient = async () => ({
@@ -46,8 +46,13 @@ zentao.ensureClient = async () => ({
 })
 hanprint.ensureClient = async () => ({
   getByDate: async () => hpRows.map((row) => ({ ...row })),
+  del: async (id) => {
+    const index = hpRows.findIndex((row) => row.Id === id)
+    if (index >= 0) hpRows.splice(index, 1)
+  },
   add: async (rows, dryRun) => {
     if (dryRun) return { dryRun: true, json: rows }
+    hpItemsSent.push(rows.map((row) => ({ ...row })))
     writes.push('hp')
     for (const row of rows) {
       const old = hpRows.find((item) => item.Id === row.Id)
@@ -105,12 +110,42 @@ async function main() {
     assert.match(log.platformScope.zentao, /^[a-f0-9]{64}$/)
     assert.ok(!JSON.stringify(log.platformScope).includes('review'))
   })
-  await test('先前写过汉印却在新计划完全省略时，同样先提示处理旧记录', async () => {
+  await test('汉印更新已有记录时带回本人归属字段，不能被判成修改他人记录', async () => {
+    hpRows = [{ Id: 80, TaskId: '1', ProjectType: 3, Percent: 50, UserId: 1395, UserNo: 'review', UserName: '本人', DepartId: 154, DepartName: '系统开发一科' }]
+    await fill.submit(payload([1]))
+    const sent = hpItemsSent.at(-1).find((item) => String(item.TaskId) === '1')
+    assert.strictEqual(sent.Id, 80)
+    assert.strictEqual(sent.UserId, 1395)
+    assert.strictEqual(sent.UserNo, 'review')
+    assert.strictEqual(sent.UserName, '本人')
+    assert.strictEqual(sent.DepartId, 154)
+    assert.strictEqual(sent.DepartName, '系统开发一科')
+  })
+  await test('先前写过汉印却在新计划完全省略时，确认后按记录 ID 清理再提交', async () => {
     await fill.submit(payload([1]))
     const count = writes.length
     const withoutHp = payload([1]); delete withoutHp.hp
-    await assert.rejects(() => fill.submit(withoutHp), /汉印.*#1（100%）.*两个平台均未写入/)
-    assert.strictEqual(writes.length, count)
+    // 未确认：仍阻止，旧记录保留
+    await assert.rejects(() => fill.submit(withoutHp), /汉印任务 #1.*100%/)
+    assert.strictEqual(hpRows.length, 1)
+    // 确认后：只删本工具写入的那条，再按当前计划提交
+    await fill.submit({ ...withoutHp, cleanupLeftovers: true })
+    assert.strictEqual(hpRows.length, 0)
+    assert.notStrictEqual(writes.length, count)
+  })
+  await test('取消已写入的汉印项目时，预览只提示、确认后清理记录再提交', async () => {
+    await fill.submit(payload()) // 汉印 50% / 50%
+    efforts.set(2, []) // 禅道旧记录另行处理，隔离汉印清理验证
+    const preview = await fill.submit({ ...payload([1]), dryRun: true })
+    assert.deepStrictEqual(preview.leftovers.map((item) => item.platform), ['hanprint'])
+    assert.strictEqual(preview.leftovers[0].percent, 50)
+    assert.strictEqual(hpRows.length, 2)
+    await assert.rejects(() => fill.submit(payload([1])), /汉印任务 #2.*50%/)
+    assert.strictEqual(hpRows.length, 2)
+    await fill.submit({ ...payload([1]), cleanupLeftovers: true })
+    assert.strictEqual(hpRows.length, 1)
+    assert.strictEqual(String(hpRows[0].TaskId), '1')
+    assert.strictEqual(hpRows[0].Percent, 100)
   })
   await test('旧版无账号摘要的留痕仍可凭实际内容识别遗漏任务', async () => {
     await fill.submit(payload())

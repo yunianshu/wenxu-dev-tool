@@ -970,6 +970,21 @@ await test('getByDate：携带 token 查询当日已填', async () => {
   assert.strictEqual(rows[0].Id, 11)
 })
 
+await test('del：按记录 ID 调用删除接口，无效 ID 不发请求', async () => {
+  const { client, ff } = makeHpClient((url) => {
+    if (url.includes('/com/workhour/del')) {
+      assert.ok(url.includes('id=11'))
+      return jsonResp({ code: 0, data: null })
+    }
+    return jsonResp({ code: 0, data: null })
+  })
+  client.token = 'tok-del'
+  for (const id of [0, -1, 'x', 1.5]) await assert.rejects(() => client.del(id), /ID 无效/)
+  assert.strictEqual(ff.calls.length, 0)
+  assert.strictEqual(await client.del(11), 11)
+  assert.strictEqual(ff.calls.at(-1).opts.headers.token, 'tok-del')
+})
+
 // ═══════════ 提交写入路径（0% 条目不落汉印） ═══════════
 console.log('提交写入路径（汉印 0% 过滤）:')
 const ztSvc = require('../electron/zentao-service')

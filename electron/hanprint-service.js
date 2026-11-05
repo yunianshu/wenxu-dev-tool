@@ -117,6 +117,15 @@ class HanprintClient {
     return (await this.getData('/com/workhour/GetByDate', { workDate })) || []
   }
 
+  /** 删除一条报工记录（GET /com/workhour/del?id=）。平台不校验归属，调用方必须先确认记录由本工具写入，删除后回查。 */
+  async del(id) {
+    await this.ensureLogin()
+    const recordId = Number(id)
+    if (!Number.isInteger(recordId) || recordId <= 0) throw new Error('待删除的汉印报工记录 ID 无效')
+    await this.getData('/com/workhour/del', { id: recordId })
+    return recordId
+  }
+
   /** 提交工时条目数组；dryRun=true 只回显不发；条目带非零 Id 时为更新（同 workhour-h5 语义）。
    * code=-2（token 过期，服务端未受理）与 GET 一致重登后重试一次；其余失败不重试——
    * 超时等「可能已写入」的失败重试会造出重复记录（Id=0 追加无幂等键）。 */

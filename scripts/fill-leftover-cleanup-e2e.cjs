@@ -50,10 +50,21 @@ function git(cwd, args) {
   return r.stdout
 }
 
-/** 本地假禅道：登录、任务、工时读写、删除（confirm=yes）与平台状态 */
+/** 本地假禅道 + 假汉印：登录、任务、工时读写、删除（禅道 confirm=yes / 汉印 del）与平台状态 */
 function startFakeZentao() {
-  const state = { efforts: new Map([[TASK_KEEP, []], [TASK_OLD, [{ id: OLD_EFFORT_ID, account: 'e2e', date: TODAY, work: OLD_WORK, consumed: 0.5, left: 0 }]]]), deleted: [], writes: [] }
+  const state = {
+    efforts: new Map([[TASK_KEEP, []], [TASK_OLD, [{ id: OLD_EFFORT_ID, account: 'e2e', date: TODAY, work: OLD_WORK, consumed: 0.5, left: 0 }]]]),
+    deleted: [],
+    writes: [],
+    hpRows: [
+      { Id: 676001, TaskId: String(TASK_KEEP), ProjectType: 3, Percent: 50, WorkDate: TODAY, UserId: 1395, UserNo: 'e2e', UserName: '本人', DepartId: 154, DepartName: '系统开发一科' },
+      { Id: 676002, TaskId: String(TASK_OLD), ProjectType: 3, Percent: 50, WorkDate: TODAY, UserId: 1395, UserNo: 'e2e', UserName: '本人', DepartId: 154, DepartName: '系统开发一科' },
+    ],
+    hpDeleted: [],
+    hpSent: [],
+  }
   let nextId = 9500
+  let hpNextId = 676100
   const task = (id, left) => ({ id: String(id), name: id === TASK_KEEP ? 'Alpha任务' : '历史任务', status: 'doing', consumed: '0', left: String(left), finishedDate: '0000-00-00 00:00:00', closedDate: '0000-00-00 00:00:00' })
   const tasks = [task(TASK_KEEP, 8), task(TASK_OLD, 0)]
   const server = http.createServer((req, res) => {
@@ -63,6 +74,34 @@ function startFakeZentao() {
       res.end(body)
     }
     const sendJson = (data) => send(JSON.stringify({ status: '200', data: JSON.stringify(data) }), 'application/json;charset=utf-8')
+    const sendHp = (data) => send(JSON.stringify({ code: 0, data }), 'application/json;charset=utf-8')
+    if (url.pathname === '/login/getToken') return sendHp('hp-tok')
+    if (url.pathname === '/com/workhour/GetDict') return sendHp([{ Key: 3, Name: '软件项目' }])
+    if (url.pathname === '/com/workhour/GetProjectList') return sendHp([{ Key: 'P1', Name: 'Alpha项目' }])
+    if (url.pathname === '/com/workhour/GetProjectTaskList') return sendHp([{ Key: String(TASK_KEEP), Name: 'Alpha任务' }])
+    if (url.pathname === '/com/workhour/GetByDate') return sendHp(state.hpRows.map((row) => ({ ...row })))
+    if (url.pathname === '/com/workhour/del') {
+      const id = Number(url.searchParams.get('id'))
+      const index = state.hpRows.findIndex((row) => row.Id === id)
+      if (index >= 0) state.hpRows.splice(index, 1)
+      state.hpDeleted.push(id)
+      return sendHp(null)
+    }
+    if (url.pathname === '/com/workhour/add' && req.method === 'POST') {
+      let body = ''
+      req.on('data', (chunk) => { body += chunk })
+      req.on('end', () => {
+        const items = JSON.parse(body || '[]')
+        state.hpSent.push(items)
+        for (const item of items) {
+          const hit = state.hpRows.find((row) => row.Id === Number(item.Id))
+          if (hit) Object.assign(hit, item)
+          else state.hpRows.push({ ...item, Id: hpNextId++, UserNo: 'e2e' })
+        }
+        sendHp(null)
+      })
+      return
+    }
     if (url.pathname === '/index.php' && url.searchParams.get('m') === 'user' && url.searchParams.get('f') === 'refreshRandom') return send('"e2e-rand"')
     if (url.searchParams.get('m') === 'user' && url.searchParams.get('f') === 'login') {
       return req.method === 'POST' ? send('{"result":"success"}', 'application/json;charset=utf-8') : send('<html>login</html>')
@@ -136,6 +175,7 @@ function preseed(port) {
     roots: [SANDBOX],
     identities: [IDENTITY],
     zentao: { baseUrl, account: 'e2e', pwdEnc: { plain: 'e2e-pwd' }, lunchStart: '12:00', lunchEnd: '13:00' },
+    hanprint: { baseUrl, clientId: '1', account: 'e2e', pwdEnc: { plain: 'e2e-pwd' } },
   }, null, 2))
   fs.writeFileSync(PROJECTS_FILE, JSON.stringify({
     projects: [{ id: P_ALPHA, name: 'Alpha项目', localPath: REPO_ALPHA }],
@@ -143,18 +183,22 @@ function preseed(port) {
   fs.writeFileSync(BINDINGS_FILE, JSON.stringify({
     [P_ALPHA]: { taskId: TASK_KEEP, taskName: 'Alpha任务', boundAt: new Date().toISOString() },
   }, null, 2))
-  // 当天早些时候的提交留痕：#102 的 0.5h 已写进平台
+  // 当天早些时候的提交留痕：#102 的 0.5h 与汉印 50% 已写进平台
   const scope = (platform) => crypto.createHash('sha256').update(JSON.stringify([String(platform.baseUrl || '').replace(/\/+$/, ''), platform.account || '', platform.clientId || ''])).digest('hex')
   fs.writeFileSync(LOG_FILE, JSON.stringify([{
     at: `${TODAY} 09:00:00.000`,
-    platformScope: { zentao: scope({ baseUrl, account: 'e2e' }), hanprint: scope({}) },
+    platformScope: { zentao: scope({ baseUrl, account: 'e2e' }), hanprint: scope({ baseUrl, account: 'e2e', clientId: '1' }) },
     date: TODAY,
     dryRun: false,
     tasks: [{ taskId: TASK_OLD, taskName: '历史任务', consumed: 0.5, verified: true, updated: 0, appended: 1 }],
-    hp: null,
+    hp: { sent: 1, updated: 0, appended: 1 },
     ztTasks: 1,
-    hpSent: 0,
-    payload: { date: TODAY, tasks: [{ taskId: TASK_OLD, taskName: '历史任务', rows: [{ date: TODAY, work: OLD_WORK, consumed: 0.5, left: 0 }] }], hp: null },
+    hpSent: 1,
+    payload: {
+      date: TODAY,
+      tasks: [{ taskId: TASK_OLD, taskName: '历史任务', rows: [{ date: TODAY, work: OLD_WORK, consumed: 0.5, left: 0 }] }],
+      hp: { items: [{ Id: 0, TaskId: String(TASK_OLD), ProjectType: 3, WorkDate: TODAY, Percent: 50 }] },
+    },
   }], null, 2))
 }
 
@@ -297,8 +341,8 @@ async function main() {
   } else {
     assert('前置：生成 Alpha项目明细', ev.endSet === true && ev.rowAppeared === true, `end=${ev.endSet} row=${ev.rowAppeared}`)
     assert('C1 预览弹窗提示将删除的旧工时 #102', ev.previewShown === true && ev.previewHasOld === true, `shown=${ev.previewShown} old=${ev.previewHasOld} 尾部="${ev.previewOldText}"`)
-    assert('C2 提交出现「清理旧工时」确认并列出 #102 · 1 条 · 0.5h',
-      ev.cleanupConfirm === true && ev.cleanupText.includes('#102') && ev.cleanupText.includes('0.5h') && ev.cleanupText.includes('1 条'),
+    assert('C2 提交出现「清理旧工时」确认并列出禅道/汉印两条 #102 记录',
+      ev.cleanupConfirm === true && ev.cleanupText.includes('#102') && ev.cleanupText.includes('0.5h') && ev.cleanupText.includes('1 条') && ev.cleanupText.includes('汉印') && ev.cleanupText.includes('50%'),
       `text="${ev.cleanupText}"`)
     assert('C3 确认后提交成功', ev.success === true, `footer="${ev.footer}"`)
   }
@@ -309,6 +353,12 @@ async function main() {
   assert('C3 旧工时 9001 已删除且未重复删除', JSON.stringify(state.deleted) === JSON.stringify([OLD_EFFORT_ID]), `deleted=${JSON.stringify(state.deleted)}`)
   assert('C3 #102 已无剩余工时', oldRows.length === 0, `rows=${JSON.stringify(oldRows)}`)
   assert('C3 #101 已按本次计划写入一条工时', keptRows.length === 1 && keptRows[0].consumed > 0, `rows=${JSON.stringify(keptRows)}`)
+  assert('C3 汉印旧记录 676002 已删除', JSON.stringify(state.hpDeleted) === JSON.stringify([676002]), `hpDeleted=${JSON.stringify(state.hpDeleted)}`)
+  assert('C3 汉印只剩 #101 的 100%', state.hpRows.length === 1 && String(state.hpRows[0].TaskId) === String(TASK_KEEP) && state.hpRows[0].Percent === 100, `hpRows=${JSON.stringify(state.hpRows)}`)
+  const hpUpdate = state.hpSent.at(-1) || []
+  assert('C3 汉印更新条目带回本人归属字段（避免被判成修改他人记录）',
+    hpUpdate.length === 1 && hpUpdate[0].Id === 676001 && hpUpdate[0].UserNo === 'e2e' && hpUpdate[0].UserId === 1395,
+    `sent=${JSON.stringify(hpUpdate.map((x) => ({ Id: x.Id, UserNo: x.UserNo, UserId: x.UserId, Percent: x.Percent })))}`)
   let logs = []
   try { logs = JSON.parse(fs.readFileSync(LOG_FILE, 'utf8')) } catch { /* 留痕缺失由断言报告 */ }
   assert('C4 提交记录只新增成功记录，待确认尝试不留痕',

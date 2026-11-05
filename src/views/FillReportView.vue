@@ -569,7 +569,7 @@ async function doResubmit(log) {
   state.fillReport.submitting = true
   try {
     let r = await window.gitReport.fillResubmit(log.at)
-    if (!r.ok && r.code === 'zentao-leftovers' && Array.isArray(r.leftovers) && r.leftovers.length) {
+    if (!r.ok && r.code === 'leftovers' && Array.isArray(r.leftovers) && r.leftovers.length) {
       if (!await confirmCleanupLeftovers(r.leftovers)) return
       r = await window.gitReport.fillResubmit(log.at, { cleanupLeftovers: true })
     }
@@ -803,12 +803,14 @@ async function doUnbind() {
   await unbindProject(bindDialog.value.projectId)
 }
 
-/** 本次未包含的旧工时：任务编号 + 计划里的项目名 + 条数/工时，确认弹窗与预览共用 */
+/** 本次未包含的旧工时：平台 + 任务编号 + 计划里的项目名 + 条数/工时或占比 */
 function leftoverLines(leftovers) {
   const dayProjects = plan.value?.dayProjects || []
   return (leftovers || []).map((item) => {
     const project = dayProjects.find((p) => String(p.taskId) === String(item.taskId))
-    return `#${item.taskId}${project?.projectName ? ` ${project.projectName}` : ''} · ${item.count} 条 · ${item.hours}h`
+    const amount = item.platform === 'hanprint' ? `${item.count} 条 · ${item.percent}%` : `${item.count} 条 · ${item.hours}h`
+    const platform = item.platform === 'hanprint' ? '汉印' : '禅道'
+    return `${platform} #${item.taskId}${project?.projectName ? ` ${project.projectName}` : ''} · ${amount}`
   })
 }
 
@@ -816,7 +818,7 @@ function leftoverLines(leftovers) {
 async function confirmCleanupLeftovers(leftovers) {
   try {
     await ElMessageBox.confirm(
-      `本次未包含以下禅道任务，但它们今日已有本工具写入的工时：\n${leftoverLines(leftovers).join('\n')}\n\n继续提交会先删除这些记录，再按本次勾选写入。删除后无法恢复。`,
+      `以下任务今日已有本工具写入的记录：\n${leftoverLines(leftovers).join('\n')}\n\n继续提交会先删除这些记录，再按本次勾选写入。删除后无法恢复。`,
       '清理旧工时',
       { type: 'warning', confirmButtonText: '删除并提交', cancelButtonText: '取消', confirmButtonClass: 'el-button--danger', customClass: 'fill-cleanup-confirm' },
     )
@@ -862,7 +864,7 @@ async function submitFill(preview) {
     if (hpItems.length) payload.hp = { items: hpItems }
     let r = await window.gitReport.fillSubmit(toPlain(payload))
     // 本次未包含但平台仍有本工具今日写入的旧工时：确认后删除这些记录再提交
-    if (!preview && !r.ok && r.code === 'zentao-leftovers' && Array.isArray(r.leftovers) && r.leftovers.length) {
+    if (!r.ok && r.code === 'leftovers' && Array.isArray(r.leftovers) && r.leftovers.length) {
       if (!await confirmCleanupLeftovers(r.leftovers)) return
       r = await window.gitReport.fillSubmit(toPlain({ ...payload, cleanupLeftovers: true }))
     }
