@@ -14,7 +14,9 @@
       <section class="fill-toolbar">
         <div class="fill-group">
           <el-date-picker v-model="fillDate" type="date" value-format="YYYY-MM-DD" :clearable="false" :disabled="state.fillReport.submitting" :disabled-date="(d) => d.getTime() > Date.now()" :shortcuts="dateShortcuts" aria-label="填报日期" class="fill-date" />
-          <el-time-select v-model="startTime" start="06:00" end="21:00" step="00:30" :clearable="false" :disabled="state.fillReport.submitting" placeholder="上班时间" aria-label="上班时间" class="fill-start" />
+          <el-select v-model="startTime" :clearable="false" :disabled="state.fillReport.submitting" filterable default-first-option placeholder="上班时间" aria-label="上班时间" class="fill-start" popper-class="fill-time-popper" @change="rememberStartTime">
+            <el-option v-for="opt in startTimeOptions" :key="opt.value" :value="opt.value" :label="opt.value" :class="opt.tone ? `is-time-${opt.tone}` : ''" />
+          </el-select>
           <span class="time-separator">至</span>
           <el-time-select v-model="endTime" start="00:00" end="23:30" step="00:30" clearable :disabled="state.fillReport.submitting" class="fill-end" :placeholder="endPlaceholder" aria-label="下班时间，留空使用当前时间" />
         </div>
@@ -271,6 +273,45 @@ const fillDate = computed({
   get: () => state.fillReport.date || todayStr(),
   set: (v) => { state.fillReport.date = v },
 })
+/** 上班时间候选：06:00–21:00 每 30 分钟，与原来的时间选择器范围一致 */
+const START_TIME_VALUES = (() => {
+  const values = []
+  for (let minutes = 6 * 60; minutes <= 21 * 60; minutes += 30) {
+    values.push(`${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`)
+  }
+  return values
+})()
+const START_TIME_USAGE_KEY = 'fill-report:start-time-usage'
+
+/** 使用次数只存本机，用于把最常选的上班时间排到最前面；存不下时退化为时间顺序 */
+function readStartTimeUsage() {
+  try {
+    const raw = JSON.parse(window.localStorage?.getItem(START_TIME_USAGE_KEY) || '{}')
+    const usage = {}
+    for (const value of START_TIME_VALUES) {
+      const count = Number(raw?.[value])
+      if (Number.isFinite(count) && count > 0) usage[value] = count
+    }
+    return usage
+  } catch {
+    return {}
+  }
+}
+const startTimeUsage = ref(readStartTimeUsage())
+function rememberStartTime(value) {
+  if (!START_TIME_VALUES.includes(value)) return
+  startTimeUsage.value = { ...startTimeUsage.value, [value]: (startTimeUsage.value[value] || 0) + 1 }
+  try { window.localStorage?.setItem(START_TIME_USAGE_KEY, JSON.stringify(startTimeUsage.value)) } catch { /* 存不下只影响排序 */ }
+}
+/** 下拉顺序：按使用次数降序，次数相同保持时间顺序；最常选的前三个各用一种底色 */
+const startTimeOptions = computed(() => {
+  const ranked = START_TIME_VALUES
+    .map((value, index) => ({ value, index, count: startTimeUsage.value[value] || 0 }))
+    .sort((a, b) => b.count - a.count || a.index - b.index)
+  let tone = 0
+  return ranked.map((item) => ({ value: item.value, tone: item.count > 0 && tone < 3 ? ++tone : 0 }))
+})
+
 /** 实际上班时间（默认取设置页配置，可按天临时调整） */
 const startTime = computed({
   get: () => state.fillReport.startTime || (state.config.zentao?.workStart || '08:30'),
@@ -646,6 +687,7 @@ function failRecompute(reason) {
 
 async function generate() {
   if (state.fillReport.running) return
+  rememberStartTime(startTime.value)
   pendingRecompute = false
   state.fillReport.running = true
   try {
@@ -1007,4 +1049,20 @@ async function copyReport() {
   .fill-range-tip { margin-left: 0; text-align: left; }
   .action-hint { font-size: 11px; }
 }
+</style>
+
+<style>
+/* 上班时间下拉浮层挂在 body 上，需全局样式：最常选的前三个各用一种底色，悬停时加深一档 */
+.fill-time-popper .el-select-dropdown__item.is-time-1 { background: #fbf0d3; }
+.fill-time-popper .el-select-dropdown__item.is-time-2 { background: #e9eef6; }
+.fill-time-popper .el-select-dropdown__item.is-time-3 { background: #f8e7da; }
+.fill-time-popper .el-select-dropdown__item.is-time-1.is-hovering { background: #f7e6bd; }
+.fill-time-popper .el-select-dropdown__item.is-time-2.is-hovering { background: #dfe7f2; }
+.fill-time-popper .el-select-dropdown__item.is-time-3.is-hovering { background: #f3dccb; }
+:root[data-theme='dark'] .fill-time-popper .el-select-dropdown__item.is-time-1 { background: #3b341c; }
+:root[data-theme='dark'] .fill-time-popper .el-select-dropdown__item.is-time-2 { background: #242c38; }
+:root[data-theme='dark'] .fill-time-popper .el-select-dropdown__item.is-time-3 { background: #3a2a20; }
+:root[data-theme='dark'] .fill-time-popper .el-select-dropdown__item.is-time-1.is-hovering { background: #48401f; }
+:root[data-theme='dark'] .fill-time-popper .el-select-dropdown__item.is-time-2.is-hovering { background: #2c3645; }
+:root[data-theme='dark'] .fill-time-popper .el-select-dropdown__item.is-time-3.is-hovering { background: #483325; }
 </style>
