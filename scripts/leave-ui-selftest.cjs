@@ -104,6 +104,10 @@ async function main() {
     setup.dateReasons.value['2026-10-15'] = '家里有事'
     const sending = setup.submit()
     assert.equal(state.leave.submitting, true)
+    assert.equal(setup.submitLoadingText.value, '正在提交，逐笔写入北森并回查…（已用时 0 秒）', '加载层显示已用时')
+    setup.submitElapsed.value = 61000
+    assert.equal(setup.submitLoadingText.value, '正在提交，逐笔写入北森并回查…（已用时 1 分 1 秒）', '一分钟以上按分秒显示')
+    setup.submitElapsed.value = 0
     await setup.submit()
     assert.equal(submitCalls, 1, '重复点击不能重复发起')
     assert.deepEqual(submitPayloads[0], { planId: 'isolated-plan', confirmed: true, dates: ['2026-10-15'], reasons: { '2026-10-15': '家里有事' } }, '确认时按天携带请假事由与所选日期')
@@ -113,6 +117,8 @@ async function main() {
     finishSubmit({ ok: true, results: [{ date: '2026-10-15', status: 'success', message: '已提交' }], completed: true, plan: { ...structuredClone(plan), id: 'refreshed-plan', totalHours: 0, entries: [], rows: [{ ...structuredClone(plan.rows[0]), status: 'covered', reason: '已有审批中或已通过的请假覆盖', allocations: [] }] } })
     await sending
     assert.equal(state.leave.submitting, false)
+    assert.equal(state.leave.submitStartedAt, 0, '提交结束后清除计时起点')
+    assert.equal(setup.submitLoadingText.value, '正在提交，逐笔写入北森并回查…', '结束后不再显示已用时')
     assert.equal(setup.allSucceeded.value, true)
     assert.equal(state.leave.plan.id, 'refreshed-plan', '提交后应用平台最新重算的方案')
     assert.equal(state.leave.consumed, false)

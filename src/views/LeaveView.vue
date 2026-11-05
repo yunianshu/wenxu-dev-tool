@@ -148,7 +148,7 @@
     </el-dialog>
 
     <el-dialog v-model="reviewVisible" title="确认请假方案" width="1000px" :close-on-click-modal="false" :close-on-press-escape="!leave.submitting" :show-close="!leave.submitting">
-      <div v-loading="leave.submitting" element-loading-text="正在提交，逐笔写入北森并回查…" class="leave-review-body">
+      <div v-loading="leave.submitting" :element-loading-text="submitLoadingText" class="leave-review-body">
       <template v-if="plan">
         <p>{{ plan.staffName?.split('(')[0] }} · 已选 {{ selectedDates.length }} 天 · {{ selectedEntries.length }} 笔、{{ selectedHours }} 小时</p>
         <el-table :data="reviewRows" row-key="date" max-height="420" class="leave-review-table">
@@ -231,6 +231,27 @@ const locked = computed(() => busy.value || replanning.value)
 const selectedDates = ref([])
 const selectedEntries = computed(() => (plan.value?.entries || []).filter(entry => selectedDates.value.includes(entry.date)))
 const selectedHours = computed(() => selectedEntries.value.reduce((sum, entry) => sum + entry.hours, 0))
+// 提交逐笔写入并回查平台，耗时可能到分钟级；加载层显示已用时，避免看起来卡死。
+const submitElapsed = ref(0)
+let submitTimer = null
+const submitLoadingText = computed(() => {
+  const text = '正在提交，逐笔写入北森并回查…'
+  if (!leave.submitting) return text
+  const seconds = Math.max(0, Math.floor(submitElapsed.value / 1000))
+  const elapsed = seconds >= 60 ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒` : `${seconds} 秒`
+  return `${text}（已用时 ${elapsed}）`
+})
+function startSubmitTimer() {
+  stopSubmitTimer()
+  const startedAt = leave.submitStartedAt || Date.now()
+  submitElapsed.value = Math.max(0, Date.now() - startedAt)
+  submitTimer = setInterval(() => { submitElapsed.value = Date.now() - startedAt }, 1000)
+}
+function stopSubmitTimer() {
+  if (submitTimer) { clearInterval(submitTimer); submitTimer = null }
+}
+// 提交结束后无论由哪个实例收尾，都停掉计时。
+watch(() => leave.submitting, (value) => { if (value) { startSubmitTimer() } else { stopSubmitTimer() } }, { immediate: true })
 // 可调整的日期：有请假的日期，以及因指定假种余额不足被阻断的日期。
 const reviewRows = computed(() => (plan.value?.rows || []).filter(row => row.lateMinutes > 0 && (row.status === 'ready' || row.status === 'tolerated' || (row.status === 'blocked' && /^所选假种|^平台已拒绝所选假种/.test(row.reason)))))
 function toggleDate(date) {
@@ -364,6 +385,7 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   disposed = true
+  stopSubmitTimer()
   stopLoginWatcher()
   unlistenItalentClose?.()
 })
@@ -516,7 +538,7 @@ function openReview() {
 }
 async function submit() {
   if (!reviewVisible.value || busy.value || replanning.value || leave.consumed || !selectedEntries.value.length) return
-  leave.submitting = true; leave.error = ''; leave.consumed = true
+  leave.submitting = true; leave.submitStartedAt = Date.now(); leave.error = ''; leave.consumed = true
   try {
     const reasons = {}
     for (const entry of selectedEntries.value) reasons[entry.date] = String(dateReasons.value[entry.date] ?? '').trim()
@@ -526,7 +548,7 @@ async function submit() {
     // 提交后服务端回读平台重算方案：待申请卡片、按钮与余额随提交结果更新，剩余日期可继续提交。
     if (result.plan) { leave.plan = result.plan; leave.consumed = false; leave.invalidated = false }
   } catch (error) { leave.error = error.message }
-  finally { leave.submitting = false; reviewVisible.value = false }
+  finally { leave.submitting = false; leave.submitStartedAt = 0; reviewVisible.value = false; stopSubmitTimer() }
 }
 function openResolve(entry) {
   if (busy.value || !entry.canRetry) return

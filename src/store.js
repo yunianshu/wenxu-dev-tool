@@ -136,6 +136,7 @@ export const state = reactive({
     replanning: false,
     invalidated: false,
     submitting: false,
+    submitStartedAt: 0, // 本次提交开始时刻（加载层按它显示已用时，切换视图后仍准确）
     consumed: false,
     error: '',
   },
