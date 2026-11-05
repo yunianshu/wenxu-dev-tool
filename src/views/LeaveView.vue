@@ -138,6 +138,15 @@
       </section>
     </template>
 
+    <el-dialog v-model="loginGuideVisible" title="北森登录提醒" width="480px" :close-on-click-modal="false">
+      <p>请保持本工具打开，在企业微信重新进入「汉印HR → 我的假勤」，等待十几秒后再生成方案。</p>
+      <p>也可以点击「直接登录」，在北森登录窗口完成登录。</p>
+      <template #footer>
+        <el-button @click="loginDirectly">直接登录</el-button>
+        <el-button type="primary" @click="loginGuideVisible = false">确定</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="reviewVisible" title="确认请假方案" width="1000px" :close-on-click-modal="false" :close-on-press-escape="!leave.submitting" :show-close="!leave.submitting">
       <div v-loading="leave.submitting" element-loading-text="正在提交，逐笔写入北森并回查…" class="leave-review-body">
       <template v-if="plan">
@@ -273,6 +282,7 @@ let loginWatcher = null
 let loginPolling = false
 let loginGeneration = 0
 const loginWaiting = ref(false)
+const loginGuideVisible = ref(false)
 const loginMode = ref('window')
 const bookmarkletHref = ref('')
 let disposed = false
@@ -387,6 +397,15 @@ async function connect() {
       return
     }
     bookmarkletHref.value = first?.bookmarklet || ''
+    loginGuideVisible.value = true
+  } catch (error) { leave.error = error.message }
+  finally { leave.running = false }
+}
+async function loginDirectly() {
+  if (locked.value || !loginGuideVisible.value) return
+  loginGuideVisible.value = false
+  leave.running = true
+  try {
     loginMode.value = 'window'
     await openItalentWindow()
     startLoginWatcher()
@@ -426,9 +445,9 @@ async function generate() {
     leave.invalidated = false
   } catch (error) {
     leave.error = error.message
-    // 会话过期：自动弹出登录窗口并开始等待，登录成功后重试生成即可。
+    // 登录失效时先提醒企微恢复路径，由用户选择是否打开北森登录窗口。
     if (isTauri && !loginWaiting.value && /登录/.test(error.message)) {
-      try { loginMode.value = 'window'; await openItalentWindow(); startLoginWatcher() } catch { /* 弹窗失败时保留原错误 */ }
+      loginGuideVisible.value = true
     }
   }
   finally { leave.running = false }

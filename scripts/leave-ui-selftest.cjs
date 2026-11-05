@@ -218,7 +218,29 @@ async function main() {
     try {
       await new Promise(resolve => setImmediate(resolve))
       assert.equal(listeners.size, 1, '切页必须移除旧窗口监听，当前仅保留一个监听')
+      const originalLeavePlan = window.gitReport.leavePlan
+      window.gitReport.leavePlan = async () => ({ ok: false, error: '请先在浏览器登录北森，再连接一键请假' })
+      await setup.generate()
+      assert.equal(setup.loginGuideVisible.value, true, '登录失效先显示企微登录提醒')
+      assert.equal(createdViews.length, 0, '显示提醒不得提前创建北森登录窗口')
+      assert.equal(setup.loginWaiting.value, false, '关闭提醒前不启动内嵌登录等待')
+      assert.equal(setup.busy.value, false, '提醒期间不保持读取中的加载状态')
+      setup.loginGuideVisible.value = false
+      await setup.loginDirectly()
+      assert.equal(createdViews.length, 0, '确定关闭提醒后不能再打开登录窗口')
+      window.gitReport.leavePlan = async () => ({ ok: false, error: '北森请求失败（500），请核对平台结果' })
+      await setup.generate()
+      assert.equal(setup.loginGuideVisible.value, false, '普通业务错误不显示登录提醒')
+      window.gitReport.leavePlan = originalLeavePlan
+      window.gitReport.leaveConnect = async () => ({ ok: true, loggedIn: true, mode: 'embedded' })
       await setup.connect()
+      assert.equal(setup.loginGuideVisible.value, false, '已有登录态时不显示登录提醒')
+      window.gitReport.leaveConnect = notLoggedIn
+      await setup.connect()
+      assert.equal(setup.loginGuideVisible.value, true, '未登录时连接北森也先显示企微登录提醒')
+      assert.equal(createdViews.length, 0)
+      await setup.loginDirectly()
+      assert.equal(setup.loginGuideVisible.value, false, '直接登录关闭提醒并打开原北森窗口')
       const popup = views.get('leave-italent')
       assert.equal(popup.visible, true)
       assert.equal(setup.loginWaiting.value, true)
@@ -230,6 +252,8 @@ async function main() {
         assert.equal(setup.loginWaiting.value, false, '原生 × 立即停止登录等待')
         assert.equal(ticks.size, 0)
         await setup.connect()
+        assert.equal(popup.visible, false, '连接提醒出现时不能自动显示旧登录窗口')
+        await setup.loginDirectly()
         assert.equal(popup.visible, true, '收起后再次连接能显示原窗口')
         assert.equal(createdViews.length, 1, '重复连接复用原窗口，保留登录会话')
       }
@@ -241,6 +265,7 @@ async function main() {
       assert.equal(setup.loginWaiting.value, false)
 
       await setup.connect()
+      await setup.loginDirectly()
       let finishStatus
       window.gitReport.leaveConnect = () => new Promise(resolve => { finishStatus = resolve })
       const beforeLateReply = messages.length
@@ -256,6 +281,7 @@ async function main() {
       window.gitReport.leaveConnect = notLoggedIn
       views.delete('leave-italent'); emitClose() // 隔离隐藏失败后原生销毁的兜底路径。
       await setup.connect()
+      await setup.loginDirectly()
       const replacement = views.get('leave-italent')
       assert.notEqual(replacement, popup)
       assert.equal(createdViews.length, 2, '窗口被销毁后能重建')
@@ -267,6 +293,7 @@ async function main() {
 
       window.gitReport.leaveConnect = notLoggedIn
       await setup.connect()
+      await setup.loginDirectly()
       replacement.failHide = true
       assert.equal(await setup.closeItalentWindow(), false)
       assert.match(state.leave.error, /右上角 ×/)
@@ -305,7 +332,7 @@ async function main() {
     await setup.showBookmarklet()
     assert.deepEqual(connectionArguments, [[]], '书签入口恢复旧版无参数连接契约')
     setup.stopLoginWatcher()
-    console.log('一键请假界面自测通过：旧连接契约、确认门、跨页重算锁、过期响应丢弃、手选假种恢复及北森窗口收起/重开/迟到响应/监听清理。')
+    console.log('一键请假界面自测通过：企微登录提醒、直接登录、旧连接契约、确认门、跨页重算锁、过期响应丢弃、手选假种恢复及北森窗口收起/重开/迟到响应/监听清理。')
   } finally { app.unmount(); global.window = originalWindow }
 }
 main().catch(error => { console.error(error); process.exitCode = 1 })
