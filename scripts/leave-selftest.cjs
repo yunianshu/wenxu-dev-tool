@@ -376,6 +376,23 @@ async function main() {
     data.leaves.forEach(item => { item.status = '3' })
     assert.equal(buildPlan(data, OPTIONS).rows[0].status, 'ready')
   })
+  await test('已有申请按假种汇总选区内小时数，多天按在选区内天数折算', () => {
+    const data = source()
+    data.leaves = [
+      leave('15', { id: 'l1', typeId: 'annual', typeName: '年假', end: '2026-10-15 09:00', hoursText: '0.5小时' }),
+      leave('14', { id: 'l2', hoursText: '1 小时' }),
+      leave('05', { id: 'l3', typeId: 'annual', typeName: '年假', start: '2026-10-05 08:30', end: '2026-10-05 09:00', hoursText: '0.5小时' }),
+      leave('16', { id: 'l4', start: '2026-10-16 08:30', end: '2026-10-16 09:00', hoursText: '0.5小时' }),
+      leave('14', { id: 'rejected', status: '3' }),
+      leave('14', { id: 'revoked', revocation: '已销假' }),
+    ]
+    const plan = buildPlan(data, { ...OPTIONS, since: '2026-10-10', until: '2026-10-15' })
+    assert.deepEqual(plan.existing, { hours: 1.5, count: 2, unknown: 0, byType: [{ typeName: '调休假', hours: 1, count: 1 }, { typeName: '年假', hours: 0.5, count: 1 }] })
+    const multi = buildPlan({ ...source(), leaves: [{ id: 'multi', typeId: 'annual', typeName: '年假', start: '2026-10-13 08:30', end: '2026-10-15 17:30', hoursText: '24小时', status: '2', revocation: '未销假', documentType: '1' }] }, { ...OPTIONS, since: '2026-10-14', until: '2026-10-15' })
+    assert.deepEqual([multi.existing.hours, multi.existing.count], [16, 1])
+    const day = buildPlan({ ...source(), leaves: [leave('14', { typeId: 'annual', typeName: '年假', hoursText: '1 天' })] }, OPTIONS)
+    assert.equal(day.existing.hours, 8)
+  })
   await test('考勤备注、损坏记录和同日多条数据不会生成重复请假', () => {
     assert.equal(buildPlan(source([card('15', '09:29:00', { remark: '年假 审批中' })]), OPTIONS).rows[0].status, 'blocked')
     assert.throws(() => buildPlan(source([card('15'), card('15')]), OPTIONS))
@@ -596,6 +613,21 @@ async function main() {
     assert.deepEqual(pages.map(item => item.body.table_data.paging.page), [0, 1])
     assert.equal(pages[1].body.table_data.ext_data.SortCursor, 'cursor-from-platform')
     assert.equal(pages[0].body.search_data.items[1].value, '2026/10/01-2026/10/15')
+  })
+  await test('考勤、请假、表单余额与调休记录并发读取', async () => {
+    const fixture = pageFixture()
+    const fetch = fixture.context.fetch
+    let active = 0
+    let maxActive = 0
+    fixture.context.fetch = async (...args) => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      await new Promise(resolve => setTimeout(resolve, 5))
+      try { return await fetch(...args) } finally { active -= 1 }
+    }
+    const data = await fixture.run('read', OPTIONS)
+    assert.equal(data.staffId, 'staff-test')
+    assert.ok(maxActive >= 2, '四组读取应并发，而不是逐组等待')
   })
   await test('无法识别余额单位、账号变化和同名假种均拒绝', async () => {
     await assert.rejects(pageFixture({ balance: '1.5 天' }).run('read', OPTIONS), /余额单位/)

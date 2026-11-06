@@ -9,6 +9,8 @@ const PLAN_TTL = 10 * MINUTE
 // 09:16 起一律按到达时刻向上取整到半小时请假，一天最多 8 小时，超出部分不再多请。
 // 假种按天级联：调休 → 年假 → 调休+年假分段拼够；两者合计不足则该日先不处理。
 const LEAVE_BLOCK = 30 * MINUTE
+const HOUR = 60 * MINUTE
+const DAY = 24 * HOUR
 const EARLY_TOLERANCE = 15 * MINUTE
 const LATE_GRACE = 15 * MINUTE
 const MAX_TOLERATED_DAYS_PER_MONTH = 5
@@ -39,6 +41,24 @@ const formatStamp = (ms) => new Date(ms).toISOString().slice(0, 16).replace('T',
 const minuteStamp = (s) => Math.floor(stamp(s) / MINUTE) * MINUTE
 const validDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '') && Number.isFinite(stamp(`${s} 00:00`))
 const validTime = (s) => /^([01]\d|2[0-3]):[0-5]\d$/.test(s || '')
+
+/** 已有请假记录的时长；按天申请时用配置的每日有效工时换算，无法识别时返回 null。 */
+function leaveHours(leave, dailyHours) {
+  const match = /^(\d+(?:\.\d+)?)\s*(小时|天)$/.exec(String(leave.hoursText || '').trim())
+  if (!match) return null
+  return match[2] === '小时' ? Number(match[1]) : Number(match[1]) * dailyHours
+}
+
+/** 一天内的有效工时（扣除午休），用于把按天申请的时长换算成小时。 */
+function dailyWorkHours(options) {
+  const date = options.until
+  const from = stamp(`${date} ${options.workStart}`)
+  const to = stamp(`${date} ${options.workEnd}`)
+  const lunchStart = stamp(`${date} ${LUNCH[0]}`)
+  const lunchEnd = stamp(`${date} ${LUNCH[1]}`)
+  return effectiveMs(from, to, lunchStart, lunchEnd) / HOUR
+}
+
 const shanghaiDate = (ms = Date.now()) => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms))
 
 function normalizeOptions(input = {}, now = Date.now()) {
@@ -298,12 +318,42 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
     row.status = 'ready'
     row.reason = reasonFor(row, segments)
   }
+  // 范围内已有申请（审批中/已通过）按假种汇总：只用于「总共请假」卡片与分布弹层，不参与方案计算。
+  // 多天记录按落在选区内外的天数比例折算；时长单位无法识别的记录单独计数，界面提示核对。
+  const dailyHours = dailyWorkHours(options)
+  const existingByType = new Map()
+  let existingHours = 0
+  let existingCount = 0
+  let existingUnknown = 0
+  for (const leave of source.leaves) {
+    if (!activeLeave(leave) || !['1', '3'].includes(leave.documentType)) continue
+    const startDay = String(leave.start || '').slice(0, 10)
+    const endDay = String(leave.end || '').slice(0, 10)
+    if (!validDate(startDay) || !validDate(endDay) || endDay < startDay) continue
+    const from = startDay < options.since ? options.since : startDay
+    const to = endDay > options.until ? options.until : endDay
+    if (from > to) continue
+    const hours = leaveHours(leave, dailyHours)
+    if (!Number.isFinite(hours) || hours <= 0) { existingUnknown += 1; continue }
+    const days = (stamp(`${endDay} 00:00`) - stamp(`${startDay} 00:00`)) / DAY + 1
+    const inRange = (stamp(`${to} 00:00`) - stamp(`${from} 00:00`)) / DAY + 1
+    const take = Math.round(hours * inRange / days * 100) / 100
+    if (!(take > 0)) continue
+    const typeName = leave.typeName || '未知假种'
+    const item = existingByType.get(typeName) || { typeName, hours: 0, count: 0 }
+    item.hours = Math.round((item.hours + take) * 100) / 100
+    item.count += 1
+    existingByType.set(typeName, item)
+    existingHours = Math.round((existingHours + take) * 100) / 100
+    existingCount += 1
+  }
   const compLeftEntries = compEntries ? compEntries.filter((entry) => entry.usable - entry.used > 0 && entry.expires >= options.until) : []
   return {
     staffId: source.staffId, staffName: source.staffName, options, rows, overrides,
     entries: rows.flatMap((row) => row.allocations).sort((a, b) => a.date === b.date ? a.start.localeCompare(b.start) : b.date.localeCompare(a.date)),
     balances: balances.map(({ usable, ...item }) => ({ ...item, remaining: item.unlimited ? null : Math.round((item.hours - item.used) * 1000000) / 1000000 })),
     totalHours: rows.reduce((sum, row) => sum + row.allocations.reduce((total, entry) => total + entry.hours, 0), 0),
+    existing: { hours: existingHours, count: existingCount, unknown: existingUnknown, byType: [...existingByType.values()].sort((a, b) => b.hours - a.hours) },
     quota: Object.fromEntries([...quota.entries()].map(([month, used]) => [month, { ...used }])),
     quotaLimits: { days: MAX_TOLERATED_DAYS_PER_MONTH, minutes: MAX_TOLERATED_MINUTES_PER_MONTH },
     compEntries: compEntries ? compEntries.map(({ id, earnedDate, expires, hours, usable, used }) => ({ id, earnedDate, expires, hours, remaining: Math.round((usable - used) * 1000000) / 1000000 })) : [],

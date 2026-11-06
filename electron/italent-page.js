@@ -110,7 +110,7 @@ async function italentPage(action, options = {}) {
     const types = sources.find?.((item) => item.fieldName === 'OIdVacationType')?.dataSourceResults
     if (!Array.isArray(types)) throw new Error('北森假期余额无法识别')
     if (['调休假', '年假', '事假', '请假'].some((name) => types.filter((item) => item.text === name && String(item.isActive) === '1').length > 1)) throw new Error('存在同名假种，无法确定扣减账户，请在北森核对')
-    return { form, data, types }
+    return { form, data, types, staffId: String(value(data, 'StaffId')) }
   }
   function balances(types) {
     const result = ['调休假', '年假'].map((name) => {
@@ -169,24 +169,25 @@ async function italentPage(action, options = {}) {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(earned) || !/^\d{4}-\d{2}-\d{2}$/.test(expires) || !Number.isFinite(hours) || hours < 0) throw new Error('北森调休记录字段不完整，无法确认可用日期')
         entries.push({ id, earnedDate: earned, expires, hours })
       }
-      if (seen.size >= total) return entries
+      if (seen.size >= total) return { staffId: String(staff.value), entries }
       if (!data.biz_data.length) throw new Error('北森调休记录分页缺失，无法确认完整记录')
       tableData = { ...tableData, ...data.cmp_data }
     }
     throw new Error('北森调休记录过多，未能读取完整列表')
   }
   if (action === 'read') {
-    const source = await list('attendance')
-    options.staffId = source.staffId
-    const leaves = await list('vacation')
-    const form = await getForm()
+    // 四组读取互不依赖：并发往返缩短生成时间；组内分页仍按顺序，读完再统一核对账号。
+    const [source, leaves, form, compEntries] = await Promise.all([list('attendance'), list('vacation'), getForm(), exchange(options)])
+    const staffId = String(source.staffId)
+    if (leaves.staffId !== staffId || form.staffId !== staffId || compEntries.staffId !== staffId) throw new Error('北森登录账号已变化，请重新生成方案')
+    options.staffId = staffId
     if (leaves.rows.some((row) => !value(row, 'VacationStartDateTime') || !value(row, 'VacationStopDateTime') || !value(row, 'ApproveStatus'))) throw new Error('北森已有请假记录字段不完整，无法确认是否重复')
     return {
-      staffId: source.staffId, staffName: source.staffName,
+      staffId, staffName: source.staffName,
       attendance: source.rows.map((row) => ({ id: value(row, '_id'), date: date(value(row, 'SwipingCardDate')).slice(0, 10), firstCard: date(value(row, 'ActualForFirstCard')), lastCard: date(value(row, 'ActualForLastCard')), dayType: value(row, 'DateType'), status: text(row, 'AttendanceStatusDetail'), remark: text(row, 'RetroactiveRemark') || value(row, 'RetroactiveRemark') })),
       leaves: leaves.rows.map((row) => ({ id: value(row, '_id'), typeId: value(row, 'OIdVacationType'), typeName: text(row, 'OIdVacationType'), start: date(value(row, 'VacationStartDateTime')), end: date(value(row, 'VacationStopDateTime')), hoursText: text(row, 'VacationDurationIncludeUnit'), status: value(row, 'ApproveStatus'), statusText: text(row, 'ApproveStatus'), revocation: text(row, 'RevocationStatus'), documentType: value(row, 'DocumentType') })).filter((row) => row.start.slice(0, 10) <= options.until && row.end.slice(0, 10) >= options.since),
       balances: balances(form.types),
-      compEntries: await exchange(options),
+      compEntries: compEntries.entries,
     }
   }
   if (action === 'prepare') {

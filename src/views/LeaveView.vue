@@ -88,6 +88,11 @@
           <strong>{{ plan.totalHours }}<small> 小时 / {{ plan.entries.length }} 笔</small></strong>
           <span class="leave-stat-sub">{{ readyDays }} 天待请假 · {{ coveredDays }} 天已有申请<template v-if="toleratedDays"> · {{ toleratedDays }} 天额度内迟到</template></span>
         </div>
+        <div class="leave-stat leave-stat-click leave-stat-summary" role="button" tabindex="0" aria-haspopup="dialog" aria-label="查看请假分布" @click="distributionVisible = true" @keydown.enter="distributionVisible = true" @keydown.space.prevent="distributionVisible = true">
+          <span class="leave-stat-label">总共请假</span>
+          <strong>{{ totalLeaveHours }}<small> 小时</small></strong>
+          <span class="leave-stat-sub">共 {{ totalLeaveCount }} 笔 · 本次 {{ plan.totalHours }} · 已有 {{ existingLeave.hours }}<template v-if="existingLeave.unknown"> · {{ existingLeave.unknown }} 笔待核对</template></span>
+        </div>
       </section>
 
       <section v-if="plan.unresolved?.length" class="leave-card leave-unresolved">
@@ -144,6 +149,32 @@
       <template #footer>
         <el-button @click="loginDirectly">直接登录</el-button>
         <el-button type="primary" @click="loginGuideVisible = false">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="distributionVisible" title="请假分布" width="520px">
+      <template v-if="plan">
+        <div class="leave-dist-summary">
+          <strong>{{ totalLeaveHours }}<small> 小时</small></strong>
+          <span class="leave-muted">共 {{ totalLeaveCount }} 笔 · 本次待申请 {{ plan.totalHours }} · 已有申请 {{ existingLeave.hours }}</span>
+        </div>
+        <div v-if="totalLeaveHours > 0" class="leave-dist-bar">
+          <span v-for="item in leaveDistribution" :key="item.name" :style="{ width: `${item.width}%`, background: item.color }" />
+        </div>
+        <div v-if="leaveDistribution.length" class="leave-dist-list">
+          <div v-for="item in leaveDistribution" :key="item.name" class="leave-dist-row">
+            <span class="leave-dist-dot" :style="{ background: item.color }" />
+            <div class="leave-dist-main">
+              <div class="leave-dist-head">
+                <span>{{ item.name }}</span>
+                <span class="leave-dist-value">{{ item.hours }} 小时 · {{ item.percent }}%</span>
+              </div>
+              <div class="leave-dist-track"><span :style="{ width: `${item.width}%`, background: item.color }" /></div>
+              <div class="leave-dist-sub">{{ item.count }} 笔<template v-if="item.pendingHours"> · 本次 {{ item.pendingHours }} 小时</template><template v-if="item.existingHours"> · 已有 {{ item.existingHours }} 小时</template></div>
+            </div>
+          </div>
+        </div>
+        <p v-else class="leave-muted">暂无请假记录</p>
       </template>
     </el-dialog>
 
@@ -222,6 +253,35 @@ if (!options.until) options.until = today()
 const range = computed({ get: () => [options.since, options.until], set: (value) => { if (value?.length === 2) [options.since, options.until] = value } })
 const plan = computed(() => leave.plan)
 const shownBalances = computed(() => (plan.value?.balances || []).filter(balance => balance.available !== false))
+// 「总共请假」= 本次待申请 + 范围内已有申请；分布弹层用的数据随方案一起返回，不额外请求北森。
+const existingLeave = computed(() => plan.value?.existing || { hours: 0, count: 0, unknown: 0, byType: [] })
+const totalLeaveHours = computed(() => Math.round(((plan.value?.totalHours || 0) + existingLeave.value.hours) * 100) / 100)
+const totalLeaveCount = computed(() => (plan.value?.entries?.length || 0) + existingLeave.value.count)
+const distributionVisible = ref(false)
+const DISTRIBUTION_COLORS = ['#0e7a6d', '#3f7fbf', '#c08a2e', '#8a6bb0', '#c25555', '#4f9a6d']
+const leaveDistribution = computed(() => {
+  const map = new Map()
+  const add = (name, hours, count, kind) => {
+    if (!(hours > 0)) return
+    const key = name || '未知假种'
+    const item = map.get(key) || { name: key, hours: 0, count: 0, pendingHours: 0, existingHours: 0 }
+    item.hours = Math.round((item.hours + hours) * 100) / 100
+    item.count += count
+    if (kind === 'pending') item.pendingHours = Math.round((item.pendingHours + hours) * 100) / 100
+    else item.existingHours = Math.round((item.existingHours + hours) * 100) / 100
+    map.set(key, item)
+  }
+  for (const entry of plan.value?.entries || []) add(entry.typeName, entry.hours, 1, 'pending')
+  for (const item of existingLeave.value.byType || []) add(item.typeName, item.hours, item.count, 'existing')
+  const items = [...map.values()].sort((a, b) => b.hours - a.hours)
+  const total = items.reduce((sum, item) => sum + item.hours, 0)
+  return items.map((item, index) => ({
+    ...item,
+    percent: total > 0 ? Math.round(item.hours / total * 100) : 0,
+    width: total > 0 ? item.hours / total * 100 : 0,
+    color: DISTRIBUTION_COLORS[index % DISTRIBUTION_COLORS.length],
+  }))
+})
 const reviewVisible = ref(false)
 const replanning = computed(() => leave.replanning)
 const busy = computed(() => leave.running || leave.submitting)
@@ -287,7 +347,7 @@ const shortcuts = [
   { text: '本月至今天', value: () => [new Date(`${today().slice(0, 7)}-01T00:00:00`), new Date(`${today()}T00:00:00`)] },
   { text: '今天', value: () => [new Date(`${today()}T00:00:00`), new Date(`${today()}T00:00:00`)] },
 ]
-watch(options, () => { leave.invalidated = true; leave.plan = null; leave.results = []; leave.error = ''; leave.consumed = false; reviewVisible.value = false; resolveTarget.value = null; dateReasons.value = {}; selectedDates.value = [] }, { flush: 'sync' })
+watch(options, () => { leave.invalidated = true; leave.plan = null; leave.results = []; leave.error = ''; leave.consumed = false; reviewVisible.value = false; distributionVisible.value = false; resolveTarget.value = null; dateReasons.value = {}; selectedDates.value = [] }, { flush: 'sync' })
 
 function statusOf(row) {
   const results = leave.results.filter(result => result.date === row.date)
@@ -458,6 +518,7 @@ async function copyBookmarklet() {
 async function generate() {
   if (locked.value) return
   stopLoginWatcher()
+  distributionVisible.value = false
   leave.running = true; leave.error = ''; leave.plan = null; leave.results = []; leave.consumed = false
   dateReasons.value = {}; selectedDates.value = []
   try {
@@ -597,11 +658,32 @@ async function resolvePending() {
 .leave-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
 /* 固定高度并截断副文本：数值变化不会撑高卡片导致页面抖动。 */
 .leave-stat { display: flex; flex-direction: column; gap: 6px; padding: 16px 20px; height: 124px; overflow: hidden; background: var(--surface); }
+/* 汇总条横向铺满一行：六张卡在默认宽度下不会剩一张单独换行。 */
+.leave-stat-summary { grid-column: 1 / -1; height: auto; flex-direction: row; align-items: baseline; gap: 6px 16px; flex-wrap: wrap; padding: 12px 20px; }
+.leave-stat-summary strong { font-size: 22px; }
+.leave-stat-summary .leave-stat-sub { display: block; overflow: visible; }
 .leave-stat-click { cursor: pointer; }
+.leave-stat-click:hover { background: var(--surface-subtle); }
+.leave-stat-click:focus-visible { outline: 2px solid var(--brand-accent); outline-offset: -2px; }
 .leave-stat-label { color: var(--text-muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .leave-stat strong { font-size: 26px; color: var(--brand-accent); font-variant-numeric: tabular-nums; line-height: 1.1; white-space: nowrap; }
 .leave-stat small { font-size: 13px; font-weight: 400; color: var(--text-muted); }
 .leave-stat-sub { color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.leave-dist-summary { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.leave-dist-summary strong { font-size: 24px; color: var(--brand-accent); font-variant-numeric: tabular-nums; }
+.leave-dist-summary small { font-size: 13px; font-weight: 400; color: var(--text-muted); }
+.leave-dist-summary .leave-muted { font-variant-numeric: tabular-nums; }
+.leave-dist-bar { display: flex; gap: 2px; height: 10px; margin: 14px 0 18px; border-radius: 5px; overflow: hidden; background: var(--line); }
+.leave-dist-bar > span { display: block; height: 100%; }
+.leave-dist-list { display: flex; flex-direction: column; gap: 14px; max-height: 320px; overflow: auto; }
+.leave-dist-row { display: flex; align-items: flex-start; gap: 10px; }
+.leave-dist-dot { width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; flex-shrink: 0; }
+.leave-dist-main { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+.leave-dist-head { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.leave-dist-value { color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.leave-dist-track { height: 6px; border-radius: 3px; overflow: hidden; background: var(--line); }
+.leave-dist-track > span { display: block; height: 100%; border-radius: 3px; }
+.leave-dist-sub { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .leave-comp-records { display: flex; flex-direction: column; max-height: 320px; overflow: auto; }
 .leave-comp-row { display: flex; flex-direction: column; gap: 2px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; font-variant-numeric: tabular-nums; }
 .leave-comp-row:last-child { border-bottom: 0; }
