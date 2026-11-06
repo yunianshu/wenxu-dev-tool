@@ -88,7 +88,7 @@
           <strong>{{ plan.totalHours }}<small> 小时 / {{ plan.entries.length }} 笔</small></strong>
           <span class="leave-stat-sub">{{ readyDays }} 天待请假 · {{ coveredDays }} 天已有申请<template v-if="toleratedDays"> · {{ toleratedDays }} 天额度内迟到</template></span>
         </div>
-        <div class="leave-stat leave-stat-click leave-stat-summary" role="button" tabindex="0" aria-haspopup="dialog" aria-label="查看请假分布" @click="distributionVisible = true" @keydown.enter="distributionVisible = true" @keydown.space.prevent="distributionVisible = true">
+        <div class="leave-stat leave-stat-click leave-stat-summary" role="button" tabindex="0" aria-haspopup="dialog" aria-label="查看请假分布" @mousedown.prevent @click="distributionVisible = true" @keydown.enter="distributionVisible = true" @keydown.space.prevent="distributionVisible = true">
           <span class="leave-stat-label">总共请假</span>
           <strong>{{ totalLeaveHours }}<small> 小时</small></strong>
           <span class="leave-stat-sub">共 {{ totalLeaveCount }} 笔 · 本次 {{ plan.totalHours }} · 已有 {{ existingLeave.hours }}<template v-if="existingLeave.unknown"> · {{ existingLeave.unknown }} 笔待核对</template></span>
@@ -655,11 +655,12 @@ async function resolvePending() {
 .leave-empty { text-align: center; color: var(--text-muted); padding: 72px 20px; }
 .leave-empty > .el-icon { font-size: 40px; color: var(--brand-accent); }
 .leave-empty h2 { font-size: 16px; font-weight: 500; color: var(--text-muted); margin: 12px 0 0; }
-.leave-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
+/* 卡片少时自动拉伸填满，不留空轨道；汇总条 basis 100% 固定换行。 */
+.leave-stats { display: flex; flex-wrap: wrap; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
 /* 固定高度并截断副文本：数值变化不会撑高卡片导致页面抖动。 */
-.leave-stat { display: flex; flex-direction: column; gap: 6px; padding: 16px 20px; height: 124px; overflow: hidden; background: var(--surface); }
-/* 汇总条横向铺满一行：六张卡在默认宽度下不会剩一张单独换行。 */
-.leave-stat-summary { grid-column: 1 / -1; height: auto; flex-direction: row; align-items: baseline; gap: 6px 16px; flex-wrap: wrap; padding: 12px 20px; }
+.leave-stat { display: flex; flex-direction: column; gap: 6px; flex: 1 1 180px; min-width: 0; padding: 16px 20px; height: 124px; overflow: hidden; background: var(--surface); }
+/* 汇总条横向铺满一行：卡片数量变化时都不会剩灰色空轨道。 */
+.leave-stat-summary { flex: 1 1 100%; height: auto; flex-direction: row; align-items: baseline; gap: 6px 16px; flex-wrap: wrap; padding: 12px 20px; }
 .leave-stat-summary strong { font-size: 22px; }
 .leave-stat-summary .leave-stat-sub { display: block; overflow: visible; }
 .leave-stat-click { cursor: pointer; }
@@ -714,7 +715,7 @@ async function resolvePending() {
 .leave-review-body { position: relative; min-height: 220px; }
 .leave-review-error { color: var(--el-color-danger); font-size: 12px; line-height: 1.5; margin-top: 4px; }
 @media (max-width: 900px) {
-  .leave-stats { grid-template-columns: 1fr; }
+  .leave-stat { flex-basis: 100%; }
   .leave-connect-group { margin-left: 0; }
 }
 </style>
