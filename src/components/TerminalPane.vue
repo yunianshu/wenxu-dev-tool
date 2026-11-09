@@ -1,5 +1,5 @@
 <template>
-  <div class="term-pane" :class="{ 'is-focused': focused, 'is-dead': pane.exited }" @mousedown="emit('focus')">
+  <div class="term-pane" :class="{ 'is-focused': focused, 'is-dead': pane.exited, 'is-drop-target': dropTarget }" @mousedown="emit('focus')">
     <header class="term-pane-head">
       <span class="term-dot" :class="statusClass" />
       <div class="term-pane-title">
@@ -63,6 +63,8 @@ import { terminalFontStack } from '../utils/ui-prefs'
 const props = defineProps({
   pane: { type: Object, required: true },        // { projectId, projectName, cwd, sessionCwd?, shellId, sessionId, shellLabel, exited, exitCode }
   focused: { type: Boolean, default: false },
+  /** 拖入文件时悬停在本窗格：只做视觉提示，落点由父组件的 Tauri 拖放事件判定 */
+  dropTarget: { type: Boolean, default: false },
   shellOptions: { type: Array, default: () => [] },
   /** 终端字号（px），纯外观偏好，由 ui-prefs.json 持久化，在终端工作台工具栏调整 */
   fontSize: { type: Number, default: 13 },
@@ -209,6 +211,27 @@ async function pasteFromClipboard() {
     if (text && !props.pane.exited) term?.paste(text)
   } catch { /* 剪贴板读取失败保持静默，不打断终端 */ }
 }
+
+/**
+ * 从资源管理器拖入的文件路径：含空白或 shell 元字符时加双引号，
+ * 多个路径以空格分隔。走 term.paste 与粘贴同一条链路，
+ * 由程序自己请求的 bracketed paste mode（kimi 等 TUI）决定是否包裹。
+ * 返回是否真的插入了（窗格已退出或视图未就绪时会失败，由父组件决定提示与否）。
+ */
+function shellQuotePath(p) {
+  const text = String(p || '')
+  return /[\s"'`$&|<>^()%!]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+}
+
+function insertPaths(paths) {
+  if (!term || props.pane.exited || !Array.isArray(paths) || !paths.length) return false
+  term.focus()
+  term.paste(paths.map(shellQuotePath).join(' '))
+  emit('focus')
+  return true
+}
+
+defineExpose({ insertPaths })
 
 /**
  * 复制/粘贴键约定（对齐 Windows Terminal）：
@@ -462,6 +485,20 @@ onBeforeUnmount(() => {
 .term-pane.is-focused {
   border-color: #4aa797;
   box-shadow: inset 0 2px 0 #4aa797;
+}
+
+/* 拖入文件悬停：只加一圈亮边和极淡底色，不遮挡终端内容 */
+.term-pane.is-drop-target {
+  border-color: #64cbb4;
+  box-shadow: inset 0 0 0 2px #64cbb4;
+}
+
+.term-pane.is-drop-target::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(100, 203, 180, 0.08);
+  pointer-events: none;
 }
 
 .term-pane-head {

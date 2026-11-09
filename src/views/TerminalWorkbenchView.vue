@@ -72,9 +72,12 @@
       <TerminalPane
         v-for="(pane, index) in panes"
         :key="pane.paneId"
+        :ref="(el) => setPaneRef(pane.paneId, el)"
         :style="cellStyle(index)"
         :pane="pane"
+        :data-pane-id="pane.paneId"
         :focused="index === activeIndex"
+        :drop-target="dropPaneId === pane.paneId"
         :shell-options="shellOptions"
         :font-size="state.ui.terminalFontSize"
         :font-family="state.ui.terminalFontFamily"
@@ -159,6 +162,46 @@ const panes = computed({
 const gridMode = ref('auto')
 const shellOptions = ref([])
 const activeIndex = ref(0)
+// ─── 系统文件拖放 ───
+// Tauri 在 Windows 上默认把文件拖放拦在原生层，页面收不到 HTML5 drop，
+// 必须订阅 Tauri 的拖放事件；落点按物理坐标反查 DOM，再把路径插进对应窗格。
+const paneRefs = new Map()
+const dropPaneId = ref('')
+let unlistenFileDrop = null
+let dropDisposed = false
+
+function setPaneRef(paneId, el) {
+  if (el) paneRefs.set(paneId, el)
+  else paneRefs.delete(paneId)
+}
+
+/** 物理坐标 → CSS 像素后命中的窗格 id（落在窗格外返回空串） */
+function paneIdAt(position) {
+  const scale = window.devicePixelRatio || 1
+  const x = Number(position?.x) / scale
+  const y = Number(position?.y) / scale
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return ''
+  return document.elementFromPoint(x, y)?.closest?.('.term-pane')?.dataset?.paneId || ''
+}
+
+async function setupFileDrop() {
+  try {
+    const { getCurrentWebview } = await import('@tauri-apps/api/webview')
+    const unlisten = await getCurrentWebview().onDragDropEvent(({ payload }) => {
+      if (payload.type === 'enter' || payload.type === 'over') {
+        dropPaneId.value = paneIdAt(payload.position)
+        return
+      }
+      const paneId = payload.type === 'drop' ? paneIdAt(payload.position) : ''
+      dropPaneId.value = ''
+      if (payload.type !== 'drop' || !paneId) return
+      paneRefs.get(paneId)?.insertPaths?.(payload.paths)
+    })
+    // 注册是异步的，期间视图可能已经切走
+    if (dropDisposed) unlisten()
+    else unlistenFileDrop = unlisten
+  } catch { /* 非 Tauri 宿主（浏览器预览）没有原生拖放事件 */ }
+}
 const columnWidths = ref([0.5, 0.5])
 const rowHeights = ref([0.5, 0.5])
 const gridRef = ref(null)
@@ -476,6 +519,7 @@ onBeforeMount(() => {
 onMounted(async () => {
   const opt = await window.gitReport.terminalShellOptions().catch(() => null)
   shellOptions.value = opt?.options || []
+  void setupFileDrop()
   // 首次进入才从磁盘恢复布局；切页回来直接复用内存里的窗格（id 不变才能认回会话）
   if (!panes.value.length) await restoreLayout()
   restoreDone.value = true
@@ -490,6 +534,9 @@ onMounted(async () => {
 /** 切到其他页面会卸载本视图：立即落盘（不等 400ms 防抖）。
  *  否则「改完布局就切页、紧接着关掉应用」时，防抖里那次改动会随进程一起消失 */
 onBeforeUnmount(() => {
+  dropDisposed = true
+  dropPaneId.value = ''
+  if (unlistenFileDrop) { unlistenFileDrop(); unlistenFileDrop = null }
   if (endDrag) endDrag() // 拖拽中切页：摘掉 window 上的全局监听
   if (saveTimer) writeLayout()
 })
