@@ -537,6 +537,28 @@ await test('getTaskEfforts：会话失效不再当成空记录', async () => {
   await assert.rejects(() => client.getTaskEfforts(66), /会话失效/)
 })
 
+await test('会话失效报文整体 unicode 转义时同样触发重登（线上实测形态）', async () => {
+  // 2026-11-17 实测死会话返回：{"result":false,"message":"\u767b\u5f55\u5df2\u8d85\u65f6\uff0c..."}
+  // 转义形式原文 includes 匹配不到，曾被当成「结构无法识别」而非重登
+  const deadBody = '{"result":false,"message":"\\u767b\\u5f55\\u5df2\\u8d85\\u65f6\\uff0c\\u8bf7\\u91cd\\u65b0\\u767b\\u5165!"}'
+  let hits = 0
+  let logins = 0
+  const { client } = makeClient((url, opts) => {
+    if (url.includes('refreshRandom')) return { body: 'r1' }
+    if (opts.method === 'POST' && url.includes('user&f=login')) { logins++; return { body: '{"result":"success"}' } }
+    if (url.includes('recordEstimate') && opts.method !== 'POST') {
+      hits++
+      if (hits === 1) return { body: deadBody }
+      return { body: JSON.stringify({ data: { efforts: [{ id: 501, account: 'wgl', date: '2026-09-07', consumed: 2, left: 0, work: 'w' }] } }) }
+    }
+    return { body: '' }
+  })
+  await client.login()
+  const list = await client.getTaskEfforts(66) // 第 1 次拿到转义超时报文 → 重登 → 成功
+  assert.strictEqual(list.length, 1)
+  assert.strictEqual(logins, 2)
+})
+
 await test('getTaskEfforts：工作说明只还原一层 HTML 实体，保留字面实体及换行', async () => {
   const { client } = makeClient(() => ({ body: JSON.stringify({ data: { efforts: [
     { id: 501, account: 'wgl', date: '2026-09-07', consumed: 2, work: '1. List&lt;T&gt; &amp; &quot;参数&quot; &#039;字段&#039;\n2. 字面 &amp;lt; &amp;amp;' },

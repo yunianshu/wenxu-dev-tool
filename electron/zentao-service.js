@@ -160,7 +160,10 @@ class ZentaoClient {
   async getJson(path, retried = false) {
     const resp = await this.request(path, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
     const text = await resp.text()
-    if (text.includes('登录已超时') || /user-login/.test(resp.finalUrl || '')) {
+    // 实测超时响应是整体 unicode 转义的 {"result":false,"message":"\u767b\u5f55\u5df2\u8d85\u65f6..."}，
+    // 原文 includes 匹配不到转义形式（会话死了却当成结构异常），先还原再判
+    const visible = text.replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    if (visible.includes('登录已超时') || /user-login/.test(resp.finalUrl || '')) {
       if (!retried) {
         await this.login()
         return this.getJson(path, true)
