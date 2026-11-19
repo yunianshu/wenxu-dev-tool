@@ -800,7 +800,6 @@ body {
   padding-left: 2px;
   padding-right: 4px;
 }
-.topbar-project-select .el-select__wrapper:hover { background: var(--line); }
 .content-area { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 24px 32px 32px; }
 /* 内嵌 Harness 视图自带留白与滚动，内容区不再叠加 padding/scroll */
 .content-area--flush { padding: 0; overflow: hidden; }
