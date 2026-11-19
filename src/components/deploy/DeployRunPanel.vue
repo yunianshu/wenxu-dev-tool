@@ -30,19 +30,12 @@
         @click="openDbBackups"
       ><el-icon><Coin /></el-icon>数据库备份</el-button>
       <el-button :disabled="!form.id || run.running || dirty" @click="newVersion"><el-icon><Plus /></el-icon>新版本</el-button>
-      <el-button v-if="state.deploy.projects.length > 1" class="batch-project-picker" @click="batchOpen = true">选择发布项目</el-button>
       <el-button v-if="run.running" type="warning" plain :disabled="!run.id" @click="cancelRun">{{ cancelAction }}</el-button>
       <el-tooltip v-else :disabled="canPublish" :content="publishBlockedReason" placement="top">
         <span class="publish-button-wrap"><el-button type="primary" class="publish-btn" :disabled="!canPublish" @click="publish"><el-icon><Promotion /></el-icon>发布 {{ publishVersion || '' }}</el-button></span>
       </el-tooltip>
       </div>
     </div>
-    <DeployBatchPublish
-      v-model="batchOpen"
-      :current-project-id="form.id"
-      :current-target-id="activeTargetId"
-      :current-dirty="dirty"
-    />
     <div class="run-output">
       <section class="deploy-stages" aria-label="部署阶段">
         <div class="run-heading">
@@ -146,10 +139,9 @@
 <script setup>
 import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { state, beginDeployRun, deployRunFor, finishDeployRun, deployOnlineVersion, setDeployOnlineVersion, submitDeployRun } from '../../store'
+import { beginDeployRun, deployRunFor, finishDeployRun, deployOnlineVersion, setDeployOnlineVersion, submitDeployRun } from '../../store'
 import { bumpVersion, highestVersion } from '../../utils/version'
 import { fmtDur, fmtElapsed, publishBlocker } from './deploy-form'
-import DeployBatchPublish from './DeployBatchPublish.vue'
 
 const props = defineProps({
   /** 部署表单（响应式对象，只读使用） */
@@ -190,7 +182,6 @@ const cancelAction = computed(() => run.value.queued ? '取消排队' : ({ rollb
 const releases = ref([])
 const rollbackVersion = ref('')
 const logBox = ref(null)
-const batchOpen = ref(false)
 let selectionEpoch = 0
 let releaseQueryId = 0
 let disposed = false

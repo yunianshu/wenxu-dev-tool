@@ -7,6 +7,7 @@
         <div class="topbar-title-group">
           <h1 class="topbar-page-title">部署</h1>
           <TopbarProjectSelect show-deploy-status />
+          <el-button v-if="currentProject && state.deploy.projects.length > 1" class="batch-project-picker" @click="batchOpen = true">批量发布</el-button>
         </div>
         <el-button v-if="currentProject" class="deploy-topbar-actions" :disabled="projectBusy" @click="aiOpen = true"><el-icon><MagicStick /></el-icon>AI 部署助手</el-button>
         <el-button @click="serverManagerOpen = true"><el-icon><Coin /></el-icon>服务器管理</el-button>
@@ -14,6 +15,12 @@
       </div>
     </Teleport>
     <ServerManagerDialog v-model="serverManagerOpen" :servers="servers" :busy="deployBusy" @changed="onServersChanged" />
+    <DeployBatchPublish
+      v-model="batchOpen"
+      :current-project-id="form.id"
+      :current-target-id="activeTargetId"
+      :current-dirty="dirty"
+    />
 
     <EmptyState
       v-if="!currentProject" icon="Promotion" title="先选择一个项目"
@@ -111,6 +118,7 @@ import EmptyState from '../components/EmptyState.vue'
 import TopbarProjectSelect from '../components/TopbarProjectSelect.vue'
 import DeployConfigDrawer from '../components/deploy/DeployConfigDrawer.vue'
 import DeployAiAssistant from '../components/deploy/DeployAiAssistant.vue'
+import DeployBatchPublish from '../components/deploy/DeployBatchPublish.vue'
 import DeployRunPanel from '../components/deploy/DeployRunPanel.vue'
 import DeployHistoryTable from '../components/deploy/DeployHistoryTable.vue'
 import ServerManagerDialog from '../components/deploy/ServerManagerDialog.vue'
@@ -121,6 +129,7 @@ const { currentProject, loadProjects: loadSharedProjects, selectProject } = useP
 const topbarReady = useTopbarReady()
 
 const form = reactive(emptyProject())
+const batchOpen = ref(false)
 const configOpen = ref(false)
 const serverManagerOpen = ref(false)
 const servers = ref([])
@@ -258,6 +267,7 @@ function rememberDraft() {
 
 function onSelectProject(id) {
   rememberDraft()
+  batchOpen.value = false
   configOpen.value = false
   aiOpen.value = false
   detected.value = { version: '', source: '' }
