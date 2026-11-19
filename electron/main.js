@@ -720,9 +720,9 @@ function registerIpc() {
   // ─── 一键部署模块（OneDeploy） ───
   deployService.setEmitter((ch, payload) => broadcast(ch, payload))
   ipcMain.handle('deploy:projects:list', () => deployProjects.list())
-  ipcMain.handle('deploy:projects:save', (_e, p) => deployService.isBusy() ? { ok: false, error: '部署任务进行中，请完成后保存配置' } : deployProjects.save(p))
-  ipcMain.handle('deploy:projects:copyConfig', (_e, args) => deployService.isBusy() ? { ok: false, error: '部署任务进行中，请完成后复制配置' } : deployProjects.copyConfig(args))
-  ipcMain.handle('deploy:projects:remove', (_e, id) => deployService.isBusy() ? { ok: false, error: '部署任务进行中，请完成后删除配置' } : deployProjects.remove(id))
+  ipcMain.handle('deploy:projects:save', (_e, p) => p?.id && deployService.isBusy(p.id) ? { ok: false, error: '该项目的部署任务进行中，请完成后保存配置' } : deployProjects.save(p))
+  ipcMain.handle('deploy:projects:copyConfig', (_e, args) => args?.toProjectId && deployService.isBusy(args.toProjectId) ? { ok: false, error: '该项目的部署任务进行中，请完成后复制配置' } : deployProjects.copyConfig(args))
+  ipcMain.handle('deploy:projects:remove', (_e, id) => id && deployService.isBusy(id) ? { ok: false, error: '该项目的部署任务进行中，请完成后删除配置' } : deployProjects.remove(id))
   ipcMain.handle('deploy:servers:list', () => deployProjects.listServers())
   ipcMain.handle('deploy:servers:save', (_e, server) => deployService.isBusy() ? { ok: false, error: '发布进行中，请完成后修改服务器' } : deployProjects.saveServer(server))
   ipcMain.handle('deploy:servers:remove', (_e, id) => deployService.isBusy() ? { ok: false, error: '发布进行中，请完成后修改服务器' } : deployProjects.removeServer(id))
@@ -735,15 +735,15 @@ function registerIpc() {
       return { ok: false, error: (err && err.message) || String(err) }
     }
   })
-  ipcMain.handle('deploy:run', async (_e, { projectId, targetId }) => {
+  ipcMain.handle('deploy:run', async (_e, { projectId, targetId, requestId }) => {
     try {
-      const record = await deployService.run(projectId, targetId)
+      const record = await deployService.run(projectId, targetId, requestId)
       return { ok: record.status === 'success', record }
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) }
     }
   })
-  ipcMain.handle('deploy:cancel', () => deployService.cancel())
+  ipcMain.handle('deploy:cancel', (_e, args) => deployService.cancel(args?.projectId, args?.runId))
   ipcMain.handle('deploy:releases', async (_e, { projectId, targetId }) => {
     try {
       const info = await deployService.listReleases(projectId, targetId)
@@ -752,9 +752,9 @@ function registerIpc() {
       return { ok: false, error: (err && err.message) || String(err) }
     }
   })
-  ipcMain.handle('deploy:rollback', async (_e, { projectId, targetId, version }) => {
+  ipcMain.handle('deploy:rollback', async (_e, { projectId, targetId, version, requestId }) => {
     try {
-      const record = await deployService.rollback(projectId, version, targetId)
+      const record = await deployService.rollback(projectId, version, targetId, requestId)
       return { ok: record.status === 'success', record }
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) }
@@ -796,9 +796,9 @@ function registerIpc() {
       return { ok: false, error: (err && err.message) || String(err) }
     }
   })
-  ipcMain.handle('deploy:dbRestore', async (_e, { projectId, targetId, fileName }) => {
+  ipcMain.handle('deploy:dbRestore', async (_e, { projectId, targetId, fileName, requestId }) => {
     try {
-      const record = await deployService.restoreDbBackup(projectId, targetId, fileName)
+      const record = await deployService.restoreDbBackup(projectId, targetId, fileName, requestId)
       return { ok: record.status === 'success', record }
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) }
@@ -834,6 +834,7 @@ function registerIpc() {
   })
   ipcMain.handle('deploy:ai:writeFiles', (_e, { projectId, files, options }) => {
     try {
+      if (projectId && deployService.isBusy(projectId)) return { ok: false, error: '该项目的部署任务进行中，请完成后写入文件' }
       return { ok: true, ...aiDeploy.writeFiles(projectId, files, options) }
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) }
@@ -855,7 +856,7 @@ function registerIpc() {
   })
   ipcMain.handle('deploy:ai:apply', (_e, { projectId, targetId, plan }) => {
     try {
-      if (deployService.isBusy()) return { ok: false, error: '部署任务进行中，请完成后套用方案' }
+      if (projectId && deployService.isBusy(projectId)) return { ok: false, error: '该项目的部署任务进行中，请完成后套用方案' }
       return aiDeploy.applyPlan(projectId, targetId, plan)
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) }

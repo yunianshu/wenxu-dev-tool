@@ -43,7 +43,7 @@ const mainSource = fs.readFileSync(path.resolve(__dirname, '../electron/main.js'
 const context = { ipcMain: { handle: (name, handler) => handlers.set(name, handler) }, deployService: service, deployProjects: backend, projectService: backend, aiDeploy: backend }
 const ipcCases = [
   ['projects:save', { id: 'fixture' }], ['projects:remove', 'fixture'],
-  ['deploy:projects:save', {}], ['deploy:projects:copyConfig', {}], ['deploy:projects:remove', 'fixture'],
+  ['deploy:projects:save', { id: 'fixture' }], ['deploy:projects:copyConfig', { fromProjectId: 'other-project', toProjectId: 'fixture' }], ['deploy:projects:remove', 'fixture'],
   ['deploy:ai:apply', { projectId: 'fixture', targetId: 't', plan: {} }],
 ]
 for (const [name] of ipcCases) {
@@ -60,6 +60,8 @@ async function main() {
   for (const [name, payload] of ipcCases) assert.equal(handlers.get(name)(null, payload).ok, false, name + ' 应拦截运行期写入')
   assert.equal(writes.length, 0)
   assert.equal(handlers.get('projects:save')(null, { id: 'other-project' }).ok, true, '其他项目的基础编辑不受影响')
+  assert.equal(handlers.get('deploy:projects:save')(null, { id: 'other-project' }).ok, true, '其他项目的部署配置可以保存')
+  assert.equal(handlers.get('deploy:projects:copyConfig')(null, { fromProjectId: 'fixture', toProjectId: 'other-project' }).ok, true, '读取运行项目配置可用于复制连接')
   await assert.rejects(service.rollback('fixture', 'target', 't'), /已有发布任务/)
   await assert.rejects(service.run('fixture', 't'), /已有发布任务/)
   await assert.rejects(service.restoreDbBackup('fixture', 't', 'db_fixture.sql'), /已有发布任务/)

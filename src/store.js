@@ -116,16 +116,9 @@ export const state = reactive({
   deploy: {
     projects: [],
     currentProjectId: '',
-    running: false,
-    stages: {}, // { check: { status, durationMs }, ... } status: waiting|running|success|failed|skipped|rollback
-    logs: [], // [{ level, text, ts }]
-    packageCount: 0,
-    uploadPercent: 0,
-    datasyncPercent: 0, // 数据同步阶段上传进度
-    currentVersion: '', // 服务器当前运行版本（查询 releases / 发布事件更新）
+    runs: new Map(),
+    onlineVersions: new Map(),
     configDrafts: {}, // 部署设置草稿按项目在内存保留；不把凭据写入普通磁盘缓存
-    startedAt: 0, // 本次发布/回滚开始时刻（渲染层计时用；切换项目或换版本时清空）
-    finishedAt: 0, // 本次发布/回滚结束时刻（done 事件写入，0 表示尚未结束）
   },
   /** 北森一键请假：切换视图保留方案、执行状态与提交结果。 */
   leave: {
@@ -151,3 +144,54 @@ export const state = reactive({
     submitting: false,
   },
 })
+
+const idleDeployRun = Object.freeze({
+  id: '', running: false, queued: false, type: '', targetName: '', status: '',
+  startedAt: 0, finishedAt: 0, stages: {}, logs: [],
+  packageCount: 0, uploadPercent: 0, datasyncPercent: 0,
+})
+
+export function deployRunFor(projectId) {
+  return state.deploy.runs.get(projectId) || idleDeployRun
+}
+
+export function beginDeployRun(projectId, type, targetName) {
+  const requestId = crypto.getRandomValues(new Uint32Array(3)).join('-')
+  state.deploy.runs.set(projectId, {
+    ...idleDeployRun, requestId, type, targetName, running: true, startedAt: Date.now(), stages: {}, logs: [],
+  })
+  return state.deploy.runs.get(projectId)
+}
+
+export function deployEventRun({ projectId, runId, requestId }) {
+  const run = state.deploy.runs.get(projectId)
+  if (!run?.running || run.requestId !== requestId || !runId || (run.id && run.id !== runId)) return null
+  run.id = runId
+  return run
+}
+
+export function finishDeployRun(run, record) {
+  if (!run?.running) return
+  run.running = false
+  run.queued = false
+  if (!record) {
+    run.startedAt = 0
+    return
+  }
+  run.status = record.status
+  run.finishedAt = record.finishedAt || Date.now()
+  if (record.stages) run.stages = record.stages
+  if (record.status === 'success' && (record.type === 'deploy' || record.type === 'rollback')) {
+    setDeployOnlineVersion(record.projectId, record.targetId, record.releaseId || record.version)
+  }
+}
+
+export function deployOnlineVersion(projectId, targetId) {
+  return state.deploy.onlineVersions.get(JSON.stringify([projectId, targetId])) || ''
+}
+
+export function setDeployOnlineVersion(projectId, targetId, version) {
+  const key = JSON.stringify([projectId, targetId])
+  if (version) state.deploy.onlineVersions.set(key, version)
+  else state.deploy.onlineVersions.delete(key)
+}

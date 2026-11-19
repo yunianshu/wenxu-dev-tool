@@ -81,7 +81,7 @@ async function main() {
   }
   const notify = async (name, payload) => Promise.all([...(events.get(name) || [])].map((fn) => fn(payload)))
   const store = load('electron/store.js')
-  const { state } = load('src/store.js')
+  const { state, beginDeployRun, deployOnlineVersion, setDeployOnlineVersion } = load('src/store.js')
   const { emptyProject, emptyTarget } = load('src/components/deploy/deploy-form.js')
   const projects = ['A', 'B'].map((id) => ({ ...emptyProject(), id, name: `项目 ${id}`, localPath: `/project/${id}`, deployMode: 'docker', version: { strategy: 'manual', manual: '1.0.0' }, targets: ['test', 'production'].map((tid) => ({ ...emptyTarget(), id: tid, name: tid, server: { host: 'example.invalid' }, remotePath: `/apps/${id}/${tid}` })) }))
   const api = {
@@ -100,7 +100,7 @@ async function main() {
     reposSnapshot: async () => [], warmup: async () => [],
     appUiReady() {},
   }
-  for (const name of ['onScanProgress', 'onScanRepoFound', 'onScanDone', 'onCollectProgress', 'onDeployLog', 'onDeployStage', 'onDeployProgress', 'onDeployDone', 'onWinFullscreen', 'onWinAskClose', 'onHarnessUpdate']) api[name] = subscribe(name)
+  for (const name of ['onScanProgress', 'onScanRepoFound', 'onScanDone', 'onCollectProgress', 'onDeployStatus', 'onDeployLog', 'onDeployStage', 'onDeployProgress', 'onDeployDone', 'onWinFullscreen', 'onWinAskClose', 'onHarnessUpdate']) api[name] = subscribe(name)
   global.window = { gitReport: api }
   global.requestAnimationFrame = (fn) => queueMicrotask(fn)
   try {
@@ -149,7 +149,10 @@ async function main() {
     const releaseCalls = []
     const rollbackCalls = []
     api.deployReleases = (...args) => { const pending = deferred(); releaseCalls.push({ args, ...pending }); return pending.promise }
-    api.deployRollback = async (...args) => { rollbackCalls.push(args); return { ok: true } }
+    api.deployRollback = async (projectId, targetId, version, requestId) => {
+      rollbackCalls.push({ projectId, targetId, version, requestId })
+      return { ok: true, record: { type: 'rollback', projectId, targetId, version, status: 'success' } }
+    }
     const panelProps = vue.reactive({ form: { ...projects[0] }, activeTarget: projects[0].targets[0], activeTargetId: 'test', publishVersion: '1.0.0', dirty: false })
     const panel = mount('src/components/deploy/DeployRunPanel.vue', panelProps)
     const query = () => { const pending = panel.setup.queryReleases(); return { done: pending, request: releaseCalls.at(-1) } }
@@ -157,26 +160,26 @@ async function main() {
     panelProps.form.id = 'B'
     request.request.resolve({ ok: true, current: 'A-旧版本', releases: ['A-旧版本'] })
     await request.done
-    assert.equal(state.deploy.currentVersion, '')
+    assert.equal(deployOnlineVersion('A', 'test'), '')
     assert.equal(panel.setup.releases.value.length, 0)
     request = query()
     panelProps.activeTargetId = 'production'
     request.request.resolve({ ok: true, current: 'test-旧版本', releases: ['test-旧版本'] })
     await request.done
-    assert.equal(state.deploy.currentVersion, '')
+    assert.equal(deployOnlineVersion('B', 'test'), '')
     request = query()
     panelProps.form.id = 'A'
     panelProps.form.id = 'B'
     request.request.resolve({ ok: true, current: 'ABA-旧版本', releases: ['ABA-旧版本'] })
     await request.done
-    assert.equal(state.deploy.currentVersion, '', '同轮同步 B→A→B 也必须作废旧请求')
+    assert.equal(deployOnlineVersion('B', 'production'), '', '同轮同步 B→A→B 也必须作废旧请求')
     const older = query()
     const newer = query()
     newer.request.resolve({ ok: true, current: '2.0.0', releases: ['2.0.0'] })
     await newer.done
     older.request.resolve({ ok: true, current: '1.0.0', releases: ['1.0.0'] })
     await older.done
-    assert.equal(state.deploy.currentVersion, '2.0.0')
+    assert.equal(deployOnlineVersion('B', 'production'), '2.0.0')
     assert.deepEqual([...panel.setup.releases.value], ['2.0.0'])
     confirmation = deferred()
     const canceledRollback = panel.setup.doRollback('1.0.0')
@@ -188,13 +191,15 @@ async function main() {
     const validRollback = panel.setup.doRollback('1.1.0')
     confirmation.resolve()
     await validRollback
-    assert.deepEqual(rollbackCalls[0], ['A', 'production', '1.1.0'])
-    assert.equal(state.deploy.currentVersion, '1.1.0')
+    const { requestId, ...rollbackCall } = rollbackCalls[0]
+    assert.ok(requestId)
+    assert.deepEqual(rollbackCall, { projectId: 'A', targetId: 'production', version: '1.1.0' })
+    assert.equal(deployOnlineVersion('A', 'production'), '1.1.0')
     const unmountedQuery = query()
     panel.unmount()
     unmountedQuery.request.resolve({ ok: true, current: '卸载后迟到版本', releases: [] })
     await unmountedQuery.done
-    assert.equal(state.deploy.currentVersion, '1.1.0')
+    assert.equal(deployOnlineVersion('A', 'production'), '1.1.0')
     console.log('  ✓ 发布查询隔离项目、目标、ABA和请求先后，回滚绑定确认时的目标')
 
     state.config = store.load()
@@ -234,24 +239,75 @@ async function main() {
     const shell = mount('src/App.vue')
     await settle()
     assert.equal(events.get('onDeployDone')?.size, 1, '应用应完成全局事件接线')
-    state.deploy.currentVersion = '当前选择版本'
-    state.deploy.running = true
-    await notify('onDeployDone', { record: { type: 'deploy', projectId: 'B', targetId: 'test', version: '后台项目版本', status: 'success' } })
-    assert.equal(state.deploy.running, false)
-    assert(state.deploy.finishedAt > 0)
-    assert.equal(state.deploy.currentVersion, '当前选择版本', '全局完成事件不能修改当前项目线上版本')
     const deployView = mount('src/views/DeployView.vue')
     await settle()
     assert.equal(deployView.setup.form.id, 'A')
     const targetId = deployView.setup.activeTargetId.value
-    const done = (projectId, tid, version) => notify('onDeployDone', { record: { type: 'deploy', projectId, targetId: tid, projectName: projectId, version, durationMs: 1, status: 'success' } })
-    state.deploy.currentVersion = '保持当前版本'
-    await done('B', targetId, '其它项目版本')
-    assert.equal(state.deploy.currentVersion, '保持当前版本')
-    await done('A', targetId === 'test' ? 'production' : 'test', '其它环境版本')
-    assert.equal(state.deploy.currentVersion, '保持当前版本')
-    await done('A', targetId, '3.0.0')
-    assert.equal(state.deploy.currentVersion, '3.0.0')
+    const publishPanel = mount('src/components/deploy/DeployRunPanel.vue', vue.reactive({
+      form: deployView.setup.form, activeTarget: deployView.setup.activeTarget,
+      activeTargetId: deployView.setup.activeTargetId, publishVersion: '1.0.0', dirty: false,
+    }))
+    const publishRequests = new Map()
+    api.deployRun = (projectId, tid, requestId) => {
+      const task = { ...deferred(), projectId, targetId: tid, requestId, runId: `run-${projectId}` }
+      publishRequests.set(projectId, task)
+      return task.promise
+    }
+    const start = async (projectId, queued = false) => {
+      confirmation = deferred()
+      const finished = publishPanel.setup.publish()
+      confirmation.resolve()
+      await settle()
+      const task = publishRequests.get(projectId)
+      assert.ok(task?.requestId, '应通过所选项目调用发布入口')
+      const { requestId, targetId, runId } = task
+      const event = { projectId, requestId, targetId, runId }
+      await notify('onDeployStatus', { ...event, queued, type: 'deploy', targetName: targetId, startedAt: Date.now() })
+      await notify('onDeployLog', { ...event, text: `日志 ${projectId}` })
+      await notify('onDeployStage', { ...event, stage: 'upload', status: 'running' })
+      await notify('onDeployProgress', { ...event, kind: 'upload', percent: projectId === 'A' ? 50 : 20 })
+      return { event, task, finished }
+    }
+    const complete = async (event, version, status = 'success') => {
+      const record = { ...event, id: event.runId, type: 'deploy', projectName: event.projectId, version, durationMs: 1, status }
+      await notify('onDeployDone', { ...event, record })
+      return record
+    }
+    const a = await start('A')
+    assert.equal(publishPanel.setup.run.value.logs[0].text, '日志 A')
+    assert.equal(publishPanel.setup.run.value.uploadPercent, 50)
+    const cancelCalls = []
+    api.deployCancel = async (...args) => { cancelCalls.push(args); return { ok: true } }
+    confirmation = deferred()
+    const cancel = publishPanel.setup.cancelRun()
+    projectApi.selectProject('B')
+    await settle()
+    confirmation.resolve()
+    await cancel
+    assert.deepEqual(cancelCalls, [['A', 'run-A']], '切换项目后取消仍绑定确认时的任务')
+    assert.equal(publishPanel.setup.canPublish.value, true)
+    const b = await start('B', true)
+    assert.equal(publishPanel.setup.runTitle.value, '排队中')
+    assert.equal(publishPanel.setup.run.value.logs[0].text, '日志 B')
+    const aRecord = await complete(a.event, '3.0.0')
+    assert.equal(publishPanel.setup.run.value.running, true, '后台项目完成不得解除当前项目排队或执行态')
+    assert.equal(publishPanel.setup.run.value.uploadPercent, 20)
+    assert.equal(deployOnlineVersion('A', targetId), '3.0.0')
+    assert.equal(deployOnlineVersion('B', b.event.targetId), '')
+    a.task.resolve({ ok: true, record: aRecord })
+    await a.finished
+    projectApi.selectProject('A')
+    await settle()
+    assert.equal(publishPanel.setup.run.value.logs[0].text, '日志 A', '切回项目保留对应日志')
+    assert.equal(publishPanel.setup.run.value.running, false)
+    const retry = beginDeployRun('A', 'deploy', targetId)
+    await notify('onDeployDone', { ...a.event, record: aRecord })
+    assert.equal(retry.running, true, '上一轮的完成通知不得结束新任务')
+    state.deploy.runs.delete('A')
+    b.task.resolve({ ok: false, record: await complete(b.event, '1.0.0', 'canceled') })
+    await b.finished
+    publishPanel.unmount()
+    console.log('  ✓ 发布入口按项目运行，切换保留各自进度，完成与取消只作用于指定任务')
 
     // 页面加载后磁盘配置可能被外部修复；切换版本不得用旧表单覆盖准备命令。
     const deployProjects = load('electron/deploy/deploy-projects.js')
@@ -346,16 +402,17 @@ async function main() {
     console.log('  ✓ 修改共享服务器同步清除表单与取消快照中的旧探测，保留手动项目策略')
     const pendingRefresh = deferred()
     api.projectsList = () => pendingRefresh.promise
-    const oldCompletion = done('A', targetId, '旧页面迟到版本')
+    const late = beginDeployRun('A', 'deploy', targetId)
+    const oldCompletion = complete({ projectId: 'A', targetId, runId: 'late-A', requestId: late.requestId }, '旧页面迟到版本')
     await Promise.resolve()
     deployView.unmount()
     state.projects.currentId = 'B'
-    state.deploy.currentVersion = '新页面版本'
+    setDeployOnlineVersion('B', targetId, '新页面版本')
     pendingRefresh.resolve(projects)
     await oldCompletion
-    assert.equal(state.deploy.currentVersion, '新页面版本', '已卸载部署页面的完成刷新不能污染新页面')
+    assert.equal(deployOnlineVersion('B', targetId), '新页面版本', '已卸载部署页面的完成刷新不能污染新页面')
     shell.unmount()
-    console.log('  ✓ 全局发布完成只收尾运行，部署页仅更新匹配项目和目标的线上版本')
+    console.log('  ✓ 发布完成按项目和目标保留线上版本，卸载页面不影响其他项目')
   } finally {
     for (const app of apps) app.unmount()
     global.window = originalWindow

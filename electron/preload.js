@@ -136,13 +136,13 @@ contextBridge.exposeInMainWorld('gitReport', {
   deployDetectVersion: (project) => ipcRenderer.invoke('deploy:detectVersion', toPlain(project)),
   deployTestConnection: (projectId, targetId) =>
     ipcRenderer.invoke('deploy:testConnection', { projectId, targetId }),
-  deployRun: (projectId, targetId) =>
-    ipcRenderer.invoke('deploy:run', { projectId, targetId }),
-  deployCancel: () => ipcRenderer.invoke('deploy:cancel'),
+  deployRun: (projectId, targetId, requestId) =>
+    ipcRenderer.invoke('deploy:run', { projectId, targetId, requestId }),
+  deployCancel: (projectId, runId) => ipcRenderer.invoke('deploy:cancel', { projectId, runId }),
   deployReleases: (projectId, targetId) =>
     ipcRenderer.invoke('deploy:releases', { projectId, targetId }),
-  deployRollback: (projectId, targetId, version) =>
-    ipcRenderer.invoke('deploy:rollback', { projectId, targetId, version }),
+  deployRollback: (projectId, targetId, version, requestId) =>
+    ipcRenderer.invoke('deploy:rollback', { projectId, targetId, version, requestId }),
   deployHistoryList: (projectId) => ipcRenderer.invoke('deploy:history:list', projectId),
   deployHistoryReadLog: (logFile) => ipcRenderer.invoke('deploy:history:readLog', logFile),
   deployHistoryClear: (projectId) => ipcRenderer.invoke('deploy:history:clear', projectId),
@@ -153,8 +153,8 @@ contextBridge.exposeInMainWorld('gitReport', {
   // 数据库备份（列表 / 一键恢复）
   deployDbBackups: (projectId, targetId) =>
     ipcRenderer.invoke('deploy:dbBackups', { projectId, targetId }),
-  deployDbRestore: (projectId, targetId, fileName) =>
-    ipcRenderer.invoke('deploy:dbRestore', { projectId, targetId, fileName }),
+  deployDbRestore: (projectId, targetId, fileName, requestId) =>
+    ipcRenderer.invoke('deploy:dbRestore', { projectId, targetId, fileName, requestId }),
   // AI 部署助手：本地体检 / 服务器体检 / AI 方案 / 生成部署文件 / 套用方案
   deployAiScanLocal: (projectId) => ipcRenderer.invoke('deploy:ai:scanLocal', { projectId }),
   deployAiScanRemote: (projectId, targetId) => ipcRenderer.invoke('deploy:ai:scanRemote', { projectId, targetId }),
@@ -167,6 +167,7 @@ contextBridge.exposeInMainWorld('gitReport', {
     ipcRenderer.invoke('deploy:ai:generateFile', { projectId, targetId, req: toPlain(req) }),
   deployAiApply: (projectId, targetId, plan) =>
     ipcRenderer.invoke('deploy:ai:apply', { projectId, targetId, plan: toPlain(plan) }),
+  onDeployStatus: (cb) => subscribe('deploy:status', cb),
   onDeployLog: (cb) => subscribe('deploy:log', cb),
   onDeployStage: (cb) => subscribe('deploy:stage', cb),
   onDeployProgress: (cb) => subscribe('deploy:progress', cb),

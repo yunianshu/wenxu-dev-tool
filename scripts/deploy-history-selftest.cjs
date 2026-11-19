@@ -7,7 +7,8 @@ const vue = require('vue')
 const source = fs.readFileSync(path.resolve(__dirname, '../src/components/deploy/DeployHistoryTable.vue'), 'utf8')
 const script = source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/mg, '')
 const props = vue.reactive({ projectId: 'project-a' })
-const state = { deploy: { currentVersion: '1.0.0-current' } }
+const currentVersion = '1.0.0-current'
+const deployOnlineVersion = (projectId, targetId) => projectId === 'project-a' && targetId === 'target-a' ? currentVersion : ''
 const pending = [], emitted = [], cleared = []
 let confirm, readLog
 const window = { gitReport: {
@@ -16,8 +17,8 @@ const window = { gitReport: {
   deployHistoryClear: async (projectId) => { cleared.push(projectId) },
 } }
 const scope = vue.effectScope()
-const setup = new Function('ref', 'computed', 'watch', 'onMounted', 'onUnmounted', 'defineProps', 'defineEmits', 'defineExpose', 'state', 'window', 'ElMessageBox', 'ElMessage', script + '\nreturn { history, rollbackRecord, loadHistory, viewLog, logDialog, dialogLog, clearHistory }')
-const api = scope.run(() => setup(vue.ref, vue.computed, vue.watch, () => {}, () => {}, () => props, () => (...args) => emitted.push(args), () => {}, state, window, { confirm: () => new Promise((resolve) => { confirm = resolve }) }, {}))
+const setup = new Function('ref', 'computed', 'watch', 'onMounted', 'onUnmounted', 'defineProps', 'defineEmits', 'defineExpose', 'deployOnlineVersion', 'window', 'ElMessageBox', 'ElMessage', script + '\nreturn { history, rollbackRecord, loadHistory, viewLog, logDialog, dialogLog, clearHistory }')
+const api = scope.run(() => setup(vue.ref, vue.computed, vue.watch, () => {}, () => {}, () => props, () => (...args) => emitted.push(args), () => {}, deployOnlineVersion, window, { confirm: () => new Promise((resolve) => { confirm = resolve }) }, {}))
 const settle = async () => { await Promise.resolve(); await vue.nextTick() }
 
 ;(async () => {
@@ -25,8 +26,10 @@ const settle = async () => { await Promise.resolve(); await vue.nextTick() }
   pending.shift().resolve([old]); await settle()
   api.rollbackRecord(old)
   assert.deepEqual(emitted.pop(), ['rollback', '1.0.0-older', 'target-a'], '同业务版本的另一个实例应按 releaseId 回滚')
-  api.rollbackRecord({ ...old, releaseId: state.deploy.currentVersion })
+  api.rollbackRecord({ ...old, releaseId: currentVersion })
   assert.equal(emitted.length, 0, '当前发布实例不能重复回滚')
+  api.rollbackRecord({ ...old, targetId: 'other-target', releaseId: currentVersion })
+  assert.deepEqual(emitted.pop(), ['rollback', currentVersion, 'other-target'], '同名版本在另一个环境仍可回滚')
   api.rollbackRecord({ ...old, releaseId: undefined, version: '0.9.0' })
   assert.deepEqual(emitted.pop(), ['rollback', '0.9.0', 'target-a'], '旧历史仍兼容业务版本目录')
 

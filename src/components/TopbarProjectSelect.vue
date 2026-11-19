@@ -9,17 +9,23 @@
     size="small"
     @update:model-value="onPick"
   >
-    <el-option v-for="project in projects" :key="project.id" :label="project.name" :value="project.id" />
+    <el-option v-for="project in projects" :key="project.id" :label="project.name" :value="project.id">
+      <span>{{ project.name }}</span>
+      <span v-if="showDeployStatus && deployRunFor(project.id).running" class="project-deploy-status">
+        {{ deployRunFor(project.id).queued ? '排队中' : '执行中' }}
+      </span>
+    </el-option>
     <el-option v-if="!projects.length" value="" label="还没有项目" disabled />
   </el-select>
 </template>
 
 <script setup>
 import { computed } from 'vue'
-import { state } from '../store'
+import { state, deployRunFor } from '../store'
 import { useProjects } from '../composables/useProjects'
 
 const emit = defineEmits(['change'])
+defineProps({ showDeployStatus: Boolean })
 const { selectProject } = useProjects()
 
 const projects = computed(() => state.projects.items)
@@ -31,3 +37,7 @@ function onPick(projectId) {
   emit('change', projectId)
 }
 </script>
+
+<style scoped>
+.project-deploy-status { margin-left: 12px; font-size: 12px; color: var(--text-muted); }
+</style>

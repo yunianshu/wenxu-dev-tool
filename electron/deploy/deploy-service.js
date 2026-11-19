@@ -40,7 +40,7 @@ const STAGES = [
 ]
 
 let emitFn = null
-let activeRun = null // { id, conn, canceled }
+const activeRuns = new Map()
 
 function setEmitter(fn) {
   emitFn = fn
@@ -56,22 +56,13 @@ function ts() {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
-function log(level, text) {
-  if (activeRun?.redact) text = activeRun.redact(text)
+function emitStandaloneLog(level, text) {
   emit('deploy:log', { level, text, ts: ts() })
-  if (logSink) logSink(level, text)
 }
 
-/** 日志落盘钩子：发布/回滚期间由运行任务设置，写历史日志用 */
-let logSink = null
-
-/** 阶段状态：running/success/failed/skipped/rollback；durationMs 仅阶段结束时非零 */
-function stage(id, status, durationMs) {
-  emit('deploy:stage', { stage: id, status, durationMs: durationMs || 0 })
-}
-
-function newStageTracker() {
+function newStageTracker(publish) {
   const state = Object.fromEntries(STAGES.map((s) => [s.id, { status: 'waiting', durationMs: 0 }]))
+  const stage = (id, status, durationMs = 0) => publish('deploy:stage', { stage: id, status, durationMs })
   const begin = (id) => { if (state[id]) { state[id].status = 'running'; stage(id, 'running') } }
   const end = (id, status, startedAt) => {
     if (state[id]) {
@@ -83,27 +74,109 @@ function newStageTracker() {
   return { state, begin, end }
 }
 
-/** 判断是否被用户取消（连接被主动关闭后 exec 会抛错，用此区分报错类型） */
-function isCanceled() {
-  return !!(activeRun && activeRun.canceled)
-}
-
-/** 取消当前发布：断开 SSH（服务器脚本按 --auto-rollback 处理），并终止本地打包进程 */
-function cancel() {
-  if (!activeRun) return { ok: false, error: '当前没有进行中的发布' }
-  activeRun.canceled = true
-  activeRun.controller?.abort()
-  if (activeRun.pkgChild) killTree(activeRun.pkgChild)
-  ssh.close(activeRun.conn)
+/** 无项目 id 的旧调用仅在任务唯一时可取消，避免误伤其他项目。 */
+function cancel(projectId, runId) {
+  if (!projectId && activeRuns.size > 1) return { ok: false, error: '请指定要取消发布的项目' }
+  const operation = projectId ? activeRuns.get(projectId) : activeRuns.values().next().value
+  if (!operation || (runId && operation.id !== runId)) return { ok: false, error: '该发布任务已结束' }
+  if (operation.controller.signal.aborted) return { ok: true }
+  operation.controller.abort()
+  if (operation.pkgChild) killTree(operation.pkgChild)
+  ssh.close(operation.conn)
   return { ok: true }
 }
 
 function isBusy(projectId) {
-  return !!activeRun && (!projectId || activeRun.projectId === projectId)
+  return projectId ? activeRuns.has(projectId) : activeRuns.size > 0
+}
+
+function workspaceKey(dir) {
+  if (!dir) return ''
+  let resolved = path.resolve(dir)
+  try { resolved = fs.realpathSync.native(resolved) } catch { /* 路径错误由项目检查报告 */ }
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+}
+
+/** 同项目互斥。共用宿主机或本地目录的操作按提交顺序执行。 */
+async function withRun(projectId, targetId, type, execute, { version = '', requestId } = {}) {
+  if (activeRuns.has(projectId)) throw new Error('该项目已有发布任务进行中，请等待完成或取消')
+  const project = projects.list().find((p) => p.id === projectId)
+  if (!project) throw new Error('项目配置不存在，请重新保存')
+  const target = getTarget(project, targetId)
+  if (!target) throw new Error('项目缺少部署目标，请先在配置中添加')
+
+  const host = String(target.server.host || '').trim().toLowerCase().replace(/\.$/, '')
+  const dir = type === 'deploy' ? workspaceKey(project.localPath) : ''
+  const blockers = [...activeRuns.values()].filter((other) =>
+    (host && other.host === host) || (dir && other.dir === dir))
+  const id = crypto.randomBytes(6).toString('hex')
+  const controller = new AbortController()
+  let release
+  const released = new Promise((resolve) => { release = resolve })
+  const publish = (channel, payload) => emit(channel, { ...payload, projectId, targetId: target.id, runId: id, requestId })
+  const tracker = type === 'db-restore' ? null : newStageTracker(publish)
+  const record = {
+    id, projectId, projectName: project.name, type, targetId: target.id, targetName: target.name,
+    version, oldVersion: '', status: 'running', startedAt: Date.now(), finishedAt: 0, durationMs: 0,
+    host: `${target.server.host}:${target.server.port}`, remotePath: target.remotePath,
+    message: '', logFile: '', ...(tracker && { stages: tracker.state }),
+  }
+  const lines = []
+  const operation = {
+    id, host, dir, controller, released, conn: null, queued: blockers.length > 0,
+    project, target, record, tracker, publish,
+    log(level, text) {
+      const safeText = operation.redact ? operation.redact(text) : text
+      const time = ts()
+      lines.push(`${time} [${level.toUpperCase()}] ${safeText}`)
+      publish('deploy:log', { level, text: safeText, ts: time })
+    },
+    finish(status, message) {
+      record.status = status
+      record.message = message && operation.redact ? operation.redact(message) : message || ''
+    },
+  }
+  const notifyStatus = () => publish('deploy:status', { type, queued: operation.queued, startedAt: record.startedAt, targetName: target.name })
+  activeRuns.set(projectId, operation)
+  try {
+    notifyStatus()
+    if (operation.queued) {
+      const { signal } = controller
+      let wake
+      const aborted = new Promise((resolve) => { wake = resolve })
+      signal.addEventListener('abort', wake, { once: true })
+      try {
+        if (!signal.aborted) await Promise.race([Promise.all(blockers.map((other) => other.released)), aborted])
+      } finally {
+        signal.removeEventListener('abort', wake)
+      }
+      if (signal.aborted) operation.finish('canceled', '已取消排队，任务尚未执行')
+      else {
+        operation.queued = false
+        notifyStatus()
+      }
+    }
+    if (record.status === 'running') await execute(operation)
+    record.finishedAt = Date.now()
+    record.durationMs = record.finishedAt - record.startedAt
+    record.logFile = history.writeLog(id, lines.join('\n'))
+    history.add(record)
+  } finally {
+    ssh.close(operation.conn)
+    activeRuns.delete(projectId)
+    release()
+  }
+
+  if (type === 'deploy' && record.status === 'success' && record.gitCommits?.length) {
+    releaseNotes.enrichRecord(id, () => publish('deploy:history:updated', { id }))
+  }
+  const result = JSON.parse(JSON.stringify(record))
+  publish('deploy:done', { record: result })
+  return result
 }
 
 /** 解析脚本输出的控制标记，返回应显示的行或 null */
-function parseMarker(line, tracker, resultBox) {
+function parseMarker(line, tracker, resultBox, log) {
   const m = line.match(/^__STAGE__:([\w-]+)$/)
   if (m) {
     const map = {
@@ -144,11 +217,11 @@ function parseMarker(line, tracker, resultBox) {
 }
 
 /** 将脚本原始输出按行分流：控制标记解析 + 带等级的日志行 */
-function pipeScriptOutput(chunk, tracker, resultBox) {
+function pipeScriptOutput(chunk, tracker, resultBox, log) {
   for (const raw of String(chunk).split(/\r?\n/)) {
     const line = raw.replace(/\s+$/, '')
     if (!line) continue
-    const display = parseMarker(line, tracker, resultBox)
+    const display = parseMarker(line, tracker, resultBox, log)
     if (display === null) continue
     let level = 'info'
     if (/^\[ERROR\]/.test(display)) level = 'error'
@@ -159,16 +232,16 @@ function pipeScriptOutput(chunk, tracker, resultBox) {
 }
 
 /** SSH 数据包不等于完整行，分别缓冲两条流，避免结果标记被拆开后漏报。 */
-async function execDeployScript(conn, command, tracker, resultBox) {
+async function execDeployScript(conn, command, tracker, resultBox, log) {
   const pending = { stdout: '', stderr: '' }
   const result = await ssh.exec(conn, command, (chunk, stream = 'stdout') => {
     pending[stream] += String(chunk)
     const end = pending[stream].lastIndexOf('\n')
     if (end < 0) return
-    pipeScriptOutput(pending[stream].slice(0, end + 1), tracker, resultBox)
+    pipeScriptOutput(pending[stream].slice(0, end + 1), tracker, resultBox, log)
     pending[stream] = pending[stream].slice(end + 1)
   })
-  for (const tail of Object.values(pending)) if (tail) pipeScriptOutput(tail, tracker, resultBox)
+  for (const tail of Object.values(pending)) if (tail) pipeScriptOutput(tail, tracker, resultBox, log)
   return result
 }
 
@@ -527,7 +600,9 @@ function localShellEnv(baseEnv, configuredEnv) {
  * PLM_SOURCE_PROJECT_DIR 传给打包命令，供其定位源项目伴生资源（如仓库旁的 .tools）；
  * 超时杀整棵进程树；用户取消时同样终止。返回 { ok, problem? }。
  */
-function runPackageCommand(project, sourceDir) {
+function runPackageCommand(project, sourceDir, operation) {
+  const log = operation?.log || emitStandaloneLog
+  const isCanceled = () => operation?.controller.signal.aborted
   const sm = project.scriptMode || {}
   const cmd = String(sm.packageCommand || '').trim()
   const timeoutMs = Math.max(30, Number(sm.packageTimeoutSec) || 900) * 1000
@@ -558,13 +633,13 @@ function runPackageCommand(project, sourceDir) {
       cleanupTemp()
       return resolve({ ok: false, problem: `打包命令无法启动: ${(e && e.message) || e}` })
     }
-    if (activeRun) activeRun.pkgChild = child
+    if (operation) operation.pkgChild = child
     let settled = false
     const finish = (r) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      if (activeRun && activeRun.pkgChild === child) activeRun.pkgChild = null
+      if (operation?.pkgChild === child) operation.pkgChild = null
       resolve(r)
     }
     const timer = setTimeout(() => {
@@ -619,7 +694,9 @@ function runPackageCommand(project, sourceDir) {
  * （把发布链的 prepare 参数化成稳定脚本），产出 output/<发布目录>/source/release-evidence.json。
  * 进程管理与打包命令一致：超时杀进程树、取消终止、行缓冲与 GBK 兼容日志。
  */
-function runReleasePrepare(project, ver) {
+function runReleasePrepare(project, ver, operation) {
+  const log = operation?.log || emitStandaloneLog
+  const isCanceled = () => operation?.controller.signal.aborted
   const docker = project.docker || {}
   const cmd = String(docker.prepareCommand || '').trim().replaceAll('{version}', ver.version)
   const timeoutMs = Math.max(30, Number(docker.prepareTimeoutSec) || 900) * 1000
@@ -630,13 +707,13 @@ function runReleasePrepare(project, ver) {
     } catch (e) {
       return resolve({ ok: false, problem: `准备命令无法启动: ${(e && e.message) || e}` })
     }
-    if (activeRun) activeRun.pkgChild = child
+    if (operation) operation.pkgChild = child
     let settled = false
     const finish = (r) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      if (activeRun && activeRun.pkgChild === child) activeRun.pkgChild = null
+      if (operation?.pkgChild === child) operation.pkgChild = null
       resolve(r)
     }
     const timer = setTimeout(() => {
@@ -832,72 +909,26 @@ function renderImportCommand(command, { dataDir, user, secret }) {
     .replaceAll('{secret}', shQuote(secret))
 }
 
-/**
- * 执行完整发布（按部署目标）。所有事件经 emit 推送：
- *   deploy:stage {stage,status} / deploy:log {level,text,ts}
- *   deploy:progress {kind,percent} / deploy:done {record}
- */
-async function run(projectId, targetId) {
-  if (activeRun) throw new Error('已有发布任务进行中，请等待完成或取消')
-  const list = projects.list()
-  const project = list.find((p) => p.id === projectId)
-  if (!project) throw new Error('项目配置不存在，请重新保存')
-  const target = getTarget(project, targetId)
-  if (!target) throw new Error('项目缺少部署目标，请先在配置中添加')
+function run(projectId, targetId, requestId) {
+  return withRun(projectId, targetId, 'deploy', runDeployment, { requestId })
+}
+
+async function runDeployment(operation) {
+  const { project, target, record, tracker, log, publish, finish, controller, id: runId } = operation
+  const { projectId } = record
+  const isCanceled = () => controller.signal.aborted
   const creds = projects.getCredentials(projectId, target.id) || { password: '', passphrase: '' }
-
-  const runId = crypto.randomBytes(6).toString('hex')
-  const tracker = newStageTracker()
   const resultBox = { ok: false, message: '', rolledBack: false, oldVersion: '' }
-  const logBuf = []
-  logSink = (level, text) => logBuf.push(`${ts()} [${level.toUpperCase()}] ${text}`)
-
-  const record = {
-    id: runId,
-    projectId: project.id,
-    projectName: project.name,
-    targetId: target.id,
-    targetName: target.name,
-    type: 'deploy',
-    version: '',
-    oldVersion: '',
-    status: 'running',
-    startedAt: Date.now(),
-    finishedAt: 0,
-    durationMs: 0,
-    host: `${target.server.host}:${target.server.port}`,
-    remotePath: target.remotePath,
-    message: '',
-    logFile: '',
-    stages: tracker.state,
-  }
-
-  const finish = (status, message) => {
-    record.status = status
-    record.message = message || record.message
-    record.finishedAt = Date.now()
-    record.durationMs = record.finishedAt - record.startedAt
-    record.logFile = history.writeLog(runId, logBuf.join('\n'))
-    history.add(record)
-    // 发布成功且采集到提交：后台整理成通俗中文更新说明（AI 优先、失败退回本地整理），
-    // 生成后再通知渲染层刷新历史；不阻塞发布完成事件
-    if (status === 'success' && Array.isArray(record.gitCommits) && record.gitCommits.length) {
-      releaseNotes.enrichRecord(record.id, () => emit('deploy:history:updated', { id: record.id }))
-    }
-    activeRun = null
-    emit('deploy:done', { record: JSON.parse(JSON.stringify(record)) })
-    return JSON.parse(JSON.stringify(record))
-  }
-
   let conn = null
   let pack = null
   let dataPack = null
   let prepared = null
   let buildWorkspace = null
   let autoMode = project.deployMode === 'auto'
-  const controller = new AbortController()
-  activeRun = { id: runId, projectId, conn: null, canceled: false, controller }
-  const setC = (c) => { if (activeRun) activeRun.conn = c; conn = c }
+  const setC = (c) => {
+    conn = operation.conn = c
+    if (isCanceled()) throw new Error('发布已取消')
+  }
 
   try {
     // ── 阶段 1：本地检查 ─────────────────────────────
@@ -926,7 +957,7 @@ async function run(projectId, targetId) {
       project.releaseId = `${ver.version}-${runId}`
       setC(await ssh.connect({ ...target.server, password: creds.password, passphrase: creds.passphrase }))
       prepared = await automatic.prepare(project, target, { conn, uploadText: uploadTextFile, log, signal: controller.signal, releaseId: project.releaseId })
-      if (activeRun) activeRun.redact = prepared.redact
+      operation.redact = prepared.redact
       if (isCanceled()) throw new Error('发布已取消')
       target.remotePath = prepared.remotePath
       target.autoHealth = prepared.health
@@ -959,7 +990,7 @@ async function run(projectId, targetId) {
       let copy = findReleaseCopy(project, ver)
       if (!copy && project.docker?.requireReleaseEvidence && String(project.docker?.prepareCommand || '').trim()) {
         log('info', `未发现版本 ${ver.version} 的发布副本，执行准备命令生成……`)
-        const prep = await runReleasePrepare(project, ver)
+        const prep = await runReleasePrepare(project, ver, operation)
         if (!prep.ok) {
           log('error', prep.problem)
           tracker.end('check', 'failed', t0)
@@ -979,7 +1010,7 @@ async function run(projectId, targetId) {
       }
       problems.push(...releaseContentProblems(project, ver))
     }
-    if (!autoMode && list.some((p) => p.id !== project.id && p.targets.some((t) => t.server?.host === target.server.host && Number(t.server.port || 22) === Number(target.server.port || 22) && String(t.remotePath).replace(/\/+$/, '') === String(target.remotePath).replace(/\/+$/, '')))) {
+    if (!autoMode && projects.list().some((p) => p.id !== project.id && p.targets.some((t) => t.server?.host === target.server.host && Number(t.server.port || 22) === Number(target.server.port || 22) && String(t.remotePath).replace(/\/+$/, '') === String(target.remotePath).replace(/\/+$/, '')))) {
       problems.push('该服务器部署目录已被其他项目配置使用，请为当前项目设置独立目录')
     }
     if (mode === 'docker') {
@@ -1045,7 +1076,7 @@ async function run(projectId, targetId) {
         if (syncNote) log('warn', syncNote)
         const rnNote = ensureReleaseNotesForPackage(buildProject, ver, gitInfo)
         if (rnNote) log('warn', rnNote)
-        const pc = await runPackageCommand(buildProject, project.localPath)
+        const pc = await runPackageCommand(buildProject, project.localPath, operation)
         if (!pc.ok) {
           log('error', pc.problem)
           tracker.end('package', 'failed', t1)
@@ -1082,7 +1113,7 @@ async function run(projectId, targetId) {
         projectDir: project.localPath,
         appName: project.name,
         version: ver.version,
-        onProgress: (count) => emit('deploy:progress', { kind: 'package', count }),
+        onProgress: (count) => publish('deploy:progress', { kind: 'package', count }),
         includeBuild: true,
         files: [...(prepared?.files || []), ...(openclaw?.files || [])],
         safeRoot: autoMode,
@@ -1090,6 +1121,7 @@ async function run(projectId, targetId) {
       })
       log('success', `ZIP 生成完成：${pack.fileName}（${(pack.sizeBytes / 1024 / 1024).toFixed(1)} MB，${pack.fileCount} 个文件）`)
     }
+    if (isCanceled()) throw new Error('发布已取消')
     tracker.end('package', 'success', t1)
 
     // ── 阶段 3：连接 + 上传 ─────────────────────────
@@ -1118,7 +1150,7 @@ async function run(projectId, targetId) {
       dataPack = await packager.buildDataPackage({ projectDir: project.localPath, dataDir: dataSyncCfg.localDir, appName: project.name, version: ver.version })
       const destination = ssh.remoteJoin(remoteHome, 'uploads', dataPack.fileName)
       await ssh.upload(conn, dataPack.zipPath, destination, (done, total) => {
-        emit('deploy:progress', { kind: 'datasync', percent: total ? Math.round((done / total) * 100) : 0 })
+        publish('deploy:progress', { kind: 'datasync', percent: total ? Math.round((done / total) * 100) : 0 })
       })
       const sum = await ssh.exec(conn, `sha256sum ${quoteArg(destination)} | awk '{print $1}'`)
       if ((sum.stdout || '').trim() !== dataPack.sha256) throw new Error('数据包上传校验失败（SHA256 不一致）')
@@ -1168,7 +1200,7 @@ async function run(projectId, targetId) {
 
     const zipRemote = ssh.remoteJoin(remoteHome, 'uploads', pack.fileName)
     await ssh.upload(conn, pack.zipPath, zipRemote, (done, total) => {
-      emit('deploy:progress', { kind: 'upload', percent: total ? Math.round((done / total) * 100) : 0 })
+      publish('deploy:progress', { kind: 'upload', percent: total ? Math.round((done / total) * 100) : 0 })
     })
     log('success', '上传完成，校验文件完整性……')
     const sum = await ssh.exec(conn, `sha256sum ${quoteArg(zipRemote)} | awk '{print $1}'`)
@@ -1183,7 +1215,7 @@ async function run(projectId, targetId) {
     // ── 阶段 4~8：服务器端执行 deploy.sh ────────────
     if (isCanceled()) throw new Error('发布已取消')
     const cmd = `${target.autoSudo && autoMode ? 'sudo -n ' : ''}bash ${quoteArg(scriptRemote)} ${buildDeployArgs(project, target, pack, ver.version).map(quoteArg).join(' ')}`
-    let res = await execDeployScript(conn, cmd, tracker, resultBox)
+    let res = await execDeployScript(conn, cmd, tracker, resultBox, log)
     // 自动方案的构建失败可用真实错误修正一次；此时服务器尚未停止旧服务。
     if (autoMode && !resultBox.ok && !isCanceled() && tracker.state.build.status === 'running' && tracker.state.start.status === 'waiting' && tracker.state.datasync.status === 'waiting') {
       log('warn', '构建未通过，正在依据构建日志自动修复部署方案并重试一次…')
@@ -1192,7 +1224,7 @@ async function run(projectId, targetId) {
         previousRecipe: prepared.recipe, feedback: prepared.redact((res.stdout || '') + '\n' + (res.stderr || '')),
       })
       if (isCanceled()) throw new Error('发布已取消')
-      if (activeRun) activeRun.redact = fixed.redact
+      operation.redact = fixed.redact
       prepared = fixed
       target.autoHealth = fixed.health
       target.autoDb = fixed.db
@@ -1210,7 +1242,7 @@ async function run(projectId, targetId) {
       tracker.end('upload', 'success')
       Object.assign(resultBox, { ok: false, message: '', rolledBack: false })
       const retryCmd = `${target.autoSudo ? 'sudo -n ' : ''}bash ${quoteArg(scriptRemote)} ${buildDeployArgs(project, target, pack, ver.version).map(quoteArg).join(' ')}`
-      res = await execDeployScript(conn, retryCmd, tracker, resultBox)
+      res = await execDeployScript(conn, retryCmd, tracker, resultBox, log)
     }
 
     if (resultBox.ok && res.code === 0) {
@@ -1319,9 +1351,6 @@ async function run(projectId, targetId) {
     }
     return finish('failed', msg)
   } finally {
-    ssh.close(conn)
-    logSink = null
-    if (activeRun && activeRun.id === runId) activeRun = null
     // 清理本地残留 zip（失败场景；成功路径已在 finish 前删除；脚本形态产物包保留）
     try { if (pack && !pack.keepLocal && fs.existsSync(pack.zipPath)) fs.unlinkSync(pack.zipPath) } catch { /* noop */ }
     try { if (dataPack && fs.existsSync(dataPack.zipPath)) fs.unlinkSync(dataPack.zipPath) } catch { /* 临时数据包清理失败不改变发布结果 */ }
@@ -1350,8 +1379,13 @@ async function connectTarget(projectId, targetId) {
   if (!project) throw new Error('项目配置不存在，请先保存')
   const target = getTarget(project, targetId)
   if (!target) throw new Error('项目缺少部署目标，请先在配置中添加')
-  const creds = projects.getCredentials(projectId, target.id) || { password: '', passphrase: '' }
-  const conn = await ssh.connect({
+  const conn = await connectProjectTarget(project, target)
+  return { project, target, conn }
+}
+
+function connectProjectTarget(project, target) {
+  const creds = projects.getCredentials(project.id, target.id) || { password: '', passphrase: '' }
+  return ssh.connect({
     host: target.server.host,
     port: target.server.port,
     username: target.server.username,
@@ -1360,7 +1394,6 @@ async function connectTarget(projectId, targetId) {
     keyPath: target.server.keyPath,
     passphrase: creds.passphrase,
   })
-  return { project, target, conn }
 }
 
 /** 测试连接：返回服务器环境信息（Docker/Compose/unzip/tar/java/磁盘） */
@@ -1523,49 +1556,23 @@ async function listDbBackups(projectId, targetId) {
  *   保底备份当前库 → 杀连接并重建空库 → 灌入备份 SQL（出错即停）→ 重启同 compose 项目容器。
  * 保底备份失败则中止——绝不覆盖「唯一可能完好的当前数据」。
  */
-async function restoreDbBackup(projectId, targetId, fileName) {
-  if (activeRun) throw new Error('已有发布任务进行中，请等待完成或取消')
+async function restoreDbBackup(projectId, targetId, fileName, requestId) {
+  if (activeRuns.has(projectId)) throw new Error('该项目已有发布任务进行中，请等待完成或取消')
   assertDbBackupName(fileName)
-  const runId = crypto.randomBytes(6).toString('hex')
-  activeRun = { id: runId, projectId, conn: null, canceled: false }
-  let project, target, conn, db
-  try {
-    ;({ project, target, conn } = await connectTarget(projectId, targetId))
-    activeRun.conn = conn
-    db = requireDbConfig(project, target, true)
-    db = await resolveRestoreDb(conn, project, target, db)
-    if (isCanceled()) throw new Error('数据库恢复已取消')
-  } catch (error) {
-    ssh.close(conn)
-    if (activeRun?.id === runId) activeRun = null
-    throw error
-  }
+  return withRun(projectId, targetId, 'db-restore', (operation) => runDbRestore(operation, fileName), { version: fileName, requestId })
+}
+
+async function runDbRestore(operation, fileName) {
+  const { project, target, log, finish, controller, id: runId } = operation
+  const conn = operation.conn = await connectProjectTarget(project, target)
+  if (controller.signal.aborted) throw new Error('数据库恢复已取消')
+  const db = await resolveRestoreDb(conn, project, target, requireDbConfig(project, target, true))
+  if (controller.signal.aborted) throw new Error('数据库恢复已取消')
   const home = target.remotePath
   const backupDir = ssh.remoteJoin(home, 'backups')
   const stamp = new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14)
   const sudo = dbSudo(project, target)
   const docker = `${sudo}docker`
-
-  const logBuf = []
-  logSink = (level, text) => logBuf.push(`${ts()} [${level.toUpperCase()}] ${text}`)
-  const record = {
-    id: runId, projectId: project.id, projectName: project.name, type: 'db-restore',
-    targetId: target.id, targetName: target.name,
-    version: fileName, oldVersion: '', status: 'running',
-    startedAt: Date.now(), finishedAt: 0, durationMs: 0,
-    host: `${target.server.host}:${target.server.port}`, remotePath: home,
-    message: '', logFile: '',
-  }
-  const finish = (status, message) => {
-    record.status = status
-    record.message = message || ''
-    record.finishedAt = Date.now()
-    record.durationMs = record.finishedAt - record.startedAt
-    record.logFile = history.writeLog(runId, logBuf.join('\n'))
-    history.add(record)
-    emit('deploy:done', { record: JSON.parse(JSON.stringify(record)) })
-    return JSON.parse(JSON.stringify(record))
-  }
 
   try {
     const sqlFile = ssh.remoteJoin(backupDir, fileName)
@@ -1624,53 +1631,24 @@ async function restoreDbBackup(projectId, targetId, fileName) {
     const msg = (err && err.message) || String(err)
     log('error', `数据库恢复异常: ${msg}`)
     return finish('failed', msg)
-  } finally {
-    ssh.close(conn)
-    logSink = null
-    if (activeRun?.id === runId) activeRun = null
   }
 }
 
 /** 手动回滚到指定版本（方案 §20：直接使用服务器已有 release，不重新上传） */
-async function rollback(projectId, version, targetId) {
-  if (activeRun) throw new Error('已有发布任务进行中')
-  const project = projects.list().find((p) => p.id === projectId)
-  if (!project) throw new Error('项目配置不存在，请先保存')
-  const target = getTarget(project, targetId)
-  if (!target) throw new Error('项目缺少部署目标，请先在配置中添加')
+async function rollback(projectId, version, targetId, requestId) {
   if (!safeVersion(version)) throw new Error('回滚版本无效，请重新选择')
+  return withRun(projectId, targetId, 'rollback', (operation) => runRollback(operation, version), { version, requestId })
+}
+
+async function runRollback(operation, version) {
+  const { project, target, record, tracker, log, finish, controller } = operation
+  const isCanceled = () => controller.signal.aborted
   const home = target.remotePath
   const h = healthFor(project, target)
-  const logBuf = []
-  const runId = crypto.randomBytes(6).toString('hex')
-  let conn = null
-  // 在第一个异步操作之前占用互斥，连接等待也属于当前任务。
-  activeRun = { id: runId, projectId, conn: null, canceled: false }
-  const tracker = newStageTracker()
-  const record = {
-    id: runId, projectId: project.id, projectName: project.name, type: 'rollback',
-    targetId: target.id, targetName: target.name,
-    version, oldVersion: '', status: 'running',
-    startedAt: Date.now(), finishedAt: 0, durationMs: 0,
-    host: `${target.server.host}:${target.server.port}`, remotePath: home,
-    message: '', logFile: '', stages: tracker.state,
-  }
-  logSink = (level, text) => logBuf.push(`${ts()} [${level.toUpperCase()}] ${text}`)
   log('info', `开始回滚 ${project.name}（${target.name}）→ ${version}`)
-  const finish = (status, message) => {
-    record.status = status
-    record.message = message || ''
-    record.finishedAt = Date.now()
-    record.durationMs = record.finishedAt - record.startedAt
-    record.logFile = history.writeLog(runId, logBuf.join('\n'))
-    history.add(record)
-    emit('deploy:done', { record: JSON.parse(JSON.stringify(record)) })
-    return JSON.parse(JSON.stringify(record))
-  }
 
   try {
-    ;({ conn } = await connectTarget(projectId, targetId))
-    activeRun.conn = conn
+    const conn = operation.conn = await connectProjectTarget(project, target)
     if (isCanceled()) return finish('canceled', '回滚已取消，尚未修改服务器')
     await ssh.mkdirp(conn, ssh.remoteJoin(home, 'deployer'))
     const scriptRemote = ssh.remoteJoin(home, 'deployer', 'deploy.sh')
@@ -1698,7 +1676,7 @@ async function rollback(projectId, version, targetId) {
     }
     const cmd = `${project.deployMode === 'auto' && target.autoSudo ? 'sudo -n ' : ''}bash ${quoteArg(scriptRemote)} ${args.map(quoteArg).join(' ')}`
     const resultBox = { ok: false, message: '', rolledBack: false, oldVersion: '' }
-    const res = await execDeployScript(conn, cmd, tracker, resultBox)
+    const res = await execDeployScript(conn, cmd, tracker, resultBox, log)
     if (isCanceled()) return finish('canceled', '回滚已取消，请查询线上版本确认服务器恢复结果')
     if (resultBox.ok && res.code === 0) {
       for (const id of ['start', 'health']) {
@@ -1717,10 +1695,6 @@ async function rollback(projectId, version, targetId) {
     const msg = (err && err.message) || String(err)
     log('error', `回滚异常: ${msg}`)
     return finish('failed', msg)
-  } finally {
-    ssh.close(conn)
-    logSink = null
-    if (activeRun?.id === runId) activeRun = null
   }
 }
 

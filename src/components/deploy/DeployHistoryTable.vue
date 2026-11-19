@@ -18,7 +18,7 @@
       <el-table-column prop="version" label="版本" min-width="100">
         <template #default="{ row }">
           <span class="mono">{{ row.version || '—' }}</span>
-          <el-tag v-if="row.version && (row.releaseId || row.version) === state.deploy.currentVersion" size="small" type="success" effect="plain" class="cur-tag">运行中</el-tag>
+          <el-tag v-if="row.version && isOnline(row)" size="small" type="success" effect="plain" class="cur-tag">运行中</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="环境" min-width="100">
@@ -61,7 +61,7 @@
               <el-dropdown-menu>
                 <el-dropdown-item command="log">查看日志</el-dropdown-item>
                 <el-dropdown-item command="changes" :disabled="!hasChanges(row)">查看更新内容</el-dropdown-item>
-                <el-dropdown-item v-if="row.projectId === projectId && row.type === 'deploy' && row.status === 'success' && (row.releaseId || row.version) !== state.deploy.currentVersion" command="rollback" divided :disabled="state.deploy.running">回滚到此版本</el-dropdown-item>
+                <el-dropdown-item v-if="row.projectId === projectId && row.type === 'deploy' && row.status === 'success' && !isOnline(row)" command="rollback" divided :disabled="deployRunFor(projectId).running">回滚到此版本</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
@@ -120,7 +120,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { state } from '../../store'
+import { deployRunFor, deployOnlineVersion } from '../../store'
 import { fmtTime, fmtDur } from './deploy-form'
 
 const props = defineProps({
@@ -204,10 +204,14 @@ async function loadHistory() {
   }
 }
 
+function isOnline(row) {
+  return (row.releaseId || row.version) === deployOnlineVersion(row.projectId, row.targetId)
+}
+
 function rollbackRecord(row) {
   if (!props.projectId || row.projectId !== props.projectId || row.type !== 'deploy' || row.status !== 'success') return
   const release = row.releaseId || row.version
-  if (release && release !== state.deploy.currentVersion) emit('rollback', release, row.targetId)
+  if (release && !isOnline(row)) emit('rollback', release, row.targetId)
 }
 
 // 项目切换时跟随刷新：props 由父组件重渲染异步更新，父层同步调用 reload 会读到旧 id，

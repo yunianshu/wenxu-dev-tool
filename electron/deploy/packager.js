@@ -167,7 +167,7 @@ function buildPackage(opts) {
   }
   const stamp = formatStamp(new Date())
   const safeName = (appName || 'app').replace(/[^\w.-]+/g, '_')
-  const fileName = `${safeName}-${version || 'unknown'}-${stamp}.zip`
+  const fileName = `${safeName}-${version || 'unknown'}-${stamp}-${crypto.randomBytes(6).toString('hex')}.zip`
   // 输出到系统临时目录而非项目目录：避免残留 zip 后续被卷进发布包，
   // 也避免在用户项目里留临时文件（上传后由 deploy-service 统一清理）
   const zipPath = path.join(os.tmpdir(), 'onedeploy', fileName)

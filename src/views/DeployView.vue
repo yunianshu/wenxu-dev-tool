@@ -6,14 +6,14 @@
       <div class="topbar-page">
         <div class="topbar-title-group">
           <h1 class="topbar-page-title">部署</h1>
-          <TopbarProjectSelect />
+          <TopbarProjectSelect show-deploy-status />
         </div>
-        <el-button v-if="currentProject" class="deploy-topbar-actions" :disabled="state.deploy.running" @click="aiOpen = true"><el-icon><MagicStick /></el-icon>AI 部署助手</el-button>
+        <el-button v-if="currentProject" class="deploy-topbar-actions" :disabled="projectBusy" @click="aiOpen = true"><el-icon><MagicStick /></el-icon>AI 部署助手</el-button>
         <el-button @click="serverManagerOpen = true"><el-icon><Coin /></el-icon>服务器管理</el-button>
-        <el-button v-if="currentProject" :disabled="state.deploy.running" @click="configOpen = true"><el-icon><Setting /></el-icon>部署设置</el-button>
+        <el-button v-if="currentProject" :disabled="projectBusy" @click="configOpen = true"><el-icon><Setting /></el-icon>部署设置</el-button>
       </div>
     </Teleport>
-    <ServerManagerDialog v-model="serverManagerOpen" :servers="servers" :busy="state.deploy.running" @changed="onServersChanged" />
+    <ServerManagerDialog v-model="serverManagerOpen" :servers="servers" :busy="deployBusy" @changed="onServersChanged" />
 
     <EmptyState
       v-if="!currentProject" icon="Promotion" title="先选择一个项目"
@@ -30,10 +30,11 @@
           v-model="activeTargetId"
           placeholder="选择环境"
           class="environment-select"
+          :disabled="projectBusy"
         >
           <el-option v-for="target in form.targets" :key="target.id" :value="target.id" :label="target.name || '未命名环境'" />
         </el-select>
-        <el-select :model-value="activeTarget?.serverId || ''" placeholder="选择部署服务器" class="server-select" :disabled="state.deploy.running || dirty" @change="selectDeploymentServer">
+        <el-select :model-value="activeTarget?.serverId || ''" placeholder="选择部署服务器" class="server-select" :disabled="projectBusy || dirty" @change="selectDeploymentServer">
           <el-option v-for="server in servers" :key="server.id" :value="server.id" :label="`${server.name} · ${server.host}`" />
         </el-select>
         <span class="target-host mono">{{ activeTarget?.server?.host || '未配置主机' }} → {{ activeTarget?.remotePath || '未配置部署目录' }}</span>
@@ -66,7 +67,7 @@
       :detected="detected"
       :projects="state.deploy.projects"
       :servers="servers"
-      :busy="state.deploy.running"
+      :busy="projectBusy"
       @save="saveProject"
       @copy-config="onCopyConfig"
       @reset-conn="connResult = null"
@@ -103,7 +104,7 @@
 <script setup>
 import { reactive, ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { state } from '../store'
+import { state, deployRunFor, setDeployOnlineVersion } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
 import { useProjects } from '../composables/useProjects'
 import EmptyState from '../components/EmptyState.vue'
@@ -127,16 +128,21 @@ const aiOpen = ref(false)
 const configDrawerRef = ref(null)
 const activeTargetId = ref('')
 const detected = ref({ version: '', source: '' })
+const loadedConfig = ref(null)
 const testing = ref(false)
 const connResult = ref(null)
 const runPanelRef = ref(null)
 const historyRef = ref(null)
 let offDone = null
 let detectTimer = null
+let versionRequest = 0
+let connectionRequest = 0
 let disposed = false
 
 /** 极简配置：派生配置由发布流程按项目生成 */
 const quickMode = computed(() => form.configMode === 'quick')
+const projectBusy = computed(() => deployRunFor(form.id).running)
+const deployBusy = computed(() => [...state.deploy.runs.values()].some((run) => run.running))
 
 /** 当前编辑的部署目标（响应式：切换目标后服务器/健康检查卡随之切换） */
 const activeTarget = computed(() => {
@@ -144,12 +150,10 @@ const activeTarget = computed(() => {
   return t || form.targets[0] || null
 })
 
-/** 当前选中项目（用于脏检查） */
-const selectedRaw = computed(() => state.deploy.projects.find((p) => p.id === form.id) || null)
-
 /** 表单是否与已保存配置不一致（忽略脱敏表示，计入待保存凭据） */
 const dirty = computed(() => {
-  if (!form.id || !selectedRaw.value) return false
+  const saved = loadedConfig.value
+  if (!form.id || saved?.id !== form.id) return false
   // 键序无关的稳定序列化：form 由 emptyProject() 展开、selectedRaw 由主进程 normalizeProject 产出，
   // 两者字段相同但键顺序可能不同，直接 JSON.stringify 会误判为脏
   const stable = (v) => {
@@ -173,7 +177,7 @@ const dirty = computed(() => {
   const hasPendingCredentials = form.targets.some((t) =>
     t.server?.clearSecret || t.server?.clearPassphrase || t.dataSync?.clearImportSecret
     || t.server?.secret || t.server?.passphrase || t.dataSync?.importSecret)
-  return norm(form) !== norm(selectedRaw.value) || hasPendingCredentials
+  return norm(form) !== norm(saved) || hasPendingCredentials
 })
 
 const publishVersion = computed(() => {
@@ -229,6 +233,7 @@ function fillForm(p, preferredTargetId = '') {
       })
     : base.targets
   Object.assign(form, merged)
+  loadedConfig.value = p
   const draft = state.deploy.configDrafts[p?.id]
   if (draft) Object.assign(form, JSON.parse(JSON.stringify(draft.form)))
   if (draft) preferredTargetId = draft.targetId
@@ -248,19 +253,6 @@ function onHistoryRollback(version, targetId) {
   runPanelRef.value?.doRollback(version, targetId)
 }
 
-/** 清空上一次发布运行残留的展示状态（阶段 chips / 日志 / 进度计数）。
- *  发布进行中不清理：运行进度与日志按 store 约定跨视图保留，不因切换项目丢失在途展示 */
-function resetRunDisplay() {
-  if (state.deploy.running) return
-  state.deploy.stages = {}
-  state.deploy.logs = []
-  state.deploy.packageCount = 0
-  state.deploy.uploadPercent = 0
-  state.deploy.datasyncPercent = 0
-  state.deploy.startedAt = 0
-  state.deploy.finishedAt = 0
-}
-
 function rememberDraft() {
   if (!form.id) return
   if (dirty.value) state.deploy.configDrafts[form.id] = { form: JSON.parse(JSON.stringify(form)), targetId: activeTargetId.value }
@@ -269,11 +261,12 @@ function rememberDraft() {
 
 function onSelectProject(id) {
   rememberDraft()
+  configOpen.value = false
+  aiOpen.value = false
+  detected.value = { version: '', source: '' }
   const p = state.deploy.projects.find((x) => x.id === id)
   runPanelRef.value?.resetSelection()
   connResult.value = null
-  state.deploy.currentVersion = ''
-  resetRunDisplay()
   if (p) fillForm(p)
   else { Object.assign(form, emptyProject()); activeTargetId.value = form.targets[0].id }
   // 发布历史由 DeployHistoryTable 自行 watch projectId 刷新（同步调用会读到旧 props）
@@ -286,12 +279,11 @@ function newProject() {
   detected.value = { version: '', source: '' }
   runPanelRef.value?.resetSelection()
   connResult.value = null
-  resetRunDisplay()
 }
 
 /** 复制服务器连接（含加密凭据），完成后选中新追加的第一个环境。 */
 async function onCopyConfig(fromProjectId) {
-  if (state.deploy.running) return ElMessage.warning('部署任务进行中，请完成后修改配置')
+  if (projectBusy.value) return ElMessage.warning('部署任务进行中，请完成后修改配置')
   // 复制前已存在的环境 id：复制后据此找出新追加的环境。
   // 不能用下标（prevTargetCount）判定——抽屉里可能有尚未保存的新增环境，下标会对不上
   const knownIds = new Set(form.targets.map((t) => t.id))
@@ -310,7 +302,6 @@ async function onCopyConfig(fromProjectId) {
     }
     connResult.value = null
     runPanelRef.value?.resetSelection()
-    state.deploy.currentVersion = ''
     // 复制已落盘不可撤销：重置抽屉的取消快照，避免用户接着点「取消」把界面回滚成复制前
     configDrawerRef.value?.rebaseline()
     ElMessage.success(`已复制 ${r.copiedTargets} 个环境的部署配置`)
@@ -330,9 +321,10 @@ async function onPlanApplied() {
 }
 
 async function saveProject(successMsg = '配置已保存') {
-  if (state.deploy.running) { ElMessage.warning('部署任务进行中，请完成后保存配置'); return false }
+  if (projectBusy.value) { ElMessage.warning('部署任务进行中，请完成后保存配置'); return false }
   if (!form.name) { ElMessage.warning('请填写项目名称'); return false }
   const payload = JSON.parse(JSON.stringify(form))
+  const oldTargets = loadedConfig.value?.targets || []
   if (!payload.targets.length) payload.targets = [emptyTarget()]
   // 部署目录留空时按目标随名称自动建议，用户仍可随时修改
   for (const t of payload.targets) {
@@ -340,6 +332,12 @@ async function saveProject(successMsg = '配置已保存') {
   }
   const r = await window.gitReport.deployProjectsSave(payload)
   if (r && r.ok) {
+    for (const target of payload.targets) {
+      const old = oldTargets.find((item) => item.id === target.id)
+      if (old && (old.serverId !== target.serverId || old.remotePath !== target.remotePath)) {
+        setDeployOnlineVersion(payload.id, target.id, '')
+      }
+    }
     delete state.deploy.configDrafts[payload.id]
     ElMessage.success(successMsg)
     await loadSharedProjects()
@@ -366,7 +364,6 @@ async function selectDeploymentServer(serverId) {
   target.server = { ...server }; delete target.server.projects
   if (form.deployMode === 'auto' && !quickMode.value) { target.name = '正式环境'; form.productionTargetId = target.id }
   connResult.value = null
-  state.deploy.currentVersion = ''
   await saveProject('已选择服务器，可以一键发布')
 }
 
@@ -375,6 +372,7 @@ async function onServersChanged() {
   servers.value = await window.gitReport.deployServersList()
   await loadSharedProjects()
   state.deploy.projects = state.projects.items
+  loadedConfig.value = state.deploy.projects.find((p) => p.id === form.id) || null
   for (const target of form.targets) {
     const server = servers.value.find((s) => s.id === target.serverId)
     if (server) refreshTargetServer(target, server, form.deployMode === 'auto' && !quickMode.value)
@@ -385,7 +383,7 @@ async function onServersChanged() {
 
 /** 发布卡「新版本」（spec R7）：切手动版本并保存，发布按钮立即生效 */
 async function onNewVersion(version) {
-  if (state.deploy.running) { ElMessage.warning('部署任务进行中，请完成后修改版本'); return }
+  if (projectBusy.value) { ElMessage.warning('部署任务进行中，请完成后修改版本'); return }
   if (dirty.value) { ElMessage.warning('请先保存部署设置中的修改'); return }
   const projectId = form.id
   if (!projectId) return
@@ -398,7 +396,7 @@ async function onNewVersion(version) {
     if (disposed || form.id !== projectId) return
     ElMessage.success(`新版本 ${version} 已保存，可直接发布`)
     // 进入新一轮发布准备，复位上一轮的阶段、日志与进度展示。
-    resetRunDisplay()
+    if (!projectBusy.value) state.deploy.runs.delete(projectId)
   } catch (error) {
     ElMessage.error(error.message || '版本保存失败')
   }
@@ -418,12 +416,17 @@ async function removeProject() {
 
 // ─── 版本识别（防抖） ───
 async function detectVersion() {
+  const request = ++versionRequest
+  const { id, localPath } = form
+  const isCurrent = () => !disposed && request === versionRequest && form.id === id
+    && form.localPath === localPath && form.version.strategy !== 'manual'
   if (form.version.strategy === 'manual') return
-  if (!form.localPath) { detected.value = { version: '', source: '' }; return }
+  detected.value = { version: '', source: '' }
+  if (!localPath) return
   try {
-    const r = await window.gitReport.deployDetectVersion({ localPath: form.localPath, version: { strategy: 'auto' } })
-    detected.value = r || { version: '', source: '' }
-  } catch { detected.value = { version: '', source: '' } }
+    const r = await window.gitReport.deployDetectVersion({ localPath, version: { strategy: 'auto' } })
+    if (isCurrent() && r) detected.value = r
+  } catch { /* 版本无法识别时保留空值 */ }
 }
 watch(() => form.localPath, () => {
   clearTimeout(detectTimer)
@@ -432,34 +435,50 @@ watch(() => form.localPath, () => {
 
 // ─── 连接测试（当前目标） ───
 async function testConnection() {
+  const request = ++connectionRequest
+  const projectId = form.id
+  const targetId = activeTargetId.value
+  const isCurrent = () => !disposed && request === connectionRequest && form.id === projectId && activeTargetId.value === targetId
   testing.value = true
   connResult.value = null
   try {
-    connResult.value = await window.gitReport.deployTestConnection(form.id, activeTargetId.value)
+    const result = await window.gitReport.deployTestConnection(projectId, targetId)
+    if (isCurrent()) connResult.value = result
   } catch (e) {
-    connResult.value = { ok: false, error: e.message || String(e) }
+    if (isCurrent()) connResult.value = { ok: false, error: e.message || String(e) }
   } finally {
-    testing.value = false
+    if (isCurrent()) testing.value = false
   }
 }
+watch(() => [form.id, activeTargetId.value], () => {
+  connectionRequest += 1
+  testing.value = false
+  connResult.value = null
+}, { flush: 'sync' })
 
 onMounted(() => {
   loadProjects({ preserveDraft: true }) // 发布历史由 DeployHistoryTable 的 immediate watch 驱动首载
   // 发布完成事件：刷新历史 + 结果汇总（App.vue 已更新 running/stages）
   offDone = window.gitReport.onDeployDone(async (d) => {
-    reloadHistory()
     const r = d && d.record
     if (!r) return
-    if (r.projectId === form.id && (form.deployMode === 'auto' || quickMode.value)) {
-      await loadProjects({ preserveDraft: true })
+    if (r.projectId === form.id) reloadHistory()
+    if (r.type !== 'deploy' || deployRunFor(r.projectId).requestId !== d.requestId) return
+    const project = state.deploy.projects.find((p) => p.id === r.projectId)
+    if (r.status !== 'canceled' && (project?.deployMode === 'auto' || project?.configMode === 'quick')) {
+      if (r.projectId === form.id) await loadProjects({ preserveDraft: true })
+      else await loadSharedProjects()
     }
     if (disposed) return
+    if (r.projectId !== form.id || r.targetId !== activeTargetId.value) {
+      const result = { success: '发布成功', failed: '发布失败', rolled_back: '已自动回滚', canceled: '发布已取消' }[r.status]
+      const level = { success: 'success', failed: 'error', rolled_back: 'warning', canceled: 'info' }[r.status]
+      if (result) ElMessage[level](`${r.projectName} · ${result}`)
+      return
+    }
     const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
     const head = `<b>${esc(r.projectName)}</b>${r.targetName ? ` · ${esc(r.targetName)}` : ''} ${esc(r.version)} → ${esc(r.host)}`
     if (r.status === 'success') {
-      if (r.type === 'deploy' && r.projectId === state.projects.currentId && r.projectId === form.id && r.targetId === activeTargetId.value) {
-        state.deploy.currentVersion = r.releaseId || r.version
-      }
       await ElMessageBox.alert(
         `${head}<br/>耗时 ${fmtDur(r.durationMs)}<br/><br/>✓ 发布成功${r.serviceUrl ? `<br/>访问地址：${esc(r.serviceUrl)}` : ''}`,
         '发布成功',
@@ -478,7 +497,7 @@ onMounted(() => {
         { dangerouslyUseHTMLString: true, type: 'warning', confirmButtonText: '知道了' },
       )
     } else if (r.status === 'canceled') {
-      ElMessage.info('发布已取消')
+      ElMessage.info(r.message || '发布已取消')
     }
   })
 })

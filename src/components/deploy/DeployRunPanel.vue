@@ -21,6 +21,7 @@
       <el-button
         v-if="releases.length && rollbackVersion"
         :loading="rollingBack"
+        :disabled="run.running"
         @click="doRollback(rollbackVersion)"
       >回滚到此版本</el-button>
       <el-button
@@ -28,8 +29,8 @@
         plain
         @click="openDbBackups"
       ><el-icon><Coin /></el-icon>数据库备份</el-button>
-      <el-button :disabled="!form.id || state.deploy.running || dirty" @click="newVersion"><el-icon><Plus /></el-icon>新版本</el-button>
-      <el-button v-if="state.deploy.running" type="warning" plain @click="cancelRun">取消发布</el-button>
+      <el-button :disabled="!form.id || run.running || dirty" @click="newVersion"><el-icon><Plus /></el-icon>新版本</el-button>
+      <el-button v-if="run.running" type="warning" plain :disabled="!run.id" @click="cancelRun">{{ cancelAction }}</el-button>
       <el-tooltip v-else :disabled="canPublish" :content="publishBlockedReason" placement="top">
         <span class="publish-button-wrap"><el-button type="primary" class="publish-btn" :disabled="!canPublish" @click="publish"><el-icon><Promotion /></el-icon>发布 {{ publishVersion || '' }}</el-button></span>
       </el-tooltip>
@@ -41,14 +42,14 @@
           <div class="run-heading-title"><span class="run-status-dot" :class="runTrackClass" /><h2>{{ runTitle }}</h2></div>
           <span v-if="hasRun" class="run-elapsed mono">{{ fmtElapsed(elapsedMs) }}</span>
         </div>
-        <div v-if="state.deploy.running" class="run-live" role="status" aria-live="polite">
+        <div v-if="run.running" class="run-live" role="status" aria-live="polite">
           <div class="run-live-main">
             <div class="run-loader" aria-hidden="true">
               <svg viewBox="0 0 80 80"><circle class="run-loader-track" cx="40" cy="40" r="34" /><circle class="run-loader-fill" cx="40" cy="40" r="34" pathLength="100" :style="{ strokeDasharray: `${runPercent} 100` }" /></svg>
               <span class="run-loader-spin" />
               <span class="run-loader-count mono">{{ doneCount }}<small>/{{ stageTotal }}</small></span>
             </div>
-            <div class="run-live-copy"><span>当前阶段</span><strong>{{ activeStageLabel }}</strong><span>{{ activeStageDetail }}</span></div>
+            <div class="run-live-copy"><span>{{ run.targetName || '当前阶段' }}</span><strong>{{ activeStageLabel }}</strong><span>{{ activeStageDetail }}</span></div>
           </div>
           <div class="run-live-footer"><span>{{ successCount }} 已完成<span v-if="skippedCount"> · {{ skippedCount }} 已跳过</span></span><span>发布日志实时更新</span></div>
         </div>
@@ -77,11 +78,11 @@
       <section class="deploy-card-log">
       <div class="section-heading">
         <h2>发布日志</h2>
-        <div class="log-actions"><el-button text size="small" :disabled="!state.deploy.logs.length" @click="copyLogs"><el-icon><CopyDocument /></el-icon>复制</el-button><el-button text size="small" :disabled="!state.deploy.logs.length" @click="clearLogs">清屏</el-button></div>
+        <div class="log-actions"><el-button text size="small" :disabled="!run.logs.length" @click="copyLogs"><el-icon><CopyDocument /></el-icon>复制</el-button><el-button text size="small" :disabled="!run.logs.length" @click="clearLogs">清屏</el-button></div>
       </div>
-    <div ref="logBox" class="log-box" :class="{ 'is-empty': !state.deploy.logs.length }">
-      <div v-if="!state.deploy.logs.length" class="log-empty">暂无日志，点击「发布」后此处实时显示服务器输出</div>
-      <div v-for="(l, i) in state.deploy.logs" :key="i" class="log-line" :class="'log-' + l.level">
+    <div ref="logBox" class="log-box" :class="{ 'is-empty': !run.logs.length }">
+      <div v-if="!run.logs.length" class="log-empty">暂无日志，点击「发布」后此处实时显示服务器输出</div>
+      <div v-for="(l, i) in run.logs" :key="i" class="log-line" :class="'log-' + l.level">
         <span class="log-ts">{{ l.ts }}</span>{{ l.text }}
       </div>
     </div>
@@ -128,7 +129,7 @@
       <el-table-column label="文件" prop="fileName" min-width="200" show-overflow-tooltip />
       <el-table-column label="操作" width="90" fixed="right">
         <template #default="{ row }">
-          <el-button text size="small" type="danger" :disabled="restoringDb || state.deploy.running || activeDatabase.type !== 'postgres'" @click="doDbRestore(row)">恢复</el-button>
+          <el-button text size="small" type="danger" :disabled="restoringDb || run.running || activeDatabase.type !== 'postgres'" @click="doDbRestore(row)">恢复</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -138,7 +139,7 @@
 <script setup>
 import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { state } from '../../store'
+import { beginDeployRun, deployRunFor, finishDeployRun, deployOnlineVersion, setDeployOnlineVersion } from '../../store'
 import { bumpVersion, highestVersion } from '../../utils/version'
 import { fmtDur, fmtElapsed } from './deploy-form'
 
@@ -175,7 +176,9 @@ const stageList = computed(() => STAGE_LIST.map((s) => (
   s.id === 'build' && props.form.deployMode === 'script' ? { ...s, label: '项目脚本' } : s
 )))
 
-const rollingBack = ref(false)
+const run = computed(() => deployRunFor(props.form.id))
+const rollingBack = computed(() => run.value.running && run.value.type === 'rollback')
+const cancelAction = computed(() => run.value.queued ? '取消排队' : ({ rollback: '取消回滚', 'db-restore': '取消恢复' }[run.value.type] || '取消发布'))
 const releases = ref([])
 const rollbackVersion = ref('')
 const logBox = ref(null)
@@ -195,7 +198,7 @@ function isCurrentSelection(selection) {
 const quickMode = computed(() => props.form.configMode === 'quick')
 
 const canPublish = computed(() => {
-  if (state.deploy.running || !props.form.id || props.dirty || !props.activeTarget) return false
+  if (run.value.running || !props.form.id || props.dirty || !props.activeTarget) return false
   const t = props.activeTarget
   if (quickMode.value) return !!(props.form.name && props.form.localPath && t.server.host && t.remotePath && props.publishVersion)
   return !!(props.form.name && props.form.localPath && t.server.host && (props.form.deployMode === 'auto' || (props.publishVersion && t.remotePath)))
@@ -232,15 +235,16 @@ const predicted = ref({ patch: '', minor: '', major: '' })
 const versionBase = ref('')
 /** 本地发布记录中该目标最近一次成功发布的版本（切项目/环境即加载，供线上版本回退与预测基准共用） */
 const historyVersion = ref('')
+const queriedVersion = computed(() => deployOnlineVersion(props.form.id, props.activeTargetId))
 
 /**
  * 线上版本（三级回退）：服务器实时查询 → 本地发布记录最近一次成功 → 服务器 releases 最高版本。
  * 后两者是推断值，用 onlineVersionSource 标注来源，避免用户误以为已向服务器核实。
  */
 const onlineVersion = computed(() =>
-  state.deploy.currentVersion || historyVersion.value || highestVersion(releases.value))
+  queriedVersion.value || historyVersion.value || highestVersion(releases.value))
 const onlineVersionSource = computed(() => {
-  if (state.deploy.currentVersion) return ''
+  if (queriedVersion.value) return ''
   if (historyVersion.value) return '按发布记录'
   return highestVersion(releases.value) ? '按服务器版本列表' : ''
 })
@@ -250,10 +254,10 @@ const versionBaseFromRemote = computed(() => !!versionBase.value && versionBase.
 
 /** 预测基准：本地版本、线上版本、本地与服务器历史发布版本中的最高者（spec R7） */
 function rebuildPrediction(force = false) {
-  const candidates = [props.publishVersion, state.deploy.currentVersion, historyVersion.value, ...releases.value]
+  const candidates = [props.publishVersion, queriedVersion.value, historyVersion.value, ...releases.value]
   // 全部无法解析为 x.y.z 时回退原始版本串：不产生候选，但让用户看到当前版本并据此自定义（spec R7）
   const base = highestVersion(candidates)
-    || String(props.publishVersion || state.deploy.currentVersion || historyVersion.value || '').trim()
+    || String(props.publishVersion || queriedVersion.value || historyVersion.value || '').trim()
   const changed = force || base !== versionBase.value
   versionBase.value = base
   predicted.value = {
@@ -291,7 +295,7 @@ function newVersion() {
   versionDialogVisible.value = true
   // 基准补全：线上版本需 SSH（失败静默）返回后刷新候选；本地发布记录已随切换预载
   const refresh = () => { if (isCurrentSelection(selection) && versionDialogVisible.value) rebuildPrediction() }
-  if (!state.deploy.currentVersion) queryReleases(true).then(refresh)
+  if (!queriedVersion.value) queryReleases(true).then(refresh)
 }
 
 function confirmVersion() {
@@ -306,7 +310,7 @@ function confirmVersion() {
 /** 每秒刷新，仅驱动「已用时」展示；计时基准是 store 里的 startedAt，跨视图返回后按真实时刻重算 */
 const now = ref(Date.now())
 let ticker = null
-watch(() => state.deploy.running, (running) => {
+watch(() => run.value.running, (running) => {
   if (ticker) { clearInterval(ticker); ticker = null }
   if (running) {
     now.value = Date.now()
@@ -315,69 +319,70 @@ watch(() => state.deploy.running, (running) => {
 }, { immediate: true })
 onUnmounted(() => { disposed = true; if (ticker) clearInterval(ticker) })
 
-const hasRun = computed(() => !!state.deploy.startedAt)
+const hasRun = computed(() => !!run.value.startedAt)
 
 const stageTotal = computed(() => STAGE_LIST.length)
 
 /** 已完成阶段数（含失败/跳过/回滚——它们同样不再推进） */
 const doneCount = computed(() => STAGE_LIST.filter((s) => {
-  const st = state.deploy.stages[s.id]
+  const st = run.value.stages[s.id]
   return !!st && ['success', 'failed', 'skipped', 'rollback'].includes(st.status)
 }).length)
-const successCount = computed(() => STAGE_LIST.filter((s) => state.deploy.stages[s.id]?.status === 'success').length)
-const skippedCount = computed(() => STAGE_LIST.filter((s) => state.deploy.stages[s.id]?.status === 'skipped').length)
-const failedCount = computed(() => STAGE_LIST.filter((s) => state.deploy.stages[s.id]?.status === 'failed').length)
-const rollbackCount = computed(() => STAGE_LIST.filter((s) => state.deploy.stages[s.id]?.status === 'rollback').length)
+const successCount = computed(() => STAGE_LIST.filter((s) => run.value.stages[s.id]?.status === 'success').length)
+const skippedCount = computed(() => STAGE_LIST.filter((s) => run.value.stages[s.id]?.status === 'skipped').length)
+const failedCount = computed(() => STAGE_LIST.filter((s) => run.value.stages[s.id]?.status === 'failed').length)
+const rollbackCount = computed(() => STAGE_LIST.filter((s) => run.value.stages[s.id]?.status === 'rollback').length)
 
 const runPercent = computed(() => (stageTotal.value ? Math.round((doneCount.value / stageTotal.value) * 100) : 0))
-const activeStage = computed(() => stageList.value.find(s => state.deploy.stages[s.id]?.status === 'running'))
-const activeStageLabel = computed(() => restoringDb.value ? '恢复数据库' : activeStage.value?.label || (rollingBack.value ? '准备回滚' : '准备发布'))
+const activeStage = computed(() => stageList.value.find(s => run.value.stages[s.id]?.status === 'running'))
+const activeStageLabel = computed(() => {
+  if (run.value.queued) return '等待可用资源'
+  if (restoringDb.value) return '恢复数据库'
+  return activeStage.value?.label || (rollingBack.value ? '准备回滚' : '准备发布')
+})
 const activeStageDetail = computed(() => {
+  if (run.value.queued) return '前序任务结束后自动执行'
   if (restoringDb.value) return '正在执行恢复流程'
-  if (activeStage.value?.id === 'package' && state.deploy.packageCount) return `已处理 ${state.deploy.packageCount} 个文件`
-  if (activeStage.value?.id === 'upload' && state.deploy.uploadPercent) return `已上传 ${state.deploy.uploadPercent}%`
-  if (activeStage.value?.id === 'datasync' && state.deploy.datasyncPercent) return `已同步 ${state.deploy.datasyncPercent}%`
+  if (activeStage.value?.id === 'package' && run.value.packageCount) return `已处理 ${run.value.packageCount} 个文件`
+  if (activeStage.value?.id === 'upload' && run.value.uploadPercent) return `已上传 ${run.value.uploadPercent}%`
+  if (activeStage.value?.id === 'datasync' && run.value.datasyncPercent) return `已同步 ${run.value.datasyncPercent}%`
   return '正在处理，请稍候'
 })
 
-const runFailed = computed(() => STAGE_LIST.some((s) => {
-  const st = state.deploy.stages[s.id]
+const runFailed = computed(() => ['failed', 'rolled_back'].includes(run.value.status) || STAGE_LIST.some((s) => {
+  const st = run.value.stages[s.id]
   return !!st && (st.status === 'failed' || st.status === 'rollback')
 }))
 const runTitle = computed(() => {
-  if (state.deploy.running) return restoringDb.value ? '正在恢复' : rollingBack.value ? '正在回滚' : '正在发布'
+  if (run.value.queued) return '排队中'
+  if (run.value.running) return restoringDb.value ? '正在恢复' : rollingBack.value ? '正在回滚' : '正在发布'
   if (!hasRun.value) return '发布阶段'
+  if (run.value.status === 'canceled') return '任务已取消'
+  if (run.value.status === 'rolled_back') return '已自动回滚'
+  if (run.value.type === 'db-restore') return run.value.status === 'success' ? '恢复完成' : '恢复失败'
   if (runFailed.value) return '发布异常'
+  if (run.value.type === 'rollback' && run.value.status === 'success') return '回滚完成'
   return doneCount.value === stageTotal.value ? '发布完成' : '发布已结束'
 })
 
 const runTrackClass = computed(() => {
-  if (state.deploy.running) return 'is-running'
+  if (run.value.running) return 'is-running'
   if (!hasRun.value) return 'is-idle'
   return runFailed.value ? 'is-failed' : 'is-done'
 })
 
 /** 已用时：进行中用本地 tick；结束后用 done 事件写入的 finishedAt（缺失时回落到开始时刻） */
 const elapsedMs = computed(() => {
-  const started = state.deploy.startedAt
+  const started = run.value.startedAt
   if (!started) return 0
-  const end = state.deploy.running ? now.value : (state.deploy.finishedAt || started)
+  const end = run.value.running ? now.value : (run.value.finishedAt || started)
   return Math.max(0, end - started)
 })
 
 /** 阶段耗时（主进程在阶段结束时下发，running 阶段为空） */
 function stageDur(id) {
-  const st = state.deploy.stages[id]
+  const st = run.value.stages[id]
   return st && st.durationMs ? fmtDur(st.durationMs) : ''
-}
-
-function resetStages() {
-  const st = {}
-  for (const s of STAGE_LIST) st[s.id] = { status: 'waiting', durationMs: 0 }
-  state.deploy.stages = st
-  state.deploy.logs = []
-  state.deploy.packageCount = 0
-  state.deploy.uploadPercent = 0
 }
 
 async function publish() {
@@ -401,59 +406,64 @@ async function publish() {
     )
   } catch { return }
   if (!isCurrentSelection(selection) || !canPublish.value) return
-  resetStages()
-  state.deploy.startedAt = Date.now()
-  state.deploy.finishedAt = 0
-  state.deploy.running = true
+  const operation = beginDeployRun(selection.projectId, 'deploy', t.name)
+  let result
   try {
-    const r = await window.gitReport.deployRun(selection.projectId, selection.targetId)
-    if (r && r.error) {
-      ElMessage.error(r.error)
-      // 主进程前置校验失败（如「已有发布任务进行中」）不会发出 done 事件，
-      // 必须自行复位运行态，否则发布按钮永久 loading、取消按钮失灵
-      state.deploy.running = false
-      state.deploy.startedAt = 0
-    }
+    result = await window.gitReport.deployRun(selection.projectId, selection.targetId, operation.requestId)
+    if (result?.error) ElMessage.error(result.error)
   } catch (e) {
-    state.deploy.running = false
     ElMessage.error(e.message || String(e))
+  } finally {
+    finishDeployRun(operation, result?.record)
+    if (isCurrentSelection(selection)) emit('history-changed')
   }
-  if (!state.deploy.running) emit('history-changed') // done 事件已关闭 running
 }
 
 async function cancelRun() {
+  const projectId = props.form.id
+  const { id, type } = run.value
+  if (!id) return
+  const action = cancelAction.value
   try {
-    await ElMessageBox.confirm('确认取消本次发布？服务器脚本将按自动回滚策略处理。', '取消发布', { type: 'warning' })
+    await ElMessageBox.confirm(
+      `确认对「${props.form.name}」执行${action}？${type === 'deploy' ? '若服务器已开始执行，将按配置的自动回滚策略处理。' : ''}`,
+      action, { type: 'warning' },
+    )
   } catch { return }
-  await window.gitReport.deployCancel()
+  try {
+    const result = await window.gitReport.deployCancel(projectId, id)
+    if (!result?.ok) ElMessage.warning(result?.error || '取消任务失败')
+  } catch (error) {
+    ElMessage.error(error.message || String(error))
+  }
 }
 
 // ─── 阶段样式 ───
 function stageClass(id) {
-  const st = state.deploy.stages[id]
+  const st = run.value.stages[id]
   return st ? `is-${st.status}` : 'is-waiting'
 }
 function stageMark(id) {
-  const st = state.deploy.stages[id]
+  const st = run.value.stages[id]
   if (!st) return ''
   return {
     waiting: '', running: '•', success: '✓', failed: '×', skipped: '–', rollback: '↩',
   }[st.status] || ''
 }
 function stageStatus(id) {
-  const status = state.deploy.stages[id]?.status
+  const status = run.value.stages[id]?.status
   return { waiting: '等待', running: '进行中', success: '完成', failed: '失败', skipped: '跳过', rollback: '回滚' }[status] || '等待'
 }
 
 // ─── 日志 ───
-function clearLogs() { state.deploy.logs = [] }
+function clearLogs() { run.value.logs = [] }
 async function copyLogs() {
   try {
-    await window.gitReport.copyText(state.deploy.logs.map((line) => `${line.ts} ${line.text}`).join('\n'))
+    await window.gitReport.copyText(run.value.logs.map((line) => `${line.ts} ${line.text}`).join('\n'))
     ElMessage.success('已复制发布日志')
   } catch { ElMessage.error('复制发布日志失败，请重试') }
 }
-watch(() => state.deploy.logs.length, async () => {
+watch([() => props.form.id, () => run.value.logs.at(-1)], async () => {
   await nextTick()
   if (logBox.value) logBox.value.scrollTop = logBox.value.scrollHeight
 })
@@ -464,12 +474,14 @@ async function queryReleases(silent = false) {
   const selection = captureSelection()
   const queryId = ++releaseQueryId
   if (!selection.projectId || !selection.targetId) return
+  const operation = run.value
+  const finishedAt = operation.finishedAt
   try {
     const r = await window.gitReport.deployReleases(selection.projectId, selection.targetId)
-    if (!isCurrentSelection(selection) || queryId !== releaseQueryId) return
+    if (!isCurrentSelection(selection) || queryId !== releaseQueryId || run.value !== operation || operation.finishedAt !== finishedAt) return
     if (r && r.ok) {
       releases.value = r.releases || []
-      state.deploy.currentVersion = r.current || ''
+      setDeployOnlineVersion(selection.projectId, selection.targetId, r.current || '')
       if (!silent && !releases.value.length) ElMessage.info('服务器暂无历史版本')
     } else if (!silent) {
       ElMessage.error((r && r.error) || '查询失败')
@@ -483,7 +495,7 @@ async function queryReleases(silent = false) {
 const dbDialogVisible = ref(false)
 const dbLoading = ref(false)
 const dbBackups = ref([])
-const restoringDb = ref(false)
+const restoringDb = computed(() => run.value.running && run.value.type === 'db-restore')
 
 async function openDbBackups() {
   const selection = captureSelection()
@@ -506,7 +518,7 @@ async function openDbBackups() {
 }
 
 async function doDbRestore(row) {
-  if (state.deploy.running) return
+  if (run.value.running) return
   const selection = captureSelection()
   try {
     await ElMessageBox.confirm(
@@ -515,33 +527,29 @@ async function doDbRestore(row) {
       { type: 'warning', confirmButtonText: '恢复', cancelButtonText: '取消' },
     )
   } catch { return }
-  if (!isCurrentSelection(selection) || state.deploy.running) return
-  restoringDb.value = true
-  // 数据恢复占用主进程发布互斥：同步 running 态（禁用发布按钮）并复位上一轮的阶段/计时展示
-  state.deploy.running = true
-  state.deploy.stages = {}
-  state.deploy.startedAt = Date.now()
-  state.deploy.finishedAt = 0
-  state.deploy.logs = []
-  state.deploy.logs.push({ level: 'info', text: `开始恢复数据库备份 ${row.fileName}`, ts: new Date().toLocaleTimeString('zh-CN', { hour12: false }) })
+  if (!isCurrentSelection(selection) || run.value.running) return
+  const operation = beginDeployRun(selection.projectId, 'db-restore', props.activeTarget?.name)
+  let result
   try {
-    const r = await window.gitReport.deployDbRestore(selection.projectId, selection.targetId, row.fileName)
-    if (r && r.ok) {
+    result = await window.gitReport.deployDbRestore(selection.projectId, selection.targetId, row.fileName, operation.requestId)
+    if (result?.ok) {
       ElMessage.success(`数据库已恢复到 ${row.fileName}`)
-      if (isCurrentSelection(selection)) await openDbBackups() // 刷新当前目标的保底备份
+      if (isCurrentSelection(selection)) void openDbBackups()
+    } else if (result?.record?.status === 'canceled') {
+      ElMessage.info(result.record.message || '数据库恢复已取消')
     } else {
-      ElMessage.error((r && r.error) || (r && r.record && r.record.message) || '恢复失败')
+      ElMessage.error(result?.error || result?.record?.message || '恢复失败')
     }
   } catch (e) {
     ElMessage.error(e.message || String(e))
   } finally {
-    restoringDb.value = false
-    state.deploy.running = false
+    finishDeployRun(operation, result?.record)
+    if (isCurrentSelection(selection)) emit('history-changed')
   }
 }
 
 async function doRollback(version, targetId) {
-  if (state.deploy.running) return
+  if (run.value.running) return
   const selection = captureSelection()
   const tid = targetId || props.activeTargetId
   const tName = (props.form.targets.find((x) => x.id === tid) || {}).name || ''
@@ -552,30 +560,25 @@ async function doRollback(version, targetId) {
       { type: 'warning', confirmButtonText: '回滚' },
     )
   } catch { return }
-  if (!isCurrentSelection(selection) || state.deploy.running) return
-  rollingBack.value = true
-  resetStages()
-  state.deploy.startedAt = Date.now()
-  state.deploy.finishedAt = 0
-  state.deploy.running = true
+  if (!isCurrentSelection(selection) || run.value.running) return
+  const operation = beginDeployRun(selection.projectId, 'rollback', tName)
+  let result
   try {
-    const r = await window.gitReport.deployRollback(selection.projectId, tid, version)
-    if (r && r.ok) {
+    result = await window.gitReport.deployRollback(selection.projectId, tid, version, operation.requestId)
+    if (result?.ok) {
       ElMessage.success(`已回滚到 ${version}`)
-      if (isCurrentSelection(selection) && tid === props.activeTargetId) state.deploy.currentVersion = version
-    } else if (r?.record?.status === 'canceled') {
-      ElMessage.info(r.record.message || '回滚已取消')
+    } else if (result?.record?.status === 'canceled') {
+      ElMessage.info(result.record.message || '回滚已取消')
     } else {
-      ElMessage.error(r?.error || r?.record?.message || '回滚失败，请查看发布日志')
+      ElMessage.error(result?.error || result?.record?.message || '回滚失败，请查看发布日志')
     }
   } catch (e) {
     ElMessage.error(e.message || String(e))
   } finally {
-    rollingBack.value = false
-    state.deploy.running = false
+    finishDeployRun(operation, result?.record)
     // 失败、断连或取消也可能已切换过指针；结束后以服务器查询为准。
     if (isCurrentSelection(selection) && tid === props.activeTargetId) void queryReleases(true)
-    emit('history-changed')
+    if (isCurrentSelection(selection)) emit('history-changed')
   }
 }
 
@@ -594,7 +597,6 @@ function resetSelection() {
 // 项目和目标共同决定上下文；同步失效可覆盖 A→B→A 及尚未重渲染的迟到请求。
 watch(() => [props.form.id, props.activeTargetId], () => {
   resetSelection()
-  state.deploy.currentVersion = ''
   loadHistoryVersion()
 }, { immediate: true, flush: 'sync' })
 

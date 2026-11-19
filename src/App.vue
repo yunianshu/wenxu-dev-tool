@@ -88,7 +88,7 @@ import LeaveView from './views/LeaveView.vue'
 import DeployView from './views/DeployView.vue'
 import ExtensionsView from './views/ExtensionsView.vue'
 import SettingsView from './views/SettingsView.vue'
-import { state } from './store'
+import { state, deployEventRun, finishDeployRun } from './store'
 import { useProjects } from './composables/useProjects'
 import { toPlain } from './utils/ipc'
 import { saveUiPrefs, getTerminalFontRevision, restoreTerminalFontPrefs, getThemeRevision, restoreThemePrefs } from './utils/ui-prefs'
@@ -288,6 +288,30 @@ function showCloseAsk() {
 onMounted(async () => {
   // 外壳已进文档：此后各视图投递页头到顶栏插槽才能找到目标（初始视图挂载时还在文档外）
   state.ui.shellMounted = true
+  // 发布事件在读取启动配置前接线，保留首个任务的实时状态。
+  window.gitReport.onDeployStatus((status) => {
+    const run = deployEventRun(status)
+    if (run) Object.assign(run, { queued: status.queued, startedAt: status.startedAt, targetName: status.targetName })
+  })
+  window.gitReport.onDeployLog((log) => {
+    const run = deployEventRun(log)
+    if (!run) return
+    run.logs.push({ ts: log.ts, level: log.level, text: log.text })
+    if (run.logs.length > 2000) run.logs.splice(0, run.logs.length - 2000)
+  })
+  window.gitReport.onDeployStage((stage) => {
+    const run = deployEventRun(stage)
+    if (run) run.stages[stage.stage] = { status: stage.status, durationMs: stage.durationMs || 0 }
+  })
+  window.gitReport.onDeployProgress((progress) => {
+    const run = deployEventRun(progress)
+    if (!run) return
+    if (progress.kind === 'package') run.packageCount = progress.count || 0
+    if (progress.kind === 'upload') run.uploadPercent = progress.percent || 0
+    if (progress.kind === 'datasync') run.datasyncPercent = progress.percent || 0
+  })
+  window.gitReport.onDeployDone((event) => finishDeployRun(deployEventRun(event), event.record))
+
   // 预建隐藏的北森窗口：后台企微捕获登录的种子可直接注入，用户无感知。
   if (typeof window.__TAURI_INTERNALS__ !== 'undefined') {
     import('@tauri-apps/api/webviewWindow').then(async ({ WebviewWindow, getAllWebviewWindows }) => {
@@ -388,28 +412,6 @@ onMounted(async () => {
         state.scan.collectTotal = progress.total
       }
     })
-    window.gitReport.onDeployLog((log) => {
-      state.deploy.logs.push(log)
-      if (state.deploy.logs.length > 2000) state.deploy.logs.splice(0, state.deploy.logs.length - 2000)
-    })
-    window.gitReport.onDeployStage((stage) => {
-      const st = state.deploy.stages[stage.stage]
-      if (!st) return
-      st.status = stage.status
-      // 阶段耗时只在结束时由主进程下发（running 事件为 0），用于 chips 上的时间标注
-      if (stage.durationMs) st.durationMs = stage.durationMs
-    })
-    window.gitReport.onDeployProgress((progress) => {
-      if (progress.kind === 'package') state.deploy.packageCount = progress.count || 0
-      if (progress.kind === 'upload') state.deploy.uploadPercent = progress.percent || 0
-      if (progress.kind === 'datasync') state.deploy.datasyncPercent = progress.percent || 0
-    })
-    window.gitReport.onDeployDone(() => {
-      state.deploy.running = false
-      state.deploy.finishedAt = Date.now()
-      // 线上版本由部署视图核对项目和目标后更新，避免后台任务污染新选择。
-    })
-
     warmupActive = true
     // 预热（仓库扫描 + 今日提交预收集）推迟到首帧绘制之后再发起：扫描与「每个仓库一个
     // git 子进程」都会占用主进程（Windows 建进程是同步阻塞调用线程的），在首帧前发起会
