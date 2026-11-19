@@ -752,6 +752,7 @@ await test('按禅道任务在 type=3 分组匹配并换算百分比', () => {
   // ΣPercent 必须为 100（汉印硬约束）
   const sum = items.reduce((s, x) => s + x.Percent, 0)
   assert.strictEqual(sum, 100)
+  assert.deepStrictEqual(items.map((item) => item.Percent), [85, 15])
 })
 
 await test('未匹配任务的占比份额并入余数补给第一条，Σ 仍=100', () => {
@@ -765,7 +766,7 @@ await test('未匹配任务的占比份额并入余数补给第一条，Σ 仍=1
   assert.strictEqual(items[0].Percent, 100) // 50 + 余数 50
 })
 
-await test('四舍五入误差由第一条吸收（Σ 恒等 100）', () => {
+await test('三个等工时任务按 5% 档位调平（Σ 恒等 100）', () => {
   const tasks = [
     { taskId: 66, consumed: 1 },
     { taskId: 88, consumed: 1 },
@@ -776,9 +777,7 @@ await test('四舍五入误差由第一条吸收（Σ 恒等 100）', () => {
     { type: 3, typeName: '软件项目', projectId: '800', projectName: 'P2', tasks: [{ Key: '77', Name: '任务C' }] },
   ], '2026-09-07')
   assert.deepStrictEqual(unmatched, [])
-  // 3 任务各 1/3 → 33/33/33=99，余数 1 补第一条
-  const sum = items.reduce((s, x) => s + x.Percent, 0)
-  assert.strictEqual(sum, 100)
+  assert.deepStrictEqual(items.map((item) => item.Percent), [35, 35, 30])
 })
 
 await test('工时为 0 的任务占比 0% → 不写入汉印（zeroSkipped 计数）', () => {
@@ -793,15 +792,30 @@ await test('工时为 0 的任务占比 0% → 不写入汉印（zeroSkipped 计
   assert.strictEqual(items[0].Percent, 100)
 })
 
-await test('占比四舍五入为 0 的极小份额同样跳过，Σ 仍=100', () => {
+await test('原始占比不足 1% 的正工时同样保底 5%', () => {
   const { items, zeroSkipped } = fill.buildHpItems([
-    { taskId: 88, consumed: 0.5 }, // 0.05% → 0%
-    { taskId: 66, consumed: 1000 }, // 99.95% → 100%
+    { taskId: 88, consumed: 0.5 },
+    { taskId: 66, consumed: 1000 },
   ], HP_GROUPS, '2026-09-07')
-  assert.strictEqual(zeroSkipped, 1)
-  assert.strictEqual(items.length, 1)
-  assert.strictEqual(items[0].TaskId, '66')
-  assert.strictEqual(items[0].Percent, 100)
+  assert.strictEqual(zeroSkipped, 0)
+  assert.deepStrictEqual(items.map((item) => [item.TaskId, item.Percent]), [['88', 5], ['66', 95]])
+})
+
+await test('1%～4% 各取 5%，所有条目合计 100%', () => {
+  const shares = [1, 2, 3, 4, 90]
+  const tasks = shares.map((consumed, index) => ({ taskId: index + 1, consumed }))
+  const groups = [{ type: 3, tasks: tasks.map(({ taskId }) => ({ Key: String(taskId) })) }]
+  assert.deepStrictEqual(fill.buildHpItems(tasks, groups, '2026-09-07').items.map((item) => item.Percent), [5, 5, 5, 5, 80])
+})
+
+await test('20 个正工时任务可各分 5%，21 项时返回可操作提示', () => {
+  const tasks = Array.from({ length: 21 }, (_, index) => ({ taskId: index + 1, consumed: 0.5 }))
+  const groups = [{ type: 3, tasks: tasks.map(({ taskId }) => ({ Key: String(taskId) })) }]
+  const atLimit = fill.buildHpItems(tasks.slice(0, 20), groups, '2026-09-07')
+  assert.deepStrictEqual(atLimit.items.map((item) => item.Percent), Array(20).fill(5))
+  const overflow = fill.buildHpItems(tasks, groups, '2026-09-07')
+  assert.deepStrictEqual(overflow.items, [])
+  assert.match(overflow.allocationError, /21 项超过 20 项/)
 })
 
 await test('余数补给占比最大的条目：0% 条目不会被余数喂成非零', () => {
@@ -820,7 +834,6 @@ await test('余数补给占比最大的条目：0% 条目不会被余数喂成�
   assert.strictEqual(items.length, 3)
   assert.ok(!items.some((x) => x.TaskId === '88'), '0% 条目不应出现在提交条目中')
   assert.ok(items.every((x) => x.Percent > 0))
-  // 3 任务各 1/3 → 33×3=99，余数 1 补占比最大者（不是 0% 那条）；丢弃的 0% 不破坏 Σ
   assert.strictEqual(items.reduce((s, x) => s + x.Percent, 0), 100)
 })
 
@@ -1297,6 +1310,26 @@ await test('removeLog：按 at 删除留痕（其余记录不受影响），缺�
 
 await test('resubmit：预览/无载荷记录拒绝重放；不存在的留痕报错', async () => {
   await assert.rejects(() => fill.resubmit('1970-01-01 00:00:00'), /没有这条提交记录/)
+})
+
+await test('预览拒绝非 5% 档位，失败历史重提时重新分档且保留旧留痕', async () => {
+  const date = '2026-09-10'
+  const payload = {
+    date,
+    tasks: [66, 88].map((taskId) => ({ taskId, rows: [{ date, work: '工时', consumed: 1 }] })),
+    hp: { items: [4, 96].map((Percent, index) => ({ TaskId: String([66, 88][index]), Percent, WorkDate: date })) },
+  }
+  const preview = await withStubClients(() => assert.rejects(() => fill.submit({ ...payload, dryRun: true }), /按 5% 划分/))
+  assert.strictEqual(preview.sent, null)
+
+  const oldEntries = JSON.parse(fs.readFileSync(logFile, 'utf8'))
+  const old = { at: '2026-09-10 20:00:00.000', date, error: '历史提交失败', payload }
+  fs.writeFileSync(logFile, JSON.stringify([...oldEntries, old]))
+  const retried = await withStubClients(() => fill.resubmit(old.at))
+  assert.deepStrictEqual(retried.sent.map((item) => item.Percent), [5, 95])
+  const entries = JSON.parse(fs.readFileSync(logFile, 'utf8'))
+  assert.deepStrictEqual(entries.find((entry) => entry.at === old.at).payload.hp.items, payload.hp.items)
+  assert.deepStrictEqual(entries.at(-1).payload.hp.items.map((item) => item.Percent), [5, 95])
 })
 
 await test('submit：dryRun 预览不留痕', async () => {

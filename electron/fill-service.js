@@ -305,17 +305,46 @@ function buildSubmitTasks(planned, ztTasks, date, efforts = {}) {
 
 // ─── 汉印条目构造（移植 KnowMore buildHp/buildPayload：工时 → 百分比，Σ=100） ───
 
+const HP_PERCENT_STEP = 5
+const HP_PERCENT_SLOTS = 100 / HP_PERCENT_STEP
+
+function hpAllocationError(count) {
+  return count > HP_PERCENT_SLOTS
+    ? `汉印每个有工时的任务至少占 ${HP_PERCENT_STEP}%，本次 ${count} 项超过 ${HP_PERCENT_SLOTS} 项，请减少勾选后再提交。`
+    : ''
+}
+
+/** 正份额先按 5% 进位。超出总量时逐档扣减进位偏差最大的条目，每项至少保留一档。 */
+function allocateHpPercentages(weights, total) {
+  const allocations = weights.map((weight) => {
+    const exact = (weight / total) * HP_PERCENT_SLOTS
+    return { exact, slots: Math.max(1, Math.ceil(exact - 1e-10)) }
+  })
+  let remaining = HP_PERCENT_SLOTS - allocations.reduce((sum, item) => sum + item.slots, 0)
+  if (remaining > 0) {
+    const largest = allocations.reduce((best, item) => item.exact > best.exact ? item : best)
+    largest.slots += remaining
+  }
+  while (remaining < 0) {
+    let target = null
+    for (const item of allocations) {
+      if (item.slots > 1 && (!target || item.slots - item.exact >= target.slots - target.exact)) target = item
+    }
+    target.slots -= 1
+    remaining += 1
+  }
+  return allocations.map(({ slots }) => slots * HP_PERCENT_STEP)
+}
+
 /**
  * 按禅道任务聚合工时换算为汉印百分比条目。只在「软件项目(type=3)」分组中按
  * 「任务 Key === 禅道任务 ID」查找（两系统数据同源）；未匹配任务的工时占比
- * 份额并入余数，补给占比最大的一条，保证 ΣPercent = 100（汉印硬约束）。
- * 占比为 0 的条目一律不产出（工时为 0，或占比四舍五入后为 0）——0% 记录没有意义，
- * 其中被丢弃的条数由 zeroSkipped 回报。
- * 返回 { items, unmatched: [taskId...], zeroSkipped }。
+ * 份额并入余数，补给占比最大的一条。正工时保底 5%，总占比为 100%。
+ * 工时为 0 的条目不产生报工记录，超过可分配档数时由 allocationError 提示。
  */
 function buildHpItems(tasks, groups, date) {
   const total = round2((tasks || []).reduce((s, t) => s + (t.consumed || 0), 0))
-  if (!total) return { items: [], unmatched: [], zeroSkipped: 0 }
+  if (!(total > 0) || !Number.isFinite(total)) return { items: [], unmatched: [], zeroSkipped: 0 }
   const list = []
   const unmatched = []
   for (const t of tasks || []) {
@@ -328,19 +357,15 @@ function buildHpItems(tasks, groups, date) {
     }
     const task = group.tasks.find((x) => String(x.Key) === String(t.taskId))
     const consumed = Number(t.consumed) || 0
-    const pct = Math.round((consumed / total) * 100)
-    list.push({ group, task, pct, consumed })
+    list.push({ group, task, consumed })
   }
-  if (!list.length) return { items: [], unmatched, zeroSkipped: 0 }
-  // 余数补给占比最大的一条：不能补到 0% 条目上，否则会凭空写出一条没有工时的记录
-  const rest = 100 - list.reduce((s, x) => s + x.pct, 0)
-  if (rest) {
-    const target = list.reduce((a, b) => (b.consumed > a.consumed ? b : a), list[0])
-    target.pct += rest
-  }
-  // 0% 条目不写入：丢弃项本身占比为 0，不影响其余条目的 Σ=100
-  const kept = list.filter((x) => x.pct > 0)
-  const items = kept.map(({ group, task, pct }) => ({
+  const kept = list.filter((item) => item.consumed > 0)
+  const zeroSkipped = list.length - kept.length
+  if (!kept.length) return { items: [], unmatched, zeroSkipped }
+  const allocationError = hpAllocationError(kept.length)
+  if (allocationError) return { items: [], unmatched, zeroSkipped, allocationError }
+  const percentages = allocateHpPercentages(kept.map(({ consumed }) => consumed), total)
+  const items = kept.map(({ group, task }, index) => ({
     Id: 0,
     ProjectType: group.type,
     ProjectTypeName: group.typeName,
@@ -355,7 +380,7 @@ function buildHpItems(tasks, groups, date) {
     BigProjectName: task.BigName || '',
     ProductId: task.ProductKey || '',
     ProductName: task.ProductName || '',
-    Percent: pct,
+    Percent: percentages[index],
     PlanStartTime: task.StartTime || null,
     PlanEndTime: task.EndTime || null,
     ActualStartTime: task.StartTime2 || null,
@@ -372,7 +397,7 @@ function buildHpItems(tasks, groups, date) {
     WorkDate: date,
     AddType: 0,
   }))
-  return { items, unmatched, zeroSkipped: list.length - kept.length }
+  return { items, unmatched, zeroSkipped }
 }
 
 // ─── 编排：生成工时计划 / 提交禅道 ───
@@ -559,6 +584,7 @@ function buildPlanResult({ raw, projects, selectedInput }) {
     hpItems: built.items,
     hpUnmatched: built.unmatched,
     hpZeroSkipped: built.zeroSkipped,
+    hpAllocationError: built.allocationError || '',
     hpExisting: raw.hpExisting,
     hpError: raw.hpError,
     identitiesMissing: raw.identitiesMissing,
@@ -652,6 +678,9 @@ async function submitCore(payload, platformScope) {
   if (hpItems.some((it) => it.WorkDate !== date)) throw new Error('汉印工时日期与填报日期不一致')
   if (hpItems.length && (hpItems.some((it) => !Number.isFinite(Number(it.Percent)) || Number(it.Percent) > 100) || round2(hpItems.reduce((sum, it) => sum + Number(it.Percent), 0)) !== 100)) {
     throw new Error('汉印本次占比合计必须为 100%，请重新生成填报计划；本次未写入')
+  }
+  if (hpItems.some((item) => Number(item.Percent) % HP_PERCENT_STEP !== 0)) {
+    throw new Error(`汉印占比必须按 ${HP_PERCENT_STEP}% 划分，请重新生成填报计划；本次未写入`)
   }
   if (new Set(hpItems.map((it) => String(it.TaskId))).size !== hpItems.length) throw new Error('汉印同一任务存在重复条目，请重新生成填报计划；本次未写入')
   const history = readFillLog().filter((entry) => entry && !entry.dryRun && entry.date === date && entry.payload)
@@ -930,7 +959,22 @@ async function resubmit(at, options) {
   if (!entry.payload || !Array.isArray(entry.payload.tasks) || !entry.payload.tasks.length) {
     throw new Error('该记录没有存档提交载荷，请在填报页重新提交')
   }
-  return submit({ ...entry.payload, dryRun: false, cleanupLeftovers: !!(options && options.cleanupLeftovers) })
+  const { hp } = entry.payload
+  let replayHp = hp
+  if (Array.isArray(hp?.items)) {
+    const positive = hp.items.filter((item) => Number(item.Percent) > 0)
+    const stored = positive.map((item) => Number(item.Percent))
+    // 旧版按 1% 保存。合计有效时按新档位重分，原始留痕仍可用来核对旧记录的归属。
+    if (stored.every((percent) => percent <= 100)
+      && stored.some((percent) => percent % HP_PERCENT_STEP !== 0)
+      && round2(stored.reduce((sum, percent) => sum + percent, 0)) === 100) {
+      const allocationError = hpAllocationError(positive.length)
+      if (allocationError) throw new Error(`${allocationError}请重新生成填报计划。`)
+      const percentages = allocateHpPercentages(stored, 100)
+      replayHp = { ...hp, items: positive.map((item, index) => ({ ...item, Percent: percentages[index] })) }
+    }
+  }
+  return submit({ ...entry.payload, hp: replayHp, dryRun: false, cleanupLeftovers: !!(options && options.cleanupLeftovers) })
 }
 
 /** 本机当天日期（YYYY-MM-DD） */

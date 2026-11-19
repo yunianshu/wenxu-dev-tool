@@ -99,6 +99,7 @@
               <div v-for="(item, i) in plan.hpItems" :key="i" class="hpline"><span>{{ item.ProjectName }}</span><span class="sum-meta">{{ item.TaskName }} · {{ item.Percent }}%<span v-if="isHpExisting(item)" class="update-hint"> · 已填，将更新</span></span></div>
               <p class="summary-empty">{{ plan.hpItems.length }} 条 · 占比合计 {{ hpPercentTotal }}%<template v-if="hpExistingCount"> · {{ hpExistingCount }} 条将更新</template></p>
             </template>
+            <p v-else-if="plan.hpAllocationError" class="submit-hint">{{ plan.hpAllocationError }}</p>
             <p v-else class="summary-empty">{{ hanprintConfigured ? '暂无可写入的占比条目' : '未配置，本次只提交禅道' }}</p>
             <p v-if="hanprintConfigured && plan.tasks.length && plan.hpUnmatched?.length" class="submit-hint">未匹配汉印任务，仅写入禅道：#{{ plan.hpUnmatched.join('、#') }}</p>
             <p v-if="plan.hpZeroSkipped" class="summary-empty">{{ plan.hpZeroSkipped }} 个任务占比为 0%，不写入汉印。</p>
@@ -389,7 +390,7 @@ const fillableProjects = computed(() =>
 )
 
 const canGenerate = computed(() => !!(fillDate.value && !state.fillReport.submitting && fillableProjects.value.some((p) => p.repoCount > 0)))
-const canSubmit = computed(() => !!(plan.value && plan.value.tasks.length && !state.fillReport.submitting && !state.fillReport.running && !plan.value.ztError && !unmatchedCount.value && zentaoConfigured.value))
+const canSubmit = computed(() => !!(plan.value && plan.value.tasks.length && !state.fillReport.submitting && !state.fillReport.running && !plan.value.ztError && !plan.value.hpAllocationError && !unmatchedCount.value && zentaoConfigured.value))
 const unmatchedCount = computed(() => (plan.value ? plan.value.planned.filter((p) => !p.taskId).length : 0))
 /** 当天有提交的全部项目（生成报告后由主进程带回），勾选决定哪些计入填报 */
 const dayProjects = computed(() => {
@@ -557,7 +558,7 @@ async function doResubmit(log) {
   if (state.fillReport.submitting || state.fillReport.running) return
   try {
     await ElMessageBox.confirm(
-      `重新提交 ${log.date} 的填报（禅道 ${log.ztTotal} 个任务${log.hp && log.hp.sent ? `、汉印 ${log.hp.sent} 条` : ''}）？已写入的部分会更新覆盖，不会重复。`,
+      `重新提交 ${log.date} 的填报（禅道 ${log.ztTotal} 个任务${log.hp && log.hp.sent ? `、汉印 ${log.hp.sent} 条` : ''}）？汉印占比按 5% 档位处理，已有记录会更新覆盖。`,
       '重新提交',
       { type: 'warning', confirmButtonText: '提交', cancelButtonText: '取消' },
     )
@@ -832,6 +833,10 @@ async function submitFill(preview) {
   if (state.fillReport.submitting || state.fillReport.running) return
   const p = plan.value
   if (!p) return
+  if (p.hpAllocationError) {
+    ElMessage.warning(p.hpAllocationError)
+    return
+  }
   if (unmatchedCount.value) {
     ElMessage.warning(`有 ${unmatchedCount.value} 条提交未绑定禅道任务，请先绑定`)
     return
