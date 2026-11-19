@@ -4,9 +4,13 @@
       <div class="topbar-page">
         <h1 class="topbar-page-title">一键请假</h1>
         <span class="page-scope">北森 · {{ plan?.staffName?.split('(')[0] || '本人出勤' }}</span>
-        <el-button type="primary" class="page-primary" :loading="leave.running" :disabled="locked" @click="generate">
-          <el-icon><MagicStick /></el-icon><span>{{ plan ? '重新生成方案' : '生成请假方案' }}</span>
-        </el-button>
+        <div class="page-actions">
+          <el-button :disabled="locked" @click="showBookmarklet">浏览器书签</el-button>
+          <el-button :disabled="locked" @click="connect">连接北森</el-button>
+          <el-button type="primary" class="page-primary" :loading="leave.running" :disabled="locked" @click="generate">
+            <el-icon><MagicStick /></el-icon><span>{{ plan ? '重新生成方案' : '生成请假方案' }}</span>
+          </el-button>
+        </div>
       </div>
     </Teleport>
 
@@ -24,10 +28,6 @@
       <div class="leave-field leave-field-reason">
         <span class="leave-field-label">默认事由</span>
         <el-input v-model="options.reason" :disabled="locked" maxlength="1000" placeholder="选填" class="leave-reason" aria-label="默认请假事由" />
-      </div>
-      <div class="leave-connect-group">
-        <el-button :disabled="locked" @click="showBookmarklet">浏览器书签</el-button>
-        <el-button :disabled="locked" @click="connect">连接北森</el-button>
       </div>
     </section>
 
@@ -644,7 +644,6 @@ async function resolvePending() {
 .leave-range { width: 280px; }
 .leave-time { width: 110px; }
 .leave-time-sep { color: var(--text-muted); }
-.leave-connect-group { margin-left: auto; display: flex; gap: 8px; }
 .leave-login { display: flex; align-items: center; gap: 8px; padding: 9px 16px; border: 1px solid var(--accent-soft); border-radius: var(--radius-md); background: var(--accent-soft); color: var(--ink-soft); font-size: 13px; }
 .leave-login > .el-icon { color: var(--brand-accent); }
 .leave-login-sep { color: var(--text-muted); }

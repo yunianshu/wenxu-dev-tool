@@ -63,7 +63,7 @@ async function main() {
   await ws.eval(`document.querySelector('.app-menu [aria-label="一键请假"]').click()`)
   const pageShown = await ws.eval(`(async()=>{const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));for(let i=0;i<40;i++){if(document.querySelector('.leave-page button'))break;await sleep(250)}return !!document.querySelector('.leave-page')})()`)
   if (!pageShown) throw new Error('一键请假页面未打开')
-  const clicked = await ws.eval(`(()=>{const button=[...document.querySelectorAll('.leave-page button')].find(b=>b.textContent.includes('连接北森'));if(!button)return false;button.click();return true})()`)
+  const clicked = await ws.eval(`(()=>{const button=[...document.querySelectorAll('button')].find(b=>b.textContent.includes('连接北森'));if(!button)return false;button.click();return true})()`)
   if (!clicked) throw new Error('未找到连接北森按钮')
   sleep(8000)
   let italent = null

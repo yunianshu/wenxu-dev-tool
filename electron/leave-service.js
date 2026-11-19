@@ -273,7 +273,8 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
     return '待确认'
   }
   const leaveRows = candidates.filter((row) => row.hours > 0)
-  for (const row of [...leaveRows].sort((a, b) => b.lateMinutes - a.lateMinutes || b.date.localeCompare(a.date))) {
+  // 按最早日期优先分配：最早一天可用的调休条目子集最小（获得日 ≤ 请假日），晚的日期先拿会把获得日早的条目消耗掉，导致最早一天拿不到调休。
+  for (const row of [...leaveRows].sort((a, b) => a.date.localeCompare(b.date))) {
     const override = overrides[row.date] || {}
     const cursor = stamp(row.leaveStart)
     // 指定假种只在余额足够时生效；不足（含取消“计算迟到”多请 0.5 小时后）自动回退级联，
@@ -350,7 +351,7 @@ function buildPlan(source, options, blocked = {}, banned = new Set(), overrides 
   const compLeftEntries = compEntries ? compEntries.filter((entry) => entry.usable - entry.used > 0 && entry.expires >= options.until) : []
   return {
     staffId: source.staffId, staffName: source.staffName, options, rows, overrides,
-    entries: rows.flatMap((row) => row.allocations).sort((a, b) => a.date === b.date ? a.start.localeCompare(b.start) : b.date.localeCompare(a.date)),
+    entries: rows.flatMap((row) => row.allocations).sort((a, b) => a.date === b.date ? a.start.localeCompare(b.start) : a.date.localeCompare(b.date)),
     balances: balances.map(({ usable, ...item }) => ({ ...item, remaining: item.unlimited ? null : Math.round((item.hours - item.used) * 1000000) / 1000000 })),
     totalHours: rows.reduce((sum, row) => sum + row.allocations.reduce((total, entry) => total + entry.hours, 0), 0),
     existing: { hours: existingHours, count: existingCount, unknown: existingUnknown, byType: [...existingByType.values()].sort((a, b) => b.hours - a.hours) },
