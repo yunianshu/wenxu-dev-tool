@@ -136,8 +136,8 @@ contextBridge.exposeInMainWorld('gitReport', {
   deployDetectVersion: (project) => ipcRenderer.invoke('deploy:detectVersion', toPlain(project)),
   deployTestConnection: (projectId, targetId) =>
     ipcRenderer.invoke('deploy:testConnection', { projectId, targetId }),
-  deployRun: (projectId, targetId, requestId) =>
-    ipcRenderer.invoke('deploy:run', { projectId, targetId, requestId }),
+  deployRun: (projectId, targetId, requestId, releasePlan) =>
+    ipcRenderer.invoke('deploy:run', { projectId, targetId, requestId, releasePlan: toPlain(releasePlan) }),
   deployCancel: (projectId, runId) => ipcRenderer.invoke('deploy:cancel', { projectId, runId }),
   deployReleases: (projectId, targetId) =>
     ipcRenderer.invoke('deploy:releases', { projectId, targetId }),

@@ -98,12 +98,22 @@ function workspaceKey(dir) {
 }
 
 /** 同项目互斥。共用宿主机或本地目录的操作按提交顺序执行。 */
-async function withRun(projectId, targetId, type, execute, { version = '', requestId } = {}) {
+async function withRun(projectId, targetId, type, execute, { version = '', requestId, releasePlan } = {}) {
   if (activeRuns.has(projectId)) throw new Error('该项目已有发布任务进行中，请等待完成或取消')
   const project = projects.list().find((p) => p.id === projectId)
   if (!project) throw new Error('项目配置不存在，请重新保存')
   const target = getTarget(project, targetId)
   if (!target) throw new Error('项目缺少部署目标，请先在配置中添加')
+  if (releasePlan) {
+    if (releasePlan.localPath !== project.localPath || releasePlan.host !== target.server.host
+      || releasePlan.port !== (Number(target.server.port) || 22) || releasePlan.username !== (target.server.username || '')
+      || releasePlan.remotePath !== target.remotePath) {
+      throw new Error('部署地址或项目目录已变化，请刷新后重新确认发布')
+    }
+    if (releasePlan.versionOverride && (typeof releasePlan.versionOverride !== 'string' || !safeVersion(releasePlan.versionOverride))) {
+      throw new Error('发布版本号无效')
+    }
+  }
 
   const host = String(target.server.host || '').trim().toLowerCase().replace(/\.$/, '')
   const dir = type === 'deploy' ? workspaceKey(project.localPath) : ''
@@ -124,7 +134,7 @@ async function withRun(projectId, targetId, type, execute, { version = '', reque
   const lines = []
   const operation = {
     id, host, dir, controller, released, conn: null, queued: blockers.length > 0,
-    project, target, record, tracker, publish,
+    project, target, record, tracker, publish, releasePlan,
     log(level, text) {
       const safeText = operation.redact ? operation.redact(text) : text
       const time = ts()
@@ -909,12 +919,13 @@ function renderImportCommand(command, { dataDir, user, secret }) {
     .replaceAll('{secret}', shQuote(secret))
 }
 
-function run(projectId, targetId, requestId) {
-  return withRun(projectId, targetId, 'deploy', runDeployment, { requestId })
+function run(projectId, targetId, requestId, releasePlan) {
+  const version = releasePlan?.versionOverride || releasePlan?.expectedVersion || ''
+  return withRun(projectId, targetId, 'deploy', runDeployment, { requestId, version, releasePlan })
 }
 
 async function runDeployment(operation) {
-  const { project, target, record, tracker, log, publish, finish, controller, id: runId } = operation
+  const { project, target, record, tracker, log, publish, finish, controller, releasePlan, id: runId } = operation
   const { projectId } = record
   const isCanceled = () => controller.signal.aborted
   const creds = projects.getCredentials(projectId, target.id) || { password: '', passphrase: '' }
@@ -934,6 +945,15 @@ async function runDeployment(operation) {
     // ── 阶段 1：本地检查 ─────────────────────────────
     tracker.begin('check')
     const t0 = Date.now()
+    if (isCanceled()) return finish('canceled', '任务尚未执行')
+    if (releasePlan?.versionOverride) {
+      const version = { strategy: 'manual', manual: releasePlan.versionOverride }
+      const saved = projects.save({ id: projectId, version })
+      if (!saved?.ok) throw new Error(saved?.error || '发布版本保存失败')
+      project.version = version
+      record.requestedVersion = version.manual
+      log('info', `本次发布版本已设置为 ${version.manual}`)
+    }
     // 极简配置：发布前按项目自动生成部署配置。用户输入的三项（服务器选择、服务器项目
     // 地址、是否同步本地数据）不被动；部署形态/脚本参数/健康检查/数据库备份/同步明细
     // 每次发布重新生成，保证不同项目、以及同一项目演进后的配置始终贴合实际。
@@ -950,6 +970,9 @@ async function runDeployment(operation) {
       autoMode = project.deployMode === 'auto'
     }
     let ver = resolveVersion(project)
+    if (releasePlan?.expectedVersion && ver.version !== releasePlan.expectedVersion) {
+      throw new Error(`发布版本已变化（确认 ${releasePlan.expectedVersion}，当前 ${ver.version || '未识别'}），请重新确认`)
+    }
     if (autoMode) {
       if (!target.server?.host) throw new Error('请先设置正式服务器地址与登录凭据')
       if (!fs.existsSync(project.localPath)) throw new Error('本地项目目录不存在')

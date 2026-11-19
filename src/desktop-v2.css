@@ -209,6 +209,8 @@ button, input, select, textarea { font-family: inherit; }
 .el-input__inner, .el-select__placeholder { font-size: 13px; }
 .el-textarea__inner { background: var(--surface); font-size: 13px; }
 .el-input__wrapper.is-focus, .el-select__wrapper.is-focused { box-shadow: 0 0 0 1px var(--accent-strong) inset !important; }
+.topbar-project-select .el-select__wrapper.is-focused { box-shadow: none !important; background: var(--surface-subtle); }
+.topbar-project-select .el-select__wrapper:has(input:focus-visible) { background: var(--accent-soft); }
 .el-input__wrapper:has(input:focus-visible) { outline: none; }
 .el-checkbox, .el-radio { font-size: 13px; }
 .el-checkbox__label, .el-radio__label { font-size: 13px; }

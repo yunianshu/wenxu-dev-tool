@@ -248,8 +248,8 @@ async function main() {
       activeTargetId: deployView.setup.activeTargetId, publishVersion: '1.0.0', dirty: false,
     }))
     const publishRequests = new Map()
-    api.deployRun = (projectId, tid, requestId) => {
-      const task = { ...deferred(), projectId, targetId: tid, requestId, runId: `run-${projectId}` }
+    api.deployRun = (projectId, tid, requestId, releasePlan) => {
+      const task = { ...deferred(), projectId, targetId: tid, requestId, releasePlan, runId: `run-${projectId}` }
       publishRequests.set(projectId, task)
       return task.promise
     }
@@ -306,8 +306,38 @@ async function main() {
     state.deploy.runs.delete('A')
     b.task.resolve({ ok: false, record: await complete(b.event, '1.0.0', 'canceled') })
     await b.finished
+
+    publishRequests.clear()
+    // 清除前一组模拟数据产生的草稿，批量场景从已保存配置开始。
+    delete state.deploy.configDrafts.A
+    delete state.deploy.configDrafts.B
+    const batch = mount('src/components/deploy/DeployBatchPublish.vue', vue.reactive({
+      modelValue: true,
+      currentProjectId: 'A', currentTargetId: 'production', currentDirty: false,
+    }))
+    assert.equal(batch.setup.canSubmit.value, false, '未勾选项目不能发布')
+    batch.setup.selectedProjectIds.value = ['B', 'A']
+    assert.equal(publishRequests.size, 0, '勾选项目时不得提交')
+    assert.equal(batch.setup.selectedRows.value[1].targetId, 'production', '默认带入当前环境')
+    const other = batch.setup.selectedRows.value[0]
+    other.targetId = 'production'
+    other.versionOverride = '../invalid'
+    batch.setup.submit()
+    assert.equal(publishRequests.size, 0, '版本不合法时整个批次停在确认框')
+    other.versionOverride = '2.3.4'
+    assert.equal(batch.setup.canSubmit.value, true, batch.setup.rows.value.map(batch.setup.rowIssue).join('，'))
+    batch.setup.submit()
+    assert.deepEqual([...publishRequests.keys()], ['B', 'A'], '一次确认按勾选顺序提交所有项目')
+    assert.equal(publishRequests.get('B').targetId, 'production')
+    assert.equal(publishRequests.get('B').releasePlan.versionOverride, '2.3.4')
+    assert.equal(publishRequests.get('A').releasePlan.versionOverride, '')
+    assert.equal(publishRequests.get('A').releasePlan.expectedVersion, '1.0.0')
+    assert.deepEqual(batch.emits.at(-1), ['update:modelValue', false])
+    for (const pending of publishRequests.values()) pending.resolve({ ok: false })
+    await settle()
+    batch.unmount()
     publishPanel.unmount()
-    console.log('  ✓ 发布入口按项目运行，切换保留各自进度，完成与取消只作用于指定任务')
+    console.log('  ✓ 单项目发布隔离进度与取消，批量发布一次确认各项目环境与版本')
 
     // 页面加载后磁盘配置可能被外部修复；切换版本不得用旧表单覆盖准备命令。
     const deployProjects = load('electron/deploy/deploy-projects.js')

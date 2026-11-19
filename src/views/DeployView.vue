@@ -114,7 +114,7 @@ import DeployAiAssistant from '../components/deploy/DeployAiAssistant.vue'
 import DeployRunPanel from '../components/deploy/DeployRunPanel.vue'
 import DeployHistoryTable from '../components/deploy/DeployHistoryTable.vue'
 import ServerManagerDialog from '../components/deploy/ServerManagerDialog.vue'
-import { emptyTarget, emptyProject, fmtDur, refreshTargetServer } from '../components/deploy/deploy-form'
+import { emptyTarget, emptyProject, fmtDur, preferredDeployTarget, refreshTargetServer } from '../components/deploy/deploy-form'
 
 defineEmits(['navigate'])
 const { currentProject, loadProjects: loadSharedProjects, selectProject } = useProjects()
@@ -238,10 +238,7 @@ function fillForm(p, preferredTargetId = '') {
   if (draft) Object.assign(form, JSON.parse(JSON.stringify(draft.form)))
   if (draft) preferredTargetId = draft.targetId
   if (!draft || previousProjectId !== form.id) configDrawerRef.value?.rebaseline()
-  const want = preferredTargetId && form.targets.some((t) => t.id === preferredTargetId)
-    ? preferredTargetId
-    : (form.targets.find((t) => t.id === form.productionTargetId) || form.targets.find((t) => t.server?.host) || form.targets[0]).id
-  activeTargetId.value = want
+  activeTargetId.value = preferredDeployTarget(form, preferredTargetId).id
   detectVersion()
 }
 
@@ -465,7 +462,7 @@ onMounted(() => {
     if (r.projectId === form.id) reloadHistory()
     if (r.type !== 'deploy' || deployRunFor(r.projectId).requestId !== d.requestId) return
     const project = state.deploy.projects.find((p) => p.id === r.projectId)
-    if (r.status !== 'canceled' && (project?.deployMode === 'auto' || project?.configMode === 'quick')) {
+    if (r.requestedVersion || (r.status !== 'canceled' && (project?.deployMode === 'auto' || project?.configMode === 'quick'))) {
       if (r.projectId === form.id) await loadProjects({ preserveDraft: true })
       else await loadSharedProjects()
     }

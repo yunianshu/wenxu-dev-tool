@@ -735,9 +735,9 @@ function registerIpc() {
       return { ok: false, error: (err && err.message) || String(err) }
     }
   })
-  ipcMain.handle('deploy:run', async (_e, { projectId, targetId, requestId }) => {
+  ipcMain.handle('deploy:run', async (_e, { projectId, targetId, requestId, releasePlan }) => {
     try {
-      const record = await deployService.run(projectId, targetId, requestId)
+      const record = await deployService.run(projectId, targetId, requestId, releasePlan)
       return { ok: record.status === 'success', record }
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) }

@@ -53,6 +53,27 @@ export function emptyProject() {
   }
 }
 
+export function preferredDeployTarget(project, preferredId = '') {
+  const targets = project?.targets || []
+  return targets.find((target) => preferredId && target.id === preferredId)
+    || targets.find((target) => target.id === project.productionTargetId)
+    || targets.find((target) => target.server?.host)
+    || targets[0]
+}
+
+export function publishBlocker(project, target, version, { dirty = false, busy = false, checkingVersion = false } = {}) {
+  if (busy) return '该项目已有部署任务进行中'
+  if (dirty) return '请先保存部署设置中的修改'
+  if (!project?.id || !project.name) return '请先保存项目'
+  if (!project.localPath) return '请先在部署设置中填写项目目录'
+  if (!target?.server?.host) return '请先选择并配置部署服务器'
+  if (project.configMode === 'quick' || project.deployMode !== 'auto') {
+    if (!target.remotePath) return '请先配置部署目录'
+    if (!version && !checkingVersion) return '请先识别或设置发布版本'
+  }
+  return ''
+}
+
 /** 刷新共享连接时，同时使旧服务器的运行探测失效；手动项目策略保持不变。 */
 export function refreshTargetServer(target, server, autoMode) {
   const old = target.server || {}

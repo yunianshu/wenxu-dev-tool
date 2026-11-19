@@ -30,12 +30,19 @@
         @click="openDbBackups"
       ><el-icon><Coin /></el-icon>数据库备份</el-button>
       <el-button :disabled="!form.id || run.running || dirty" @click="newVersion"><el-icon><Plus /></el-icon>新版本</el-button>
+      <el-button v-if="state.deploy.projects.length > 1" class="batch-project-picker" @click="batchOpen = true">选择发布项目</el-button>
       <el-button v-if="run.running" type="warning" plain :disabled="!run.id" @click="cancelRun">{{ cancelAction }}</el-button>
       <el-tooltip v-else :disabled="canPublish" :content="publishBlockedReason" placement="top">
         <span class="publish-button-wrap"><el-button type="primary" class="publish-btn" :disabled="!canPublish" @click="publish"><el-icon><Promotion /></el-icon>发布 {{ publishVersion || '' }}</el-button></span>
       </el-tooltip>
       </div>
     </div>
+    <DeployBatchPublish
+      v-model="batchOpen"
+      :current-project-id="form.id"
+      :current-target-id="activeTargetId"
+      :current-dirty="dirty"
+    />
     <div class="run-output">
       <section class="deploy-stages" aria-label="部署阶段">
         <div class="run-heading">
@@ -139,9 +146,10 @@
 <script setup>
 import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { beginDeployRun, deployRunFor, finishDeployRun, deployOnlineVersion, setDeployOnlineVersion } from '../../store'
+import { state, beginDeployRun, deployRunFor, finishDeployRun, deployOnlineVersion, setDeployOnlineVersion, submitDeployRun } from '../../store'
 import { bumpVersion, highestVersion } from '../../utils/version'
-import { fmtDur, fmtElapsed } from './deploy-form'
+import { fmtDur, fmtElapsed, publishBlocker } from './deploy-form'
+import DeployBatchPublish from './DeployBatchPublish.vue'
 
 const props = defineProps({
   /** 部署表单（响应式对象，只读使用） */
@@ -182,6 +190,7 @@ const cancelAction = computed(() => run.value.queued ? '取消排队' : ({ rollb
 const releases = ref([])
 const rollbackVersion = ref('')
 const logBox = ref(null)
+const batchOpen = ref(false)
 let selectionEpoch = 0
 let releaseQueryId = 0
 let disposed = false
@@ -197,24 +206,10 @@ function isCurrentSelection(selection) {
 /** 极简配置：用户只填服务器/项目地址/数据同步开关，其余由发布流程自动生成 */
 const quickMode = computed(() => props.form.configMode === 'quick')
 
-const canPublish = computed(() => {
-  if (run.value.running || !props.form.id || props.dirty || !props.activeTarget) return false
-  const t = props.activeTarget
-  if (quickMode.value) return !!(props.form.name && props.form.localPath && t.server.host && t.remotePath && props.publishVersion)
-  return !!(props.form.name && props.form.localPath && t.server.host && (props.form.deployMode === 'auto' || (props.publishVersion && t.remotePath)))
-})
-const publishBlockedReason = computed(() => {
-  if (props.dirty) return '请先保存部署设置中的修改'
-  if (!props.form.localPath) return '请先在部署设置中填写项目目录'
-  if (!props.activeTarget?.server?.host) return '请先选择并配置部署服务器'
-  if (quickMode.value) {
-    if (!props.activeTarget?.remotePath) return '请先在部署设置中填写服务器项目地址'
-    if (!props.publishVersion) return '请先识别或设置发布版本'
-  }
-  if (props.form.deployMode !== 'auto' && !props.publishVersion) return '请先识别或设置发布版本'
-  if (props.form.deployMode !== 'auto' && !props.activeTarget?.remotePath) return '请先配置部署目录'
-  return '请先补全部署设置'
-})
+const publishBlockedReason = computed(() => publishBlocker(props.form, props.activeTarget, props.publishVersion, {
+  dirty: props.dirty, busy: run.value.running,
+}))
+const canPublish = computed(() => !publishBlockedReason.value)
 
 const activeDatabase = computed(() => {
   const target = props.activeTarget
@@ -406,17 +401,9 @@ async function publish() {
     )
   } catch { return }
   if (!isCurrentSelection(selection) || !canPublish.value) return
-  const operation = beginDeployRun(selection.projectId, 'deploy', t.name)
-  let result
-  try {
-    result = await window.gitReport.deployRun(selection.projectId, selection.targetId, operation.requestId)
-    if (result?.error) ElMessage.error(result.error)
-  } catch (e) {
-    ElMessage.error(e.message || String(e))
-  } finally {
-    finishDeployRun(operation, result?.record)
-    if (isCurrentSelection(selection)) emit('history-changed')
-  }
+  const result = await submitDeployRun(selection.projectId, selection.targetId, t.name)
+  if (result?.error) ElMessage.error(result.error)
+  if (isCurrentSelection(selection)) emit('history-changed')
 }
 
 async function cancelRun() {

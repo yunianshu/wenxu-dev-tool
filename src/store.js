@@ -163,6 +163,20 @@ export function beginDeployRun(projectId, type, targetName) {
   return state.deploy.runs.get(projectId)
 }
 
+export async function submitDeployRun(projectId, targetId, targetName, releasePlan) {
+  if (deployRunFor(projectId).running) return { ok: false, error: '该项目已有部署任务进行中' }
+  const operation = beginDeployRun(projectId, 'deploy', targetName)
+  let result
+  try {
+    result = await window.gitReport.deployRun(projectId, targetId, operation.requestId, releasePlan)
+    return result
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) }
+  } finally {
+    finishDeployRun(operation, result?.record)
+  }
+}
+
 export function deployEventRun({ projectId, runId, requestId }) {
   const run = state.deploy.runs.get(projectId)
   if (!run?.running || run.requestId !== requestId || !runId || (run.id && run.id !== runId)) return null

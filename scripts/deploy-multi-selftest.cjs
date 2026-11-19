@@ -59,7 +59,14 @@ function fixture(id, host, directory = id) {
   Object.assign(project.targets[0], { name: `${id} 环境`, remotePath: `/srv/${id}` })
   project.targets[0].server.host = host
   assert.equal(projects.save(project).ok, true)
-  return { id, host, targetId: project.targets[0].id }
+  return { id, host, targetId: project.targets[0].id, localPath: project.localPath, remotePath: project.targets[0].remotePath }
+}
+
+function releasePlan(project, expectedVersion, versionOverride = '') {
+  return {
+    localPath: project.localPath, host: project.host, port: 22, username: 'root',
+    remotePath: project.remotePath, expectedVersion, versionOverride,
+  }
 }
 
 async function waitFor(predicate) {
@@ -76,11 +83,14 @@ async function main() {
   const sameHost = fixture('multi-c', first.host)
   const canceled = fixture('multi-d', first.host)
   const sameWorkspace = fixture('multi-e', 'e.invalid', parallel.id)
-  const start = ({ id, targetId }) => service.run(id, targetId, `request-${id}`)
+  fs.writeFileSync(path.join(sameHost.localPath, 'VERSION'), '2.0.0\n')
+  assert.equal(projects.save({ id: sameHost.id, version: { strategy: 'manual', manual: '1.0.0' } }).ok, true)
+  const savedVersion = (project) => projects.list().find(({ id }) => id === project.id).version
+  const start = ({ id, targetId }, plan) => service.run(id, targetId, `request-${id}`, plan)
   const a = start(first)
   const b = start(parallel)
-  const c = start(sameHost)
-  const d = start(canceled)
+  const c = start(sameHost, releasePlan(sameHost, '2.0.0', '2.0.0'))
+  const d = start(canceled, releasePlan(canceled, '3.0.0', '3.0.0'))
   const e = start(sameWorkspace)
   await waitFor(() => deployments.has(first.host) && deployments.has(parallel.host))
 
@@ -94,9 +104,11 @@ async function main() {
   const statusOf = (projectId) => events.filter((event) => event.projectId === projectId && event.channel === 'deploy:status')
   assert.deepEqual(statusOf(sameHost.id).map(({ queued }) => queued), [true])
   assert.deepEqual(statusOf(sameWorkspace.id).map(({ queued }) => queued), [true])
+  assert.equal(savedVersion(sameHost).manual, '1.0.0', '版本在任务开始后才写入')
   assert.equal(service.cancel(canceled.id, '过期任务').ok, false)
   assert.equal(service.cancel(canceled.id, statusOf(canceled.id)[0].runId).ok, true)
   assert.equal((await d).status, 'canceled')
+  assert.equal(savedVersion(canceled).strategy, 'auto', '取消排队不应写入版本')
   assert.equal(connections.filter((host) => host === first.host).length, 1)
 
   deployments.get(parallel.host).finish(false)
@@ -110,8 +122,12 @@ async function main() {
   assert.equal(service.cancel(first.id, statusOf(first.id)[0].runId).ok, true)
   assert.equal((await a).status, 'canceled')
   await waitFor(() => deployments.has(sameHost.host))
+  assert.deepEqual(savedVersion(sameHost), { strategy: 'manual', manual: '2.0.0' })
   deployments.get(sameHost.host).finish(true)
-  assert.equal((await c).status, 'success')
+  const cResult = await c
+  assert.equal(cResult.status, 'success')
+  assert.equal(cResult.version, '2.0.0')
+  assert.equal(cResult.requestedVersion, '2.0.0')
   assert.equal(service.isBusy(), false)
   assert.deepEqual(statusOf(sameHost.id).map(({ queued }) => queued), [true, false])
 
@@ -127,7 +143,15 @@ async function main() {
       assert.deepEqual(log.split('\n').filter((line) => line.includes('的发布日志')).map((line) => line.split('] ')[1]), [`来自 ${project.host} 的发布日志`])
     } else assert.equal(log, '')
   }
-  console.log('通过：实际发布打包并发、共享服务器与目录排队、定向取消、失败后续跑、进度与历史隔离')
+
+  const before = connections.length
+  await assert.rejects(start(first, { ...releasePlan(first, '1.0.0'), host: 'changed.invalid' }), /部署地址或项目目录已变化/)
+  await assert.rejects(start(first, releasePlan(first, '1.0.0', '../bad')), /发布版本号无效/)
+  const drifted = await start(first, releasePlan(first, '0.9.0'))
+  assert.equal(drifted.status, 'failed')
+  assert.match(drifted.message, /发布版本已变化/)
+  assert.equal(connections.length, before, '目标、版本或源版本漂移时不能连接服务器')
+  console.log('通过：实际打包并发、共享资源排队、定向取消、进度与历史隔离、按项目更新版本及发布前漂移检查')
 }
 
 main().catch((error) => { console.error(error); process.exitCode = 1 }).finally(() => {
