@@ -308,36 +308,55 @@ async function main() {
     await b.finished
 
     publishRequests.clear()
-    // 清除前一组模拟数据产生的草稿，批量场景从已保存配置开始。
+    // 清除前一组模拟数据产生的草稿，从已保存配置开始。
     delete state.deploy.configDrafts.A
     delete state.deploy.configDrafts.B
-    const batch = mount('src/components/deploy/DeployBatchPublish.vue', vue.reactive({
+    const running = beginDeployRun('A', 'deploy', 'production')
+    const addProps = vue.reactive({
       modelValue: true,
       currentProjectId: 'A', currentTargetId: 'production', currentDirty: false,
-    }))
-    assert.equal(batch.setup.canSubmit.value, false, '未勾选项目不能发布')
-    batch.setup.selectedProjectIds.value = ['B', 'A']
-    assert.equal(publishRequests.size, 0, '勾选项目时不得提交')
-    assert.equal(batch.setup.selectedRows.value[1].targetId, 'production', '默认带入当前环境')
-    const other = batch.setup.selectedRows.value[0]
-    other.targetId = 'production'
-    other.versionOverride = '../invalid'
-    batch.setup.submit()
-    assert.equal(publishRequests.size, 0, '版本不合法时整个批次停在确认框')
-    other.versionOverride = '2.3.4'
-    assert.equal(batch.setup.canSubmit.value, true, batch.setup.rows.value.map(batch.setup.rowIssue).join('，'))
-    batch.setup.submit()
-    assert.deepEqual([...publishRequests.keys()], ['B', 'A'], '一次确认按勾选顺序提交所有项目')
+    })
+    const add = mount('src/components/deploy/DeployAddPublish.vue', addProps)
+    assert.equal(add.setup.canSubmit.value, false, '未选择项目不能发布')
+    assert.equal(add.setup.projectOptions.value.find((option) => option.id === 'A').disabled, true, '运行中的项目不可重复提交')
+    add.setup.projectId.value = 'A'
+    assert.equal(add.setup.canSubmit.value, false)
+    add.setup.projectId.value = 'B'
+    assert.equal(publishRequests.size, 0, '选择项目时不得提交')
+    add.setup.targetId.value = 'production'
+    add.setup.versionOverride.value = '../invalid'
+    add.setup.submit()
+    assert.equal(publishRequests.size, 0, '版本不合法时继续停留在弹窗')
+    add.setup.versionOverride.value = '2.3.4'
+    assert.equal(add.setup.canSubmit.value, true, add.setup.issue.value)
+    add.setup.submit()
+    add.setup.submit()
+    assert.deepEqual([...publishRequests.keys()], ['B'], '一次只提交一个项目，重复点击不会提交第二次')
     assert.equal(publishRequests.get('B').targetId, 'production')
     assert.equal(publishRequests.get('B').releasePlan.versionOverride, '2.3.4')
+    assert.equal(running.running, true, '增加发布时已有任务应继续运行')
+    assert.equal(state.projects.currentId, 'A', '提交其他项目后保留页面当前项目')
+    assert.deepEqual(add.emits, [['update:modelValue', false]])
+    addProps.modelValue = false
+    await settle()
+    addProps.modelValue = true
+    await settle()
+    assert.equal(add.setup.projectId.value, '', '重新打开弹窗从空选项开始')
+    assert.equal(add.setup.versionOverride.value, '', '重新打开弹窗清空上次输入的版本')
+    assert.equal(add.setup.projectOptions.value.find((option) => option.id === 'B').disabled, true, '刚提交的项目不可重复添加')
+    publishRequests.get('B').resolve({ ok: false })
+    state.deploy.runs.delete('A')
+    await settle()
+    add.setup.projectId.value = 'A'
+    assert.equal(add.setup.targetId.value, 'production', '当前项目带入页面当前环境')
+    add.setup.submit()
     assert.equal(publishRequests.get('A').releasePlan.versionOverride, '')
     assert.equal(publishRequests.get('A').releasePlan.expectedVersion, '1.0.0')
-    assert.deepEqual(batch.emits.at(-1), ['update:modelValue', false])
-    for (const pending of publishRequests.values()) pending.resolve({ ok: false })
+    publishRequests.get('A').resolve({ ok: false })
     await settle()
-    batch.unmount()
+    add.unmount()
     publishPanel.unmount()
-    console.log('  ✓ 单项目发布隔离进度与取消，批量发布一次确认各项目环境与版本')
+    console.log('  ✓ 发布隔离进度与取消，增加发布一次提交一个项目并保留已有任务')
 
     // 页面加载后磁盘配置可能被外部修复；切换版本不得用旧表单覆盖准备命令。
     const deployProjects = load('electron/deploy/deploy-projects.js')
