@@ -1,7 +1,7 @@
 <template>
   <el-dialog
     :model-value="modelValue"
-    title="选择发布项目"
+    title="增加发布"
     width="min(820px, calc(100vw - 40px))"
     append-to-body
     @update:model-value="emit('update:modelValue', $event)"

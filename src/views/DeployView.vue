@@ -12,7 +12,7 @@
           <el-button v-if="currentProject" :disabled="projectBusy" @click="aiOpen = true"><el-icon><MagicStick /></el-icon>AI 部署助手</el-button>
           <el-button @click="serverManagerOpen = true"><el-icon><Coin /></el-icon>服务器管理</el-button>
           <el-button v-if="currentProject" :disabled="projectBusy" @click="configOpen = true"><el-icon><Setting /></el-icon>部署设置</el-button>
-          <el-button v-if="currentProject && state.deploy.projects.length > 1" class="batch-project-picker" @click="batchOpen = true">批量发布</el-button>
+          <el-button v-if="currentProject && state.deploy.projects.length > 1" class="batch-project-picker" @click="batchOpen = true">增加发布</el-button>
         </div>
       </div>
     </Teleport>
