@@ -65,8 +65,12 @@
             <div v-for="p in dayProjects" :key="p.projectId" class="prow" :class="{ unbound: !p.taskId, 'prow-off': !p.selected, 'is-expanded': expandedProjects.has(p.projectId) }">
               <div class="pline">
                 <el-checkbox class="pcheck" :model-value="p.selected" :aria-label="`填报 ${p.projectName}`" :disabled="state.fillReport.running || state.fillReport.submitting" @change="(v) => toggleProject(p.projectId, v)" />
-                <button class="project-detail-toggle" :aria-expanded="expandedProjects.has(p.projectId)" @click="toggleProjectDetail(p.projectId)">
-                  <span class="pname">{{ p.projectName }}</span><span class="pproj">{{ p.commitCount }} 条提交</span>
+                <button class="project-detail-toggle" :aria-expanded="expandedProjects.has(p.projectId)" :aria-label="`${expandedProjects.has(p.projectId) ? '收起' : '展开'} ${p.projectName} 的提交明细`" @click="toggleProjectDetail(p.projectId)">
+                  <el-icon v-if="expandedProjects.has(p.projectId)" aria-hidden="true"><ArrowUp /></el-icon>
+                  <template v-else>
+                    <span class="pname">{{ p.projectName }}</span>
+                    <span class="pproj">{{ p.commitCount }} 条提交</span>
+                  </template>
                 </button>
                 <span class="phours">{{ p.selected ? `${Number(p.hours || 0).toFixed(2)}h` : '未选' }}</span>
                 <el-button class="bind-button" :disabled="!zentaoConfigured || state.fillReport.running || state.fillReport.submitting" :title="p.taskId ? `${p.taskName || '已绑定任务'}，点击管理绑定` : '为该项目绑定禅道任务'" @click="openBind(p.projectId)"><el-icon><Link /></el-icon><span>{{ p.taskId ? `禅道 #${p.taskId}` : '绑定禅道任务' }}</span></el-button>
@@ -190,6 +194,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { ArrowUp } from '@element-plus/icons-vue'
 import { state } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
 import { todayStr } from '../utils/date'
