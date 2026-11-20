@@ -24,8 +24,6 @@
         :projects="state.projects.items"
         :current-id="state.projects.currentId"
         hide-project-switcher
-        :show-project-return="['deploy', 'knowledge'].includes(view)"
-        @return-project="returnToProject"
         @select-project="selectProject"
       />
       <main class="content-area" :class="{ 'content-area--flush': view === 'harness' || view === 'terminal', 'content-area--terminal': view === 'terminal' }">
@@ -214,14 +212,6 @@ function navigate(target) {
     return
   }
   view.value = target
-}
-
-function returnToProject() {
-  const projectId = view.value === 'terminal'
-    ? state.terminal.focusedProjectId
-    : view.value === 'knowledge' ? useKnowledge().workspace.projectId : state.projects.currentId
-  if (state.projects.items.some(project => project.id === projectId)) selectProject(projectId)
-  navigate('projects')
 }
 
 function openProjectEditor(project = null) {

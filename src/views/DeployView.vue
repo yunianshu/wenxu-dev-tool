@@ -7,11 +7,13 @@
         <div class="topbar-title-group">
           <h1 class="topbar-page-title">部署</h1>
           <TopbarProjectSelect show-deploy-status />
+        </div>
+        <div class="header-actions">
+          <el-button v-if="currentProject" :disabled="projectBusy" @click="aiOpen = true"><el-icon><MagicStick /></el-icon>AI 部署助手</el-button>
+          <el-button @click="serverManagerOpen = true"><el-icon><Coin /></el-icon>服务器管理</el-button>
+          <el-button v-if="currentProject" :disabled="projectBusy" @click="configOpen = true"><el-icon><Setting /></el-icon>部署设置</el-button>
           <el-button v-if="currentProject && state.deploy.projects.length > 1" class="batch-project-picker" @click="batchOpen = true">批量发布</el-button>
         </div>
-        <el-button v-if="currentProject" class="deploy-topbar-actions" :disabled="projectBusy" @click="aiOpen = true"><el-icon><MagicStick /></el-icon>AI 部署助手</el-button>
-        <el-button @click="serverManagerOpen = true"><el-icon><Coin /></el-icon>服务器管理</el-button>
-        <el-button v-if="currentProject" :disabled="projectBusy" @click="configOpen = true"><el-icon><Setting /></el-icon>部署设置</el-button>
       </div>
     </Teleport>
     <ServerManagerDialog v-model="serverManagerOpen" :servers="servers" :busy="deployBusy" @changed="onServersChanged" />
@@ -525,7 +527,7 @@ onUnmounted(() => {
 
 <style scoped>
 .deploy-page { display: flex; flex-direction: column; gap: 0; min-height: 100%; padding: 0 24px 20px; color: var(--brand-text); background: var(--surface); }
-.deploy-topbar-actions { margin-left: auto; }
+.header-actions > .el-button + .el-button { margin-left: 0; }
 .deploy-target-bar { padding: 16px 0; border-bottom: 1px solid var(--line); }
 .bar { display: flex; align-items: center; gap: 12px; min-height: 32px; flex-wrap: wrap; }
 .bar-label { color: var(--text-muted); font-size: 12px; }
