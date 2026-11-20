@@ -45,24 +45,24 @@
         <div v-if="run.running" class="run-live" role="status" aria-live="polite">
           <div class="run-live-main">
             <div class="run-loader" aria-hidden="true">
-              <svg viewBox="0 0 80 80"><circle class="run-loader-track" cx="40" cy="40" r="34" /><circle class="run-loader-fill" cx="40" cy="40" r="34" pathLength="100" :style="{ strokeDasharray: `${runPercent} 100` }" /></svg>
+              <svg viewBox="0 0 80 80"><circle class="run-loader-track" cx="40" cy="40" r="34" /><circle class="run-loader-fill" cx="40" cy="40" r="34" pathLength="100" :style="{ strokeDasharray: `${progress.percent} 100` }" /></svg>
               <span class="run-loader-spin" />
-              <span class="run-loader-count mono">{{ doneCount }}<small>/{{ stageTotal }}</small></span>
+              <span class="run-loader-count mono">{{ progress.doneCount }}<small>/{{ progress.stageTotal }}</small></span>
             </div>
             <div class="run-live-copy"><span>{{ run.targetName || '当前阶段' }}</span><strong>{{ activeStageLabel }}</strong><span>{{ activeStageDetail }}</span></div>
           </div>
-          <div class="run-live-footer"><span>{{ successCount }} 已完成<span v-if="skippedCount"> · {{ skippedCount }} 已跳过</span></span><span>发布日志实时更新</span></div>
+          <div class="run-live-footer"><span>{{ progress.counts.success }} 已完成<span v-if="progress.counts.skipped"> · {{ progress.counts.skipped }} 已跳过</span></span><span>发布日志实时更新</span></div>
         </div>
         <template v-else>
           <div class="run-summary">
-            <span v-if="hasRun">{{ successCount }} 已完成<span v-if="skippedCount"> · {{ skippedCount }} 已跳过</span><span v-if="failedCount"> · {{ failedCount }} 失败</span><span v-if="rollbackCount"> · {{ rollbackCount }} 已回滚</span></span>
-            <span v-else>准备就绪 · {{ stageTotal }} 个阶段</span>
-            <span class="run-fraction mono">{{ doneCount }}/{{ stageTotal }}</span>
+            <span v-if="hasRun">{{ progress.counts.success }} 已完成<span v-if="progress.counts.skipped"> · {{ progress.counts.skipped }} 已跳过</span><span v-if="progress.counts.failed"> · {{ progress.counts.failed }} 失败</span><span v-if="progress.counts.rollback"> · {{ progress.counts.rollback }} 已回滚</span></span>
+            <span v-else>准备就绪 · {{ progress.stageTotal }} 个阶段</span>
+            <span class="run-fraction mono">{{ progress.doneCount }}/{{ progress.stageTotal }}</span>
           </div>
-          <div class="run-track" :class="runTrackClass" role="progressbar" :aria-valuenow="runPercent" :aria-valuemin="0" :aria-valuemax="100" :aria-label="`${runTitle}，已结束 ${doneCount} 个阶段`"><div class="run-fill" :style="{ width: runPercent + '%' }" /></div>
+          <div class="run-track" :class="runTrackClass" role="progressbar" :aria-valuenow="progress.percent" :aria-valuemin="0" :aria-valuemax="100" :aria-label="`${runTitle}，已结束 ${progress.doneCount} 个阶段`"><div class="run-fill" :style="{ width: progress.percent + '%' }" /></div>
           <div class="stages">
             <div
-              v-for="(s, i) in stageList"
+              v-for="(s, i) in progress.stages"
               :key="s.id"
               class="stage-chip"
               :class="stageClass(s.id)"
@@ -142,6 +142,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { beginDeployRun, deployRunFor, finishDeployRun, deployOnlineVersion, setDeployOnlineVersion, submitDeployRun } from '../../store'
 import { bumpVersion, highestVersion } from '../../utils/version'
 import { fmtDur, fmtElapsed, publishBlocker } from './deploy-form'
+import { deployProgress } from './deploy-progress'
 
 const props = defineProps({
   /** 部署表单（响应式对象，只读使用） */
@@ -157,26 +158,8 @@ const props = defineProps({
 })
 const emit = defineEmits(['history-changed', 'set-version'])
 
-/** 与主进程 deploy-service.STAGES 保持一致；脚本部署形态下 build 阶段无对应动作 */
-const STAGE_LIST = [
-  { id: 'check', label: '检查项目' },
-  { id: 'package', label: '项目打包' },
-  { id: 'upload', label: '上传文件' },
-  { id: 'backup', label: '备份服务器' },
-  { id: 'extract', label: '解压新版本' },
-  { id: 'build', label: 'Docker构建' },
-  { id: 'start', label: '启动服务' },
-  { id: 'health', label: '健康检查' },
-  { id: 'openclaw', label: 'OpenClaw 同步' },
-  { id: 'datasync', label: '数据同步' },
-]
-
-/** 渲染用阶段列表：脚本部署时「Docker构建」显示为「项目脚本」（由升级脚本完成，无需构建） */
-const stageList = computed(() => STAGE_LIST.map((s) => (
-  s.id === 'build' && props.form.deployMode === 'script' ? { ...s, label: '项目脚本' } : s
-)))
-
 const run = computed(() => deployRunFor(props.form.id))
+const progress = computed(() => deployProgress(run.value, props.form.deployMode))
 const rollingBack = computed(() => run.value.running && run.value.type === 'rollback')
 const cancelAction = computed(() => run.value.queued ? '取消排队' : ({ rollback: '取消回滚', 'db-restore': '取消恢复' }[run.value.type] || '取消发布'))
 const releases = ref([])
@@ -307,38 +290,19 @@ onUnmounted(() => { disposed = true; if (ticker) clearInterval(ticker) })
 
 const hasRun = computed(() => !!run.value.startedAt)
 
-const stageTotal = computed(() => STAGE_LIST.length)
-
-/** 已完成阶段数（含失败/跳过/回滚——它们同样不再推进） */
-const doneCount = computed(() => STAGE_LIST.filter((s) => {
-  const st = run.value.stages[s.id]
-  return !!st && ['success', 'failed', 'skipped', 'rollback'].includes(st.status)
-}).length)
-const successCount = computed(() => STAGE_LIST.filter((s) => run.value.stages[s.id]?.status === 'success').length)
-const skippedCount = computed(() => STAGE_LIST.filter((s) => run.value.stages[s.id]?.status === 'skipped').length)
-const failedCount = computed(() => STAGE_LIST.filter((s) => run.value.stages[s.id]?.status === 'failed').length)
-const rollbackCount = computed(() => STAGE_LIST.filter((s) => run.value.stages[s.id]?.status === 'rollback').length)
-
-const runPercent = computed(() => (stageTotal.value ? Math.round((doneCount.value / stageTotal.value) * 100) : 0))
-const activeStage = computed(() => stageList.value.find(s => run.value.stages[s.id]?.status === 'running'))
 const activeStageLabel = computed(() => {
   if (run.value.queued) return '等待可用资源'
   if (restoringDb.value) return '恢复数据库'
-  return activeStage.value?.label || (rollingBack.value ? '准备回滚' : '准备发布')
+  return progress.value.activeStage?.label || (rollingBack.value ? '准备回滚' : '准备发布')
 })
 const activeStageDetail = computed(() => {
   if (run.value.queued) return '前序任务结束后自动执行'
   if (restoringDb.value) return '正在执行恢复流程'
-  if (activeStage.value?.id === 'package' && run.value.packageCount) return `已处理 ${run.value.packageCount} 个文件`
-  if (activeStage.value?.id === 'upload' && run.value.uploadPercent) return `已上传 ${run.value.uploadPercent}%`
-  if (activeStage.value?.id === 'datasync' && run.value.datasyncPercent) return `已同步 ${run.value.datasyncPercent}%`
-  return '正在处理，请稍候'
+  return progress.value.detail || '正在处理，请稍候'
 })
 
-const runFailed = computed(() => ['failed', 'rolled_back'].includes(run.value.status) || STAGE_LIST.some((s) => {
-  const st = run.value.stages[s.id]
-  return !!st && (st.status === 'failed' || st.status === 'rollback')
-}))
+const runFailed = computed(() => ['failed', 'rolled_back'].includes(run.value.status)
+  || progress.value.counts.failed > 0 || progress.value.counts.rollback > 0)
 const runTitle = computed(() => {
   if (run.value.queued) return '排队中'
   if (run.value.running) return restoringDb.value ? '正在恢复' : rollingBack.value ? '正在回滚' : '正在发布'
@@ -348,7 +312,7 @@ const runTitle = computed(() => {
   if (run.value.type === 'db-restore') return run.value.status === 'success' ? '恢复完成' : '恢复失败'
   if (runFailed.value) return '发布异常'
   if (run.value.type === 'rollback' && run.value.status === 'success') return '回滚完成'
-  return doneCount.value === stageTotal.value ? '发布完成' : '发布已结束'
+  return progress.value.doneCount === progress.value.stageTotal ? '发布完成' : '发布已结束'
 })
 
 const runTrackClass = computed(() => {

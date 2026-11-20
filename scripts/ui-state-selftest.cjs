@@ -242,6 +242,8 @@ async function main() {
     const deployView = mount('src/views/DeployView.vue')
     await settle()
     assert.equal(deployView.setup.form.id, 'A')
+    const overview = mount('src/components/deploy/DeployActiveReleases.vue')
+    assert.equal(overview.setup.tasks.value.length, 0)
     const targetId = deployView.setup.activeTargetId.value
     const publishPanel = mount('src/components/deploy/DeployRunPanel.vue', vue.reactive({
       form: deployView.setup.form, activeTarget: deployView.setup.activeTarget,
@@ -274,6 +276,8 @@ async function main() {
       return record
     }
     const a = await start('A')
+    await notify('onDeployStage', { ...a.event, stage: 'check', status: 'success' })
+    await notify('onDeployStage', { ...a.event, stage: 'package', status: 'skipped' })
     assert.equal(publishPanel.setup.run.value.logs[0].text, '日志 A')
     assert.equal(publishPanel.setup.run.value.uploadPercent, 50)
     const cancelCalls = []
@@ -289,9 +293,22 @@ async function main() {
     const b = await start('B', true)
     assert.equal(publishPanel.setup.runTitle.value, '排队中')
     assert.equal(publishPanel.setup.run.value.logs[0].text, '日志 B')
+    const [active, queued] = overview.setup.tasks.value
+    assert.equal(active.name, '项目 A', '切换到 B 后仍可查看 A')
+    assert.equal(active.run.targetName, a.event.targetId)
+    assert.equal(active.progress.activeStage.label, '上传文件')
+    assert.equal(active.progress.detail, '已上传 50%')
+    assert.equal(active.progress.doneCount, 2)
+    assert.equal(queued.name, '项目 B')
+    assert.equal(overview.setup.queuedCount.value, 1)
     const aRecord = await complete(a.event, '3.0.0')
+    assert.deepEqual(overview.setup.tasks.value.map(({ projectId }) => projectId), ['B'], '结束的任务自动移出列表')
+    await notify('onDeployStatus', { ...b.event, queued: false, targetName: b.event.targetId, startedAt: Date.now() })
+    await notify('onDeployProgress', { ...b.event, kind: 'upload', percent: 65 })
+    assert.equal(overview.setup.queuedCount.value, 0)
+    assert.equal(overview.setup.tasks.value[0].progress.detail, '已上传 65%')
     assert.equal(publishPanel.setup.run.value.running, true, '后台项目完成不得解除当前项目排队或执行态')
-    assert.equal(publishPanel.setup.run.value.uploadPercent, 20)
+    assert.equal(publishPanel.setup.run.value.uploadPercent, 65)
     assert.equal(deployOnlineVersion('A', targetId), '3.0.0')
     assert.equal(deployOnlineVersion('B', b.event.targetId), '')
     a.task.resolve({ ok: true, record: aRecord })
@@ -306,6 +323,9 @@ async function main() {
     state.deploy.runs.delete('A')
     b.task.resolve({ ok: false, record: await complete(b.event, '1.0.0', 'canceled') })
     await b.finished
+    assert.equal(overview.setup.tasks.value.length, 0)
+    overview.unmount()
+    console.log('  ✓ 部署页跨项目同步发布与排队、阶段和上传进度，结束后移出列表')
 
     publishRequests.clear()
     // 清除前一组模拟数据产生的草稿，从已保存配置开始。

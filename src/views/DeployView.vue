@@ -24,6 +24,8 @@
       :current-dirty="dirty"
     />
 
+    <DeployActiveReleases />
+
     <EmptyState
       v-if="!currentProject" icon="Promotion" title="先选择一个项目"
       description="部署始终作用于明确的项目。请到「项目」页选中一个项目，或先创建项目。"
@@ -121,6 +123,7 @@ import TopbarProjectSelect from '../components/TopbarProjectSelect.vue'
 import DeployConfigDrawer from '../components/deploy/DeployConfigDrawer.vue'
 import DeployAiAssistant from '../components/deploy/DeployAiAssistant.vue'
 import DeployAddPublish from '../components/deploy/DeployAddPublish.vue'
+import DeployActiveReleases from '../components/deploy/DeployActiveReleases.vue'
 import DeployRunPanel from '../components/deploy/DeployRunPanel.vue'
 import DeployHistoryTable from '../components/deploy/DeployHistoryTable.vue'
 import ServerManagerDialog from '../components/deploy/ServerManagerDialog.vue'
