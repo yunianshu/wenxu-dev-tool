@@ -59,6 +59,7 @@ import { ArrowDown, Close, Refresh } from '@element-plus/icons-vue'
 import '@xterm/xterm/css/xterm.css'
 import { shortPath } from '../utils/path'
 import { terminalFontStack } from '../utils/ui-prefs'
+import { applyTerminalUnicode } from '../utils/terminal-unicode'
 
 const props = defineProps({
   pane: { type: Object, required: true },        // { projectId, projectName, cwd, sessionCwd?, shellId, sessionId, shellLabel, exited, exitCode }
@@ -279,6 +280,14 @@ function handleTermKey(ev) {
   return true
 }
 
+/** 把当前单元格宽度写给 CSS：只含零步进字符的格子要靠它托底到一格（见样式里的 min-width） */
+function syncCellWidth() {
+  const screen = fitHostRef.value?.querySelector('.xterm-screen')
+  if (!screen || !term?.cols) return
+  const width = parseFloat(screen.style.width)
+  if (width > 0) fitHostRef.value.style.setProperty('--term-cell-w', `${width / term.cols}px`)
+}
+
 /** 尺寸适配（防抖：拖动分屏/窗口缩放会连续触发） */
 function scheduleFit() {
   if (fitTimer) clearTimeout(fitTimer)
@@ -286,6 +295,7 @@ function scheduleFit() {
     fitTimer = null
     if (!fitAddon || !term || !hostRef.value || !hostRef.value.clientWidth) return
     try { fitAddon.fit() } catch { /* 尺寸过小等场景忽略 */ }
+    syncCellWidth()
     const sid = props.pane.sessionId
     if (sid) window.gitReport.terminalResize(sid, term.cols, term.rows).catch(() => {})
   }, 60)
@@ -396,6 +406,9 @@ onMounted(async () => {
       selectionBackground: '#2d3a4d',
     },
   })
+  // Windows 会话的排版权在 conhost：让 xterm 的格子与它逐格一致，否则 emoji 之后的内容
+  // 与光标整体错位（见 terminal-unicode.js）。必须在写入任何输出之前换表
+  applyTerminalUnicode(term)
   fitAddon = new FitAddon()
   term.loadAddon(fitAddon)
   term.attachCustomKeyEventHandler(handleTermKey)
@@ -588,6 +601,16 @@ onBeforeUnmount(() => {
 .term-fit {
   width: 100%;
   height: 100%;
+}
+
+/* conhost 给变体选择符（FE0F）、ZWJ 这类零步进字符各留一格，xterm 的 DOM 渲染器靠
+   letter-spacing 把每个格子撑到列宽，但浏览器不给这类字符算字距：只含它们的 span 会塌成
+   0 宽，右边的格子整体左移（「❤️」「☕️」后面的光标与边框错位）。托底到一格：
+   留 0.5px 余量，保证不比正常的单格 span 宽，不会逐格累积。
+   连续多个这类格子会被 xterm 合并进同一个 span，只托得住一格——只出现在
+   连续零步进字符（ZWJ 紧跟 VS16、旗帜的 tag 序列）里，属 conhost 与 TUI 排版本就对不上的场景 */
+.term-host :deep(.xterm-rows span) {
+  min-width: calc(var(--term-cell-w, 0px) - 0.5px);
 }
 
 /* xterm 自带样式：确保它撑满宿主容器 */
