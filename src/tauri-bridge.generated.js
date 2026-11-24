@@ -104,7 +104,7 @@ contextBridge.exposeInMainWorld('gitReport', {
   reposSnapshot: () => ipcRenderer.invoke('git:reposSnapshot'),
   repoInfo: (repo) => ipcRenderer.invoke('git:repoInfo', repo),
   // 每仓库最近提交（项目页「最近提交」按日期分组展示）
-  recentCommits: (repos, limit) => ipcRenderer.invoke('git:recentCommits', toPlain(repos), limit),
+  recentCommits: (repos, limit) => ipcRenderer.invoke('git:recentCommits', { repos: toPlain(repos), limit }),
   collectCommits: (repos, opts) =>
     ipcRenderer.invoke('git:collectCommits', { repos: toPlain(repos), opts: toPlain(opts) }),
   getIdentity: () => ipcRenderer.invoke('git:identity'),
