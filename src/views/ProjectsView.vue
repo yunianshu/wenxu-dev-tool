@@ -116,9 +116,9 @@
             </div>
             <div v-if="hasMoreCommits" class="commit-actions">
               <el-alert v-if="commitsError" :title="commitsError" type="warning" :closable="false" />
-              <el-button :loading="commitsLoading" @click="loadRecentCommits(selected, visibleCommitCount + COMMIT_PAGE_SIZE)">
-                {{ commitsError ? '重试加载更多' : '加载更多' }}
-              </el-button>
+              <el-button v-if="commitsError" @click="loadRecentCommits(selected, visibleCommitCount + COMMIT_PAGE_SIZE)">重试加载更多</el-button>
+              <span v-else-if="commitsLoading" class="inline-empty" role="status">正在读取更多提交…</span>
+              <div v-else-if="detailTab === 'overview'" ref="commitListEnd" class="commit-list-end" aria-hidden="true" />
             </div>
           </div>
         </div>
@@ -306,6 +306,7 @@ const commitsError = ref('')
 const COMMIT_PAGE_SIZE = 12
 const visibleCommitCount = ref(0)
 const hasMoreCommits = ref(false)
+const commitListEnd = ref(null)
 let commitsRequest = 0
 
 async function loadRecentCommits(project, limit = COMMIT_PAGE_SIZE) {
@@ -333,6 +334,18 @@ async function loadRecentCommits(project, limit = COMMIT_PAGE_SIZE) {
     if (request === commitsRequest) commitsLoading.value = false
   }
 }
+
+// 请求结束后重新观察列表末尾，空间足够时继续加载，直到末尾离开可视区域。
+watch(commitListEnd, (element, _previous, onCleanup) => {
+  if (!element) return
+  const observer = new IntersectionObserver(([entry]) => {
+    if (!entry.isIntersecting || commitListEnd.value !== element ||
+        commitsLoading.value || commitsError.value || !hasMoreCommits.value) return
+    loadRecentCommits(selected.value, visibleCommitCount.value + COMMIT_PAGE_SIZE)
+  }, { root: element.closest('.project-detail-panel') })
+  observer.observe(element)
+  onCleanup(() => observer.disconnect())
+}, { flush: 'post' })
 
 /** 按日期（本地时区 YYYY-MM-DD）分组，日期内保持时间倒序 */
 const commitsByDate = computed(() => {
@@ -444,6 +457,7 @@ async function confirmRemove() {
 .project-section .section-heading h3 { font-size: 14px; line-height: 20px; color: var(--brand-text); }
 .project-notes { min-height: 56px; padding: 12px 16px; color: var(--brand-text); font-size: 13px; background: var(--surface-subtle); border-radius: 6px; line-height: 1.7; overflow-wrap: anywhere; }
 .commit-actions { display: grid; justify-items: center; gap: 8px; }
+.commit-list-end { width: 100%; height: 1px; }
 .commit-feed { display: flex; flex-direction: column; gap: 12px; }
 .project-commit-date { white-space: nowrap; padding: 6px 0; color: var(--text-muted); font-size: 12px; border-bottom: 1px solid var(--line-soft); }
 .commit-date-group { min-width: 0; }
