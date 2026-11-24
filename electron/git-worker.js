@@ -50,8 +50,8 @@ const HANDLERS = {
     return gitService.getRepoInfo(repo)
   },
   /** 每仓库最近提交（项目页「最近提交」：并发查询仍留在工作进程，不占主进程） */
-  async recentCommits({ repos }) {
-    return gitService.recentCommits(repos)
+  async recentCommits({ repos, limit }) {
+    return gitService.recentCommits(repos, limit)
   },
   async identity() {
     return gitService.getIdentity()

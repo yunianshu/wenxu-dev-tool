@@ -100,19 +100,25 @@
         <div class="project-section">
           <div class="section-heading">
             <div><h3>最近提交</h3></div>
-            <el-button v-if="commitsError" text @click="loadRecentCommits(selected)">重试</el-button>
+            <el-button v-if="commitsError && !recentCommits.length" text @click="loadRecentCommits(selected)">重试</el-button>
           </div>
-          <div v-if="commitsLoading" class="inline-empty">正在读取提交…</div>
-          <el-alert v-else-if="commitsError" :title="commitsError" type="warning" :closable="false" />
+          <div v-if="commitsLoading && !recentCommits.length" class="inline-empty">正在读取提交…</div>
+          <el-alert v-else-if="commitsError && !recentCommits.length" :title="commitsError" type="warning" :closable="false" />
           <div v-else-if="!matchedRepos.length" class="inline-empty">未发现关联仓库</div>
           <div v-else-if="!commitsByDate.length" class="inline-empty">暂无提交记录</div>
           <div v-else class="commit-feed">
             <div v-for="group in commitsByDate" :key="group.date" class="commit-date-group">
-              <div class="commit-date">{{ group.date }}<span v-if="relativeDay(group.date)"> · {{ relativeDay(group.date) }}</span></div>
+              <div class="project-commit-date">{{ group.date }}<span v-if="relativeDay(group.date)"> · {{ relativeDay(group.date) }}</span></div>
               <div v-for="commit in group.items" :key="`${commit.repo}\u0000${commit.hash}`" class="commit-row">
                 <span class="commit-subject" :title="commit.subject">{{ commit.subject }}</span>
                 <span class="commit-meta">{{ commit.hash }}</span>
               </div>
+            </div>
+            <div v-if="hasMoreCommits" class="commit-actions">
+              <el-alert v-if="commitsError" :title="commitsError" type="warning" :closable="false" />
+              <el-button :loading="commitsLoading" @click="loadRecentCommits(selected, visibleCommitCount + COMMIT_PAGE_SIZE)">
+                {{ commitsError ? '重试加载更多' : '加载更多' }}
+              </el-button>
             </div>
           </div>
         </div>
@@ -297,30 +303,34 @@ async function onDebugCardClick() {
 const recentCommits = ref([])
 const commitsLoading = ref(false)
 const commitsError = ref('')
-/** 展示条数上限：日期分组后截断，避免大仓库刷屏 */
-const COMMIT_SHOW_LIMIT = 12
+const COMMIT_PAGE_SIZE = 12
+const visibleCommitCount = ref(0)
+const hasMoreCommits = ref(false)
+let commitsRequest = 0
 
-async function loadRecentCommits(project) {
-  const repos = reposForProject(project, state.discoveredRepos).map((row) => row.path)
-  if (!repos.length) { recentCommits.value = []; return }
-  commitsLoading.value = true
+async function loadRecentCommits(project, limit = COMMIT_PAGE_SIZE) {
+  const request = ++commitsRequest
+  const repos = (project ? matchedRepos.value.map((row) => row.path) : [])
   commitsError.value = ''
+  commitsLoading.value = repos.length > 0
+  if (!repos.length) return
   try {
-    const result = await window.gitReport.recentCommits(repos)
+    const result = await window.gitReport.recentCommits(repos, limit + 1)
     // 竞态防护：晚到的旧项目结果不得覆盖当前选中项目
-    if (selected.value?.id !== project.id) return
+    if (request !== commitsRequest) return
     const flat = []
     for (const group of result || []) {
       for (const commit of group?.commits || []) flat.push({ ...commit, repo: group.repo })
     }
     flat.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
-    recentCommits.value = flat.slice(0, COMMIT_SHOW_LIMIT)
+    recentCommits.value = flat.slice(0, limit)
+    visibleCommitCount.value = limit
+    hasMoreCommits.value = flat.length > limit
   } catch (error) {
-    if (selected.value?.id !== project.id) return
-    recentCommits.value = []
+    if (request !== commitsRequest) return
     commitsError.value = error?.message || '最近提交读取失败'
   } finally {
-    if (selected.value?.id === project.id) commitsLoading.value = false
+    if (request === commitsRequest) commitsLoading.value = false
   }
 }
 
@@ -353,7 +363,12 @@ function relativeDay(dateText) {
 
 watch(
   () => [selected.value?.id, matchedRepos.value.map((row) => row.path).join('\u0000')],
-  () => { if (selected.value) loadRecentCommits(selected.value) },
+  () => {
+    recentCommits.value = []
+    visibleCommitCount.value = 0
+    hasMoreCommits.value = false
+    loadRecentCommits(selected.value)
+  },
   { immediate: true }
 )
 
@@ -428,8 +443,9 @@ async function confirmRemove() {
 .project-section .section-heading { margin: 0 0 12px; padding: 0; border: 0; }
 .project-section .section-heading h3 { font-size: 14px; line-height: 20px; color: var(--brand-text); }
 .project-notes { min-height: 56px; padding: 12px 16px; color: var(--brand-text); font-size: 13px; background: var(--surface-subtle); border-radius: 6px; line-height: 1.7; overflow-wrap: anywhere; }
+.commit-actions { display: grid; justify-items: center; gap: 8px; }
 .commit-feed { display: flex; flex-direction: column; gap: 12px; }
-.commit-date { padding: 6px 0; color: var(--text-muted); font-size: 12px; border-bottom: 1px solid var(--line-soft); }
+.project-commit-date { white-space: nowrap; padding: 6px 0; color: var(--text-muted); font-size: 12px; border-bottom: 1px solid var(--line-soft); }
 .commit-date-group { min-width: 0; }
 .commit-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
 .commit-row:last-child { border-bottom: 0; }

@@ -141,8 +141,8 @@ function getRepoInfo(repo) {
 }
 
 /** 每仓库最近提交（项目页「最近提交」展示用） */
-function recentCommits(repos) {
-  return call('recentCommits', { repos })
+function recentCommits(repos, limit) {
+  return call('recentCommits', { repos, limit })
 }
 
 function getIdentity() {

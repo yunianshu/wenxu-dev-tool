@@ -467,11 +467,12 @@ const RECENT_PER_REPO_LIMIT = 30
  * - 单仓库只查各 ref 可达的最新提交（含合并，截短哈希与 collectCommits 一致）
  * - 输出按仓库传入顺序返回 [{ repo, commits }]；单仓库内按 git log 逆时间序
  */
-async function recentCommits(repos) {
+async function recentCommits(repos, limit = RECENT_PER_REPO_LIMIT) {
+  const maxCount = Number.isSafeInteger(limit) && limit > 0 ? limit : RECENT_PER_REPO_LIMIT
   const repoList = uniquePaths(repos)
   const results = await runPool(repoList, async (repo) => {
     const res = await execGit(repo, [
-      'log', '--all', '--no-color', `-n`, String(RECENT_PER_REPO_LIMIT),
+      'log', '--all', '--no-color', `-n`, String(maxCount),
       `--pretty=tformat:${COMMIT_FMT}`, '--date=short',
     ])
     return res.ok ? parseCommitLines(repo, res.stdout) : []
