@@ -97,6 +97,26 @@
           <div v-else class="inline-empty">暂无备注，可通过右上角「编辑」补充。</div>
         </div>
 
+        <div class="project-section">
+          <div class="section-heading">
+            <div><h3>最近提交</h3></div>
+            <el-button v-if="commitsError" text @click="loadRecentCommits(selected)">重试</el-button>
+          </div>
+          <div v-if="commitsLoading" class="inline-empty">正在读取提交…</div>
+          <el-alert v-else-if="commitsError" :title="commitsError" type="warning" :closable="false" />
+          <div v-else-if="!matchedRepos.length" class="inline-empty">未发现关联仓库</div>
+          <div v-else-if="!commitsByDate.length" class="inline-empty">暂无提交记录</div>
+          <div v-else class="commit-feed">
+            <div v-for="group in commitsByDate" :key="group.date" class="commit-date-group">
+              <div class="commit-date">{{ group.date }}<span v-if="relativeDay(group.date)"> · {{ relativeDay(group.date) }}</span></div>
+              <div v-for="commit in group.items" :key="`${commit.repo}\u0000${commit.hash}`" class="commit-row">
+                <span class="commit-subject" :title="commit.subject">{{ commit.subject }}</span>
+                <span class="commit-meta">{{ commit.hash }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
           </el-tab-pane>
           <el-tab-pane label="知识记录" name="knowledge"><ProjectKnowledge v-if="detailTab === 'knowledge'" :project="selected" @navigate="$emit('navigate', $event)" /></el-tab-pane>
           <el-tab-pane :label="`Git 活动源 (${matchedRepos.length})`" name="sources">
@@ -273,6 +293,70 @@ async function onDebugCardClick() {
   }
 }
 
+// ─── 最近提交（按日期分组；数据来自所选项目关联仓库的实时 git log） ───
+const recentCommits = ref([])
+const commitsLoading = ref(false)
+const commitsError = ref('')
+/** 展示条数上限：日期分组后截断，避免大仓库刷屏 */
+const COMMIT_SHOW_LIMIT = 12
+
+async function loadRecentCommits(project) {
+  const repos = reposForProject(project, state.discoveredRepos).map((row) => row.path)
+  if (!repos.length) { recentCommits.value = []; return }
+  commitsLoading.value = true
+  commitsError.value = ''
+  try {
+    const result = await window.gitReport.recentCommits(repos)
+    // 竞态防护：晚到的旧项目结果不得覆盖当前选中项目
+    if (selected.value?.id !== project.id) return
+    const flat = []
+    for (const group of result || []) {
+      for (const commit of group?.commits || []) flat.push({ ...commit, repo: group.repo })
+    }
+    flat.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+    recentCommits.value = flat.slice(0, COMMIT_SHOW_LIMIT)
+  } catch (error) {
+    if (selected.value?.id !== project.id) return
+    recentCommits.value = []
+    commitsError.value = error?.message || '最近提交读取失败'
+  } finally {
+    if (selected.value?.id === project.id) commitsLoading.value = false
+  }
+}
+
+/** 按日期（本地时区 YYYY-MM-DD）分组，日期内保持时间倒序 */
+const commitsByDate = computed(() => {
+  const groups = []
+  const index = new Map()
+  for (const commit of recentCommits.value) {
+    const date = String(commit.date || '').slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue
+    let group = index.get(date)
+    if (!group) { group = { date, items: [] }; index.set(date, group); groups.push(group) }
+    group.items.push(commit)
+  }
+  return groups
+})
+
+/** 今天 / 昨天（本地时区），用于日期标注 */
+function relativeDay(dateText) {
+  const today = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  const todayText = `${today.getFullYear()}-${p(today.getMonth() + 1)}-${p(today.getDate())}`
+  if (dateText === todayText) return '今天'
+  const yesterday = new Date(today)
+  yesterday.setDate(yesterday.getDate() - 1)
+  const yesterdayText = `${yesterday.getFullYear()}-${p(yesterday.getMonth() + 1)}-${p(yesterday.getDate())}`
+  if (dateText === yesterdayText) return '昨天'
+  return ''
+}
+
+watch(
+  () => [selected.value?.id, matchedRepos.value.map((row) => row.path).join('\u0000')],
+  () => { if (selected.value) loadRecentCommits(selected.value) },
+  { immediate: true }
+)
+
 function formatTime(timestamp) {
   if (!timestamp) return '—'
   return new Date(timestamp).toLocaleString('zh-CN', { hour12: false })
@@ -344,6 +428,13 @@ async function confirmRemove() {
 .project-section .section-heading { margin: 0 0 12px; padding: 0; border: 0; }
 .project-section .section-heading h3 { font-size: 14px; line-height: 20px; color: var(--brand-text); }
 .project-notes { min-height: 56px; padding: 12px 16px; color: var(--brand-text); font-size: 13px; background: var(--surface-subtle); border-radius: 6px; line-height: 1.7; overflow-wrap: anywhere; }
+.commit-feed { display: flex; flex-direction: column; gap: 12px; }
+.commit-date { padding: 6px 0; color: var(--text-muted); font-size: 12px; border-bottom: 1px solid var(--line-soft); }
+.commit-date-group { min-width: 0; }
+.commit-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
+.commit-row:last-child { border-bottom: 0; }
+.commit-subject { min-width: 0; color: var(--brand-text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.commit-meta { flex-shrink: 0; color: var(--text-muted); font-size: 11px; font-family: var(--brand-mono); }
 .inline-empty { min-height: 56px; padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border: 0; border-radius: 6px; background: var(--brand-bg); color: var(--text-muted); font: inherit; font-size: 12px; text-align: left; }
 .project-sources-heading { min-height: 56px; display: flex; align-items: center; justify-content: space-between; color: var(--text-muted); font-size: 12px; }
 .project-source-table :deep(.el-table__row) { height: 40px; }

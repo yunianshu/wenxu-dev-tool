@@ -459,6 +459,26 @@ async function collectCommits(repos, opts, onProgress) {
   }
 }
 
+/** 每仓库最近提交条数上限：多仓库聚合后仍按时间取总上限 */
+const RECENT_PER_REPO_LIMIT = 30
+
+/**
+ * 每个仓库的最近提交（项目页「最近提交」用）。
+ * - 单仓库只查各 ref 可达的最新提交（含合并，截短哈希与 collectCommits 一致）
+ * - 输出按仓库传入顺序返回 [{ repo, commits }]；单仓库内按 git log 逆时间序
+ */
+async function recentCommits(repos) {
+  const repoList = uniquePaths(repos)
+  const results = await runPool(repoList, async (repo) => {
+    const res = await execGit(repo, [
+      'log', '--all', '--no-color', `-n`, String(RECENT_PER_REPO_LIMIT),
+      `--pretty=tformat:${COMMIT_FMT}`, '--date=short',
+    ])
+    return res.ok ? parseCommitLines(repo, res.stdout) : []
+  })
+  return repoList.map((repo, index) => ({ repo, commits: results[index] || [] }))
+}
+
 /** 读取本机全局 git 身份 */
 async function getIdentity() {
   const name = await execGitGlobal(['config', '--global', 'user.name'])
@@ -469,4 +489,4 @@ async function getIdentity() {
   }
 }
 
-module.exports = { scanRepos, scanReposCached, invalidateScanCache, getRepoInfo, collectCommits, getIdentity, todayLocal, tomorrowLocal, execGit }
+module.exports = { scanRepos, scanReposCached, invalidateScanCache, getRepoInfo, collectCommits, recentCommits, getIdentity, todayLocal, tomorrowLocal, execGit }

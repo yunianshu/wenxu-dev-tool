@@ -54,6 +54,7 @@ const SUITES = [
   'report-history-selftest.cjs',
   'git-service-selftest.cjs',
   'git-client-selftest.cjs',
+  'git-recent-commits-selftest.cjs',
   'fill-report-selftest.cjs',
   'fill-consistency-selftest.cjs',
   'leave-selftest.cjs',

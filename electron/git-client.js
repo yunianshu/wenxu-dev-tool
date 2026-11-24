@@ -140,6 +140,11 @@ function getRepoInfo(repo) {
   return call('repoInfo', { repo })
 }
 
+/** 每仓库最近提交（项目页「最近提交」展示用） */
+function recentCommits(repos) {
+  return call('recentCommits', { repos })
+}
+
 function getIdentity() {
   return call('identity', {})
 }
@@ -158,6 +163,7 @@ module.exports = {
   scanReposCached,
   collectCommits,
   getRepoInfo,
+  recentCommits,
   getIdentity,
   invalidateScanCache,
   setEventSink,

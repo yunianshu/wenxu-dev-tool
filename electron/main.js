@@ -442,6 +442,8 @@ function registerIpc() {
       })
   })
   ipcMain.handle('git:repoInfo', (_e, repo) => gitService.getRepoInfo(repo))
+  // 每仓库最近提交（项目页「最近提交」；实际查询在 git 工作进程）
+  ipcMain.handle('git:recentCommits', (_e, repos) => gitService.recentCommits(repos || []))
   ipcMain.handle('git:collectCommits', async (e, payload) => {
     // 报告页自己的收集：进度只回发起窗口（预热走 broadcast，见 handleGitEvent）
     return gitService.collectCommits(payload.repos, payload.opts, { tag: gitService.windowTag(e.sender.id) })
