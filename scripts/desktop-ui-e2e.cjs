@@ -5,7 +5,6 @@ const path = require('node:path')
 const { spawn } = require('node:child_process')
 const ROOT = path.resolve(__dirname, '..')
 const OUTPUT = path.join(ROOT, 'output', 'desktop-v2-review')
-const PORT = 4178
 
 function playwright() {
   if (process.env.PLAYWRIGHT_MODULE) return require(process.env.PLAYWRIGHT_MODULE)
@@ -21,7 +20,7 @@ function playwright() {
 function installFixture({ projects, reports, deployments, knowledgeRecords }) {
   const events = new Map()
   window.__uiEmitDeployDone = async record => Promise.all([...(events.get('onDeployDone') || [])].map(fn => fn({ record })))
-  const eventNames = new Set(['onWinFullscreen', 'onWinMaximized', 'onWinAskClose', 'onHarnessUpdate', 'onScanProgress', 'onScanRepoFound', 'onScanDone', 'onCollectProgress', 'onDeployLog', 'onDeployStage', 'onDeployProgress', 'onDeployDone', 'onDeployHistoryUpdated', 'onHarnessStatus', 'onTerminalData', 'onTerminalCwd', 'onTerminalExit', 'onTerminalClosed', 'onAiDelta'])
+  const eventNames = new Set(['onWinFullscreen', 'onWinMaximized', 'onWinAskClose', 'onHarnessUpdate', 'onScanProgress', 'onScanRepoFound', 'onScanDone', 'onCollectProgress', 'onDeployStatus', 'onDeployLog', 'onDeployStage', 'onDeployProgress', 'onDeployDone', 'onDeployHistoryUpdated', 'onHarnessStatus', 'onTerminalData', 'onTerminalCwd', 'onTerminalExit', 'onTerminalClosed', 'onAiDelta'])
   const knowledgeKey = 'desktop-ui-test-knowledge'
   if (!localStorage.getItem(knowledgeKey)) localStorage.setItem(knowledgeKey, JSON.stringify(knowledgeRecords))
   const readKnowledge = () => JSON.parse(localStorage.getItem(knowledgeKey))
@@ -75,8 +74,27 @@ function installFixture({ projects, reports, deployments, knowledgeRecords }) {
     knowledgeExport: id => { const record = readKnowledge().find(row => row.id === id); return record ? { ok: true, fileName: record.title + '.md', content: '# ' + record.title + '\n\n' + record.body } : { ok: false, error: '记录不存在' } },
     aiChat: (messages, options) => {
       window.__uiAiRequests.push(copy({ messages, options }))
-      throw new Error('想法工作台不应发起 AI 分析请求')
+      if (window.__uiFailNextAnalysis) {
+        window.__uiFailNextAnalysis = false
+        return { ok: false, error: '隔离模型暂时不可用' }
+      }
+      return { ok: true, text: JSON.stringify({
+        modules: [{
+          title: '共用表单校验', summary: '抽取字段校验规则，保留每个项目独立的表单布局。',
+          nextStep: '从两个表单各挑一个必填项抽出校验函数。', validation: '两个表单用同一组输入产生一致提示。',
+          sources: ['P1', 'P2'], evidence: { P1: '复用表单校验规则', P2: '复用表单校验规则' },
+        }],
+        directions: [{
+          title: '用原型验证表单提示', summary: '把用户想法转化为两个表单的对照实验。',
+          nextStep: '准备一组合法和非法的输入样例。', validation: '逐项核对错误提示能否定位字段。',
+          sources: ['P1', 'P2', 'R1'],
+        }], note: '',
+      }) }
     },
+    recentCommits: (paths, limit) => paths.map(repo => ({ repo, commits: Array.from({ length: Math.min(12, limit) }, (_, i) => ({
+      hash: 'a' + String(i).padStart(9, '0'), date: new Date(Date.UTC(2026, 9, 20 - i)).toISOString(), subject: i === 0 ? '复用表单校验规则' : '提交样例第' + (i + 1) + '条',
+      authorName: '隔离作者', authorEmail: 'committer@example.invalid',
+    })) })),
     projectsList: () => copy(projects),
     deployProjectsSave: payload => {
       const index = projects.findIndex(project => project.id === payload.id)
@@ -118,6 +136,84 @@ function installFixture({ projects, reports, deployments, knowledgeRecords }) {
   } })
 }
 
+async function verifyKnowledgeSuggestions(page, navigate) {
+  const sourceTitle = '希望两个项目的表单能用同一套错误提示'
+  const recordsInBrowser = () => page.evaluate(() => JSON.parse(localStorage.getItem('desktop-ui-test-knowledge')))
+  const tabs = page.locator('.knowledge-tabs')
+  await navigate('工作台')
+  await page.getByRole('button', { name: '记录与复盘', exact: true }).click()
+  const projectContext = page.locator('.knowledge-context')
+  assert.match(await projectContext.innerText(), /Personnel PLM/)
+  await projectContext.getByRole('button', { name: '记录项目想法' }).click()
+  await page.getByRole('textbox', { name: '快速记录' }).fill(sourceTitle)
+  await page.getByRole('button', { name: '保存快速记录' }).click()
+  await page.waitForFunction(title => JSON.parse(localStorage.getItem('desktop-ui-test-knowledge')).some(row => row.title === title), sourceTitle)
+  const original = (await recordsInBrowser()).find(row => row.title === sourceTitle)
+  assert.equal(original.projectId, 'project-0')
+  await tabs.getByRole('button', { name: '模块与灵感' }).click()
+
+  async function choose(label, names) {
+    const control = page.getByRole('combobox', { name: label, exact: true })
+    await page.locator('.el-select__wrapper').filter({ has: control }).click()
+    for (const name of names) {
+      const option = page.getByRole('option', { name: new RegExp(name) })
+      if (await option.getAttribute('aria-selected') !== 'true') await option.click()
+    }
+    await control.press('Escape')
+  }
+  await choose('选择对比项目', ['Personnel PLM', '组件文档站'])
+  await choose('选择知识记录', [sourceTitle])
+  assert.equal((await page.evaluate(() => window.__uiAiRequests)).length, 0, '打开页面、保存想法和选择材料均不发起请求')
+  const generate = page.getByRole('button', { name: '生成建议', exact: true })
+  await page.evaluate(() => { window.__uiFailNextAnalysis = true })
+  await generate.click()
+  await page.getByRole('alert').filter({ hasText: '隔离模型暂时不可用' }).waitFor()
+  assert.equal((await recordsInBrowser()).find(row => row.id === original.id).revision, original.revision, '请求失败保留已选想法')
+  await generate.click()
+  const moduleTitle = '共用表单校验'
+  const directionTitle = '用原型验证表单提示'
+  const moduleCard = page.locator('article').filter({ hasText: moduleTitle })
+  const directionCard = page.locator('article').filter({ hasText: directionTitle })
+  await moduleCard.getByRole('button', { name: '保存到知识库' }).waitFor()
+  const requests = await page.evaluate(() => window.__uiAiRequests)
+  assert.equal(requests.length, 2)
+  assert.deepEqual(requests[0].messages, requests[1].messages, '重试沿用选定材料')
+  assert.notEqual(requests[0].options.requestId, requests[1].options.requestId, '重试具有独立请求 ID')
+  const prompt = requests[1].messages.map(message => message.content).join('\n')
+  for (const material of ['Personnel PLM', '组件文档站', '前端组件与交互规范', '项目资料、Git 活动与部署的统一工作区', 'Vue', '保留项目目录与既有工作流程', '复用表单校验规则', sourceTitle]) {
+    assert(prompt.includes(material), '请求应包含所选资料：' + material)
+  }
+  for (const omitted of ['内部 API 服务', '排查自动保存中的旧响应', '提交样例第9条', 'committer@example.invalid', '192.0.2.10', 'D:/Projects/']) {
+    assert(!prompt.includes(omitted), '请求应排除未选材料或额外的本机数据：' + omitted)
+  }
+  assert(!(await recordsInBrowser()).some(row => row.title === moduleTitle || row.title === directionTitle), '生成结果只作为预览')
+  await moduleCard.getByRole('button', { name: '保存到知识库' }).click()
+  await directionCard.getByRole('button', { name: '保存到知识库' }).click()
+  await page.waitForFunction(title => JSON.parse(localStorage.getItem('desktop-ui-test-knowledge')).some(row => row.title === title), directionTitle)
+  const rows = await recordsInBrowser()
+  const method = rows.find(row => row.title === moduleTitle)
+  const idea = rows.find(row => row.title === directionTitle)
+  assert.equal(method.type, 'method')
+  assert.equal(method.status, 'organized')
+  assert.equal(idea.type, 'idea')
+  assert.equal(idea.status, 'draft')
+  assert.deepEqual(method.sourceProjects, [{ id: 'project-0', name: 'Personnel PLM' }, { id: 'project-1', name: '组件文档站' }])
+  assert.deepEqual(idea.sourceIds, [original.id])
+  assert.deepEqual(rows.find(row => row.id === original.id), original, '采纳建议保留原始想法和修订号')
+  for (const name of ['Personnel PLM', '组件文档站']) assert(method.body.includes(name), '共性模块保留来源项目：' + name)
+  await tabs.getByRole('button', { name: '全部记录' }).click()
+  const projectFilter = page.getByRole('combobox', { name: '筛选关联项目' })
+  for (const name of ['Personnel PLM', '组件文档站']) {
+    await page.locator('.el-select__wrapper').filter({ has: projectFilter }).click()
+    await page.getByRole('option', { name, exact: true }).click()
+    await page.locator('.knowledge-record-title').filter({ hasText: moduleTitle }).waitFor()
+  }
+  await page.locator('.knowledge-record-title').filter({ hasText: directionTitle }).click()
+  await page.getByRole('region', { name: '来源记录' }).getByRole('button', { name: new RegExp(sourceTitle) }).click()
+  assert.equal(await page.getByRole('textbox', { name: '记录标题' }).inputValue(), sourceTitle, '重新打开采纳的建议可回到来源原文')
+  assert.equal((await page.evaluate(() => window.__uiAiRequests)).length, 2, '回看记录不重新调用模型')
+}
+
 async function main() {
   fs.mkdirSync(OUTPUT, { recursive: true })
   const factory = await import('data:text/javascript;base64,' + Buffer.from(fs.readFileSync(path.join(ROOT, 'src/components/deploy/deploy-form.js'), 'utf8')).toString('base64'))
@@ -135,7 +231,14 @@ async function main() {
     ['idea', 'draft', '个人工作复盘提纲', '记录结果、原因与下一次可执行的调整。', null],
   ].map(([type, status, title, body, projectIndex], index) => ({ id: 'knowledge-' + index, type, status, title, body, projectId: projectIndex === null ? '' : projects[projectIndex].id, projectName: projectIndex === null ? '' : projects[projectIndex].name, tags: ['知识实践', type === 'ai' ? 'AI' : '工作方法'], sourceIds: [], deletedAt: null, revision: 1, createdAt: Date.now() - (7 - index) * 3600000, updatedAt: Date.now() - index * 3600000 }))
   // 测试过程中不接受开发热替换，避免并行编辑重置正在验证的工作区。
-  const viteRunner = `const { createServer } = await import('vite'); const server = await createServer({ root: process.cwd(), server: { host: '127.0.0.1', port: ${PORT}, strictPort: true, hmr: false } }); await server.listen(); console.log('桌面验收服务已就绪');`
+  const viteRunner = `
+    import http from 'node:http'
+    import { createServer } from 'vite'
+    const server = http.createServer()
+    const vite = await createServer({ root: process.cwd(), server: { middlewareMode: true, watch: null, hmr: { server } } })
+    server.on('request', vite.middlewares)
+    server.listen(0, '127.0.0.1', () => console.log('桌面验收服务端口=' + server.address().port))
+  `
   const server = spawn(process.execPath, ['--input-type=module', '-e', viteRunner], { cwd: ROOT, windowsHide: true, stdio: 'pipe' })
   let serverLog = ''
   server.stdout.on('data', chunk => { serverLog += chunk })
@@ -148,26 +251,27 @@ async function main() {
   const unknown = []
   const interactions = []
   try {
-    let ready = false
+    let origin = ''
     for (let i = 0; i < 40; i++) {
       if (server.exitCode !== null) throw new Error(serverLog)
-      try { if (serverLog.includes('桌面验收服务已就绪') && (await fetch(`http://127.0.0.1:${PORT}`)).ok) { ready = true; break } } catch { /* 等待测试服务就绪 */ }
+      const port = serverLog.match(/桌面验收服务端口=(\d+)/)?.[1]
+      if (port) { origin = 'http://127.0.0.1:' + port; break }
       await new Promise(resolve => setTimeout(resolve, 250))
     }
-    if (!ready) throw new Error('隔离 Vite 服务未就绪：' + serverLog)
+    if (!origin) throw new Error('隔离 Vite 服务未就绪：' + serverLog)
     browser = await playwright().chromium.launch({ channel: 'msedge', headless: true })
     page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, reducedMotion: 'reduce' })
     page.setDefaultTimeout(12000)
     await page.route('**/*', async route => {
       const url = new URL(route.request().url())
-      if (url.origin === `http://127.0.0.1:${PORT}` || ['data:', 'blob:'].includes(url.protocol)) return route.continue()
+      if (url.origin === origin || ['data:', 'blob:'].includes(url.protocol)) return route.continue()
       externalRequests.push(route.request().url())
       await route.abort('blockedbyclient')
     })
     page.on('pageerror', error => errors.push(error.message))
     page.on('console', message => { if ((message.type() === 'error' && !message.text().includes('favicon')) || /Failed to resolve component|Unhandled error/.test(message.text())) errors.push(message.text()) })
     await page.addInitScript(installFixture, { projects, reports, deployments, knowledgeRecords })
-    await page.goto(`http://127.0.0.1:${PORT}`, { waitUntil: 'domcontentloaded', timeout: 30000 })
+    await page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 30000 })
     await page.locator('.work-overview').waitFor()
     const navigate = async name => { await page.locator('.app-menu .el-menu-item').filter({ has: page.locator('span', { hasText: new RegExp('^' + name + '$') }) }).click(); await page.waitForTimeout(250) }
     const capture = async (name, theme, width, height) => {
@@ -194,6 +298,14 @@ async function main() {
       checks.push({ name, theme, width, height, layout })
       await page.screenshot({ path: path.join(OUTPUT, `${theme}-${width}-${name}.png`), fullPage: false })
     }
+    if (process.argv.includes('--knowledge-only')) {
+      await verifyKnowledgeSuggestions(page, navigate)
+      assert.deepEqual(await page.evaluate(() => window.__uiUnknown), [], '知识库验收的 IPC 均应有隔离实现')
+      assert.deepEqual(errors, [], '知识库验收不能出现运行时错误')
+      assert.deepEqual(externalRequests, [], '隔离验收不能访问外部服务')
+      console.log('通过：项目上下文录入、跨项目建议生成与失败重试、逐条采纳、按两个项目筛选及来源回看。')
+      return
+    }
     await page.getByRole('button', { name: '记录与复盘', exact: true }).click()
     await page.locator('.knowledge-context').waitFor()
     assert.equal(await page.locator('.knowledge-context').getByRole('button', { name: '记录项目想法' }).count(), 1, '项目记录保留快捷创建入口')
@@ -201,7 +313,7 @@ async function main() {
     await page.getByRole('textbox', { name: '快速记录', exact: true }).fill('项目上下文验证想法')
     await page.getByRole('button', { name: '保存快速记录', exact: true }).click()
     await page.waitForFunction(() => JSON.parse(localStorage.getItem('desktop-ui-test-knowledge')).some(row => row.title === '项目上下文验证想法' && row.projectId === 'project-0'))
-    await page.getByRole('button', { name: '返回项目', exact: true }).click()
+    await navigate('项目')
     await page.locator('.project-detail-panel').waitFor()
     assert.equal(await page.locator('.project-detail-panel .work-status').count(), 1, '项目概览展示工作状态')
     await navigate('工作台')
@@ -233,7 +345,7 @@ async function main() {
     await page.evaluate(async () => { const { state } = await import('/src/store.js'); window.__overviewProjects = [...state.projects.items]; state.projects.items = []; state.projects.currentId = '' })
     await page.getByRole('button', { name: '创建第一个项目', exact: true }).waitFor()
     await page.evaluate(async () => { const { state } = await import('/src/store.js'); state.projects.items = window.__overviewProjects; state.projects.currentId = 'project-0' })
-    if (process.argv.includes('--overview-only')) { console.log('通过：项目工作台默认首页、项目记录归属、发布与终端上下文、返回项目、读取失败重试和空态'); return }
+    if (process.argv.includes('--overview-only')) { console.log('通过：项目工作台默认首页、项目记录归属、发布与终端上下文、项目概览、读取失败重试和空态'); return }
     const deployFlowOnly = process.argv.includes('--deploy-flow-only')
     if (!deployFlowOnly) {
     const pages = [['工作台', 'overview'], ['知识库', 'knowledge'], ['项目', 'projects'], ['DeepSeek Harness', 'harness'], ['终端工作台', 'terminal'], ['一键填报', 'fillreport'], ['部署', 'deploy'], ['扩展管理', 'extensions'], ['设置', 'settings']]
@@ -418,12 +530,13 @@ async function main() {
     await page.getByRole('textbox', { name: '搜索知识记录', exact: true }).fill('旧响应')
     assert.equal(await page.locator('.knowledge-table .el-table__body tr').count(), 1, '搜索知识标题、正文与标签产生真实筛选')
     await page.getByRole('textbox', { name: '搜索知识记录', exact: true }).fill('')
-    assert.equal(await page.getByRole('button', { name: '分析想法', exact: true }).count(), 0, '工作台不再提供 AI 分析');
+    assert.equal(await page.getByRole('button', { name: '分析想法', exact: true }).count(), 0, '记录列表不重复提供建议生成入口');
     assert.equal(await page.getByRole('button', { name: '整理所选', exact: true }).count(), 0, '工作台不再提供批量整理');
     assert.equal(await page.locator('.knowledge-table .el-checkbox').count(), 0, '列表移除无用途的批量选择');
-    assert.equal(await page.locator('.knowledge-tabs button').count(), 3, '只保留地球、全部记录和回收站');
+    assert.equal(await page.locator('.knowledge-tabs button').count(), 4, '地球、模块与灵感、全部记录和回收站各有一个页签');
     assert.equal((await page.evaluate(() => window.__uiAiRequests)).length, 0, '想法记录不发起 AI 请求');
-    interactions.push('保留地球与记录管理，移除 AI 分析及分类入口');
+    await verifyKnowledgeSuggestions(page, navigate)
+    interactions.push('普通记录离线保存，主动生成跨项目模块与行动建议、逐条采纳并回看来源')
 
     await navigate('项目')
     await page.getByRole('option', { name: /Personnel PLM/ }).click()

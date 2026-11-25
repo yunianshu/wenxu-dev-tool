@@ -291,6 +291,12 @@ const cases = [
     assert.equal(knowledgeMatches(record, { projectId: 'project-B' }), false)
     assert.equal(knowledgeMatches(record, { projectId: '__none__' }), false)
     assert.equal(knowledgeMatches({ ...record, projectId: '' }, { projectId: '__none__' }), true)
+    const shared = { ...record, projectId: '', projectName: '', sourceProjects: [{ id: 'p1', name: '采购旧名' }, { id: 'p2', name: '历史租赁' }] }
+    const currentNames = new Map([['p1', '新采购平台']])
+    assert.equal(knowledgeMatches(shared, { projectId: 'p1', query: '新采购平台 排查' }, currentNames), true)
+    assert.equal(knowledgeMatches(shared, { projectId: 'p2', query: '采购旧名 历史租赁' }, currentNames), true)
+    assert.equal(knowledgeMatches(shared, { projectId: '__none__' }), false)
+    assert.equal(knowledgeMatches({ ...shared, deletedAt: 10 }, { projectId: 'p2' }), false)
     assert.equal(knowledgeMatches(record, { view: 'inbox' }), false)
     assert.equal(knowledgeMatches({ ...record, status: 'inbox' }, { view: 'inbox' }), true)
     assert.equal(knowledgeMatches({ ...record, type: 'sop' }, { view: 'methods' }), true)

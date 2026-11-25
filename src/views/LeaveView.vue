@@ -17,7 +17,7 @@
     <section class="leave-toolbar">
       <div class="leave-field">
         <span class="leave-field-label">考勤日期</span>
-        <el-date-picker v-model="range" type="daterange" value-format="YYYY-MM-DD" :clearable="false" :disabled="locked" :disabled-date="futureDate" :shortcuts="shortcuts" range-separator="至" start-placeholder="开始日期" end-placeholder="截止日期" aria-label="考勤日期范围" class="leave-range" />
+        <el-date-picker ref="rangePicker" v-model="range" type="daterange" value-format="YYYY-MM-DD" :clearable="false" :disabled="locked" :disabled-date="futureDate" :shortcuts="shortcuts" range-separator="至" start-placeholder="开始日期" end-placeholder="截止日期" aria-label="考勤日期范围" class="leave-range" @calendar-change="onCalendarRange" />
       </div>
       <div class="leave-field">
         <span class="leave-field-label">工作时间</span>
@@ -247,10 +247,34 @@ const topbarReady = useTopbarReady()
 const leave = state.leave
 const isTauri = !!window.__TAURI_INTERNALS__
 const options = leave.options
-const today = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
-if (!options.since) options.since = `${today().slice(0, 7)}-01`
-if (!options.until) options.until = today()
-const range = computed({ get: () => [options.since, options.until], set: (value) => { if (value?.length === 2) [options.since, options.until] = value } })
+const today = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(Date.now())
+function checkedRange({ since, until, monthToDate }) {
+  const day = today()
+  const validDay = value => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+    const parsed = new Date(`${value}T00:00:00Z`)
+    return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
+  }
+  if (!monthToDate && validDay(since) && validDay(until) && since <= until && until <= day) {
+    return { since, until, monthToDate: false }
+  }
+  return { since: `${day.slice(0, 7)}-01`, until: day, monthToDate: true }
+}
+// 首次打开先显示默认日期，仍可恢复本机有效方案。
+if (!options.since && !options.until && !leave.plan) Object.assign(options, checkedRange(options))
+const rangePicker = ref(null)
+const range = computed({
+  get: () => [options.since, options.until],
+  set: value => {
+    if (value?.length !== 2) return
+    const [since, until] = value
+    Object.assign(options, { since, until, monthToDate: false })
+  },
+})
+function onCalendarRange([, end]) {
+  // 手选与现有日期相同时，组件可能只报告日历选择，没有更新 modelValue。
+  if (end) options.monthToDate = false
+}
 const plan = computed(() => leave.plan)
 const shownBalances = computed(() => (plan.value?.balances || []).filter(balance => balance.available !== false))
 // 「总共请假」= 本次待申请 + 范围内已有申请；分布弹层用的数据随方案一起返回，不额外请求北森。
@@ -343,11 +367,24 @@ const quotaNow = computed(() => {
 })
 const allSucceeded = computed(() => leave.results.length > 0 && leave.results.every(row => row.status === 'success'))
 const futureDate = (date) => { const pad = n => String(n).padStart(2, '0'); return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` > today() }
+function selectRangeShortcut(monthToDate) {
+  const until = today()
+  const since = monthToDate ? `${until.slice(0, 7)}-01` : until
+  Object.assign(options, { since, until, monthToDate })
+  rangePicker.value?.handleClose()
+}
 const shortcuts = [
-  { text: '本月至今天', value: () => [new Date(`${today().slice(0, 7)}-01T00:00:00`), new Date(`${today()}T00:00:00`)] },
-  { text: '今天', value: () => [new Date(`${today()}T00:00:00`), new Date(`${today()}T00:00:00`)] },
+  { text: '本月至今天', onClick: () => selectRangeShortcut(true) },
+  { text: '今天', onClick: () => selectRangeShortcut(false) },
 ]
 watch(options, () => { leave.invalidated = true; leave.plan = null; leave.results = []; leave.error = ''; leave.consumed = false; reviewVisible.value = false; distributionVisible.value = false; resolveTarget.value = null; dateReasons.value = {}; selectedDates.value = [] }, { flush: 'sync' })
+let checkAfterOperation = false
+function checkAttendanceRange() {
+  checkAfterOperation = locked.value
+  if (!checkAfterOperation) Object.assign(options, checkedRange(options))
+}
+watch(locked, value => { if (!value && checkAfterOperation) checkAttendanceRange() }, { flush: 'sync' })
+defineExpose({ checkAttendanceRange })
 
 function statusOf(row) {
   const results = leave.results.filter(result => result.date === row.date)
@@ -451,13 +488,21 @@ onUnmounted(() => {
 })
 // 恢复上次未提交的方案（后台留存），重新进入页面不必重新生成。
 onMounted(async () => {
+  checkAttendanceRange()
   if (state.leave.plan || locked.value || leave.invalidated) return
   const snapshot = JSON.stringify(options)
   try {
     const result = await window.gitReport.leaveRestore?.()
-    if (JSON.stringify(options) !== snapshot || locked.value || leave.plan) return
+    if (disposed || JSON.stringify(options) !== snapshot || locked.value || leave.plan || leave.invalidated) return
     if (result?.ok && result.plan) {
-      if (result.plan.options) Object.assign(options, result.plan.options)
+      const saved = result.plan.options
+      if (!saved) return
+      const checked = checkedRange(saved)
+      Object.assign(options, { ...saved, ...checked })
+      if (saved.since !== checked.since || saved.until !== checked.until) {
+        leave.invalidated = true
+        return
+      }
       state.leave.plan = result.plan
       leave.invalidated = false
     } else if (result?.notice) leave.error = result.notice

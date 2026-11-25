@@ -328,10 +328,14 @@ async function main() {
       const store = createPlanStore(directory)
       const env = setupService(source([card('15')]), {}, store)
       const { plan } = await env.service.plan({})
+      const legacy = store.load()
+      delete legacy.publicPlan.options.monthToDate
+      store.save(legacy)
       // 模拟后台重启：同一留存目录上的新服务实例。
       const reborn = setupService(env.data, { appliedEntries: [{ ...plan.entries[0], date: '2026-10-15' }] }, createPlanStore(directory))
       const restored = await reborn.service.restore()
       assert.equal(restored.plan.id, plan.id)
+      assert.equal(restored.plan.options.monthToDate, true, '兼容旧版留存的本月至今天范围')
       assert.deepEqual(restored.plan.entries.map(item => [item.date, item.typeName]), [['2026-10-15', plan.entries[0].typeName]])
       const adjusted = await reborn.service.replan({ planId: restored.plan.id, overrides: { '2026-10-15': { countLate: false } } })
       assert.equal(adjusted.plan.entries[0].hours, 1, '恢复后仍可调整计算迟到')

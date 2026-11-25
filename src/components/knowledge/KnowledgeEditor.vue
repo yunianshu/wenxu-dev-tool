@@ -33,6 +33,7 @@
           <el-option v-if="historicalProject" :value="draft.projectId" :label="`${draft.projectName || '历史项目'}（已不在项目列表）`" />
           <el-option v-for="project in projects" :key="project.id" :value="project.id" :label="project.name" />
         </el-select></label>
+        <div v-if="sourceProjectNames" class="property-field"><span>来源项目</span>{{ sourceProjectNames }}</div>
       </div>
       <div class="record-tags">
         <el-icon><PriceTag /></el-icon>
@@ -119,6 +120,9 @@ watch(() => props.record, (record) => {
 const deleted = computed(() => !!draft.value.deletedAt)
 const displayMode = computed(() => deleted.value ? 'preview' : mode.value)
 const historicalProject = computed(() => !!draft.value.projectId && !props.projects.some((project) => project.id === draft.value.projectId))
+const sourceProjectNames = computed(() => (draft.value.sourceProjects || []).map(source =>
+  props.projects.find(project => project.id === source.id)?.name || `${source.name}（已移除）`
+).join('、'))
 const typeName = (type) => KNOWLEDGE_TYPES[type] || '记录'
 const characterCount = computed(() => [...draft.value.body.replace(/\s/g, '')].length)
 const previewHtml = computed(() => {

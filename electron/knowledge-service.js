@@ -53,6 +53,18 @@ function strings(value, name, limit, itemLimit) {
   return [...new Set(value.map((item) => textField(item, name, itemLimit).trim()).filter(Boolean))]
 }
 
+function sourceProjects(value) {
+  if (!Array.isArray(value) || value.length > 100) fail('INVALID_RECORD', '来源项目必须是最多 100 项的列表')
+  const projects = new Map()
+  for (const project of value) {
+    const id = textField(project?.id, '来源项目 ID', 256).trim()
+    const name = textField(project?.name, '来源项目名称', 240).trim()
+    if (!id || !name) fail('INVALID_RECORD', '来源项目缺少 ID 或名称')
+    if (!projects.has(id)) projects.set(id, { id, name })
+  }
+  return [...projects.values()]
+}
+
 function contentFields(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('INVALID_RECORD', '记录内容必须是对象')
   const title = textField(input.title, '标题', 240).trim()
@@ -71,6 +83,7 @@ function contentFields(input) {
     projectId: textField(input.projectId, '关联项目 ID', 256),
     projectName: textField(input.projectName, '关联项目名称', 240),
     sourceIds: strings(input.sourceIds, '来源记录', 100, 256),
+    ...(input.sourceProjects === undefined ? {} : { sourceProjects: sourceProjects(input.sourceProjects) }),
   }
 }
 
@@ -239,6 +252,8 @@ function save(input) {
         checkRevision(input.revision, previous)
         if (input.contentHash !== undefined && input.contentHash !== previous.contentHash) fail('REVISION_CONFLICT', '记录文件已在外部修改，请保留草稿并刷新核对')
         if (previous.deletedAt !== null) fail('RECORD_DELETED', '记录已移入回收站，请先恢复')
+        // 老版本的编辑器和恢复草稿可能没有这个可选字段。
+        if (fields.sourceProjects === undefined && previous.sourceProjects) fields.sourceProjects = previous.sourceProjects
       } else if (fs.existsSync(recordPath(id))) fail('REVISION_CONFLICT', '记录 ID 已存在，请重试')
       const now = Date.now()
       const record = { id, ...fields, createdAt: previous?.createdAt || now, updatedAt: now, revision: (previous?.revision || 0) + 1, deletedAt: null }
@@ -272,6 +287,7 @@ function importMarkdown({ fileName = '', content } = {}) {
     return save({
       title, body, type: metadata.type, status: metadata.status, tags: metadata.tags,
       projectId: metadata.projectId, projectName: metadata.projectName, sourceIds: metadata.sourceIds,
+      sourceProjects: metadata.sourceProjects,
     })
   } catch (error) { return failure(error) }
 }

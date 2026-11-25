@@ -1,15 +1,24 @@
 export const KNOWLEDGE_TYPES = { idea: '想法', problem: '问题', decision: '决策', experience: '经验', method: '方法', sop: 'SOP', principle: '原则', ai: 'AI 技巧' }
 export const KNOWLEDGE_STATUSES = { inbox: '待整理', draft: '草稿', organized: '已整理', archived: '已归档' }
 
-export function knowledgeMatches(record, { view = 'all', query = '', type = '', projectId = '' } = {}) {
+export function knowledgeProjects(record) {
+  const sources = record.sourceProjects || []
+  if (!record.projectId) return sources
+  return [{ id: record.projectId, name: record.projectName }, ...sources.filter(source => source.id !== record.projectId)]
+}
+
+export function knowledgeMatches(record, { view = 'all', query = '', type = '', projectId = '' } = {}, projectNames) {
   if ((view === 'trash') !== !!record.deletedAt) return false
   if (view === 'inbox' && record.status !== 'inbox') return false
   if (view === 'methods' && !['method', 'sop', 'ai'].includes(record.type)) return false
   if (view === 'reviews' && !['problem', 'decision', 'experience'].includes(record.type)) return false
   if (view === 'principles' && record.type !== 'principle') return false
   if (type && record.type !== type) return false
-  if (projectId === '__none__' ? !!record.projectId : projectId && record.projectId !== projectId) return false
-  const haystack = [record.title, record.body, record.projectName, ...(record.tags || [])].join(' ').toLocaleLowerCase()
+  const projects = knowledgeProjects(record)
+  if (projectId === '__none__' ? projects.length > 0 : projectId && !projects.some(project => project.id === projectId)) return false
+  if (!query.trim()) return true
+  const names = projects.length ? projects.map(project => projectNames?.get(project.id)) : ['未关联']
+  const haystack = [record.title, record.body, record.projectName, ...(record.sourceProjects || []).map(source => source.name), ...names, ...(record.tags || [])].join(' ').toLocaleLowerCase()
   return query.trim().toLocaleLowerCase().split(/\s+/).every(word => haystack.includes(word))
 }
 

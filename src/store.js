@@ -122,7 +122,7 @@ export const state = reactive({
   },
   /** 北森一键请假：切换视图保留方案、执行状态与提交结果。 */
   leave: {
-    options: { since: '', until: '', workStart: '08:30', workEnd: '17:30', reason: '' },
+    options: { since: '', until: '', monthToDate: true, workStart: '08:30', workEnd: '17:30', reason: '' },
     plan: null,
     results: [],
     running: false,

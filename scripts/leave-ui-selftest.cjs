@@ -92,8 +92,63 @@ async function main() {
   let setup
   const component = load('src/views/LeaveView.vue').default
   const mount = () => { const app = renderer.createApp({ setup() { setup = component.setup({}, { expose() {} }); return () => null } }); app.mount({}); return app }
+  const realNow = Date.now
+  let clock = Date.parse('2026-10-15T06:00:00Z')
+  Date.now = () => clock
   let app = mount()
   try {
+    assert.deepEqual(setup.range.value, ['2026-10-01', '2026-10-15'])
+    await setup.generate()
+    clock = Date.parse('2026-10-15T16:01:00Z')
+    app.unmount(); app = mount()
+    assert.deepEqual(setup.range.value, ['2026-10-01', '2026-10-16'], '上海跨日后重进应补上今天')
+    assert.equal(state.leave.plan, null, '过期日期不能继续展示可提交方案')
+    await setup.generate()
+    state.leave.running = true
+    clock = Date.parse('2026-10-31T16:01:00Z')
+    setup.checkAttendanceRange()
+    assert.equal(setup.range.value[1], '2026-10-16', '已有操作完成前保留它的日期')
+    state.leave.running = false
+    await vue.nextTick()
+    assert.deepEqual(setup.range.value, ['2026-11-01', '2026-11-01'], '跨月后在原页面重选入口也更新范围')
+    const shortcut = text => setup.shortcuts.find(item => item.text === text).onClick()
+    shortcut('今天')
+    clock = Date.parse('2026-11-01T16:01:00Z')
+    setup.checkAttendanceRange()
+    assert.deepEqual(setup.range.value, ['2026-11-01', '2026-11-01'], '月初选择今天，即使日期相同也要固定在选择当天')
+    shortcut('本月至今天')
+    assert.deepEqual(setup.range.value, ['2026-11-01', '2026-11-02'])
+    setup.onCalendarRange([new Date(2026, 10, 1), null])
+    assert.equal(setup.options.monthToDate, true, '手选第一天尚未完成，旧范围保持滚动')
+    setup.onCalendarRange([new Date(2026, 10, 1), new Date(2026, 10, 2)])
+    clock = Date.parse('2026-11-02T16:01:00Z')
+    setup.checkAttendanceRange()
+    assert.deepEqual(setup.range.value, ['2026-11-01', '2026-11-02'], '手工重选相同范围，即使组件不更新 modelValue 也要固定')
+    setup.range.value = ['2026-11-01', '2026-11-03']
+    shortcut('本月至今天')
+    clock = Date.parse('2026-11-03T16:01:00Z')
+    setup.checkAttendanceRange()
+    assert.deepEqual(setup.range.value, ['2026-11-01', '2026-11-04'], '相同值选择本月至今天也要恢复滚动')
+    clock = Date.parse('2026-10-31T16:01:00Z')
+    setup.range.value = ['2026-09-08', '2026-09-09']
+    await setup.generate()
+    app.unmount(); app = mount()
+    assert.deepEqual(setup.range.value, ['2026-09-08', '2026-09-09'], '保留合法手选历史范围及方案')
+    assert.equal(state.leave.plan.id, plan.id)
+    for (const badRange of [['2026-02-30', '2026-10-31'], ['2026-09-09', '2026-09-08'], ['2026-11-02', '2026-11-03']]) {
+      setup.range.value = badRange
+      app.unmount(); app = mount()
+      assert.deepEqual(setup.range.value, ['2026-11-01', '2026-11-01'], '非法日期、倒序或未来日期均修正为默认范围')
+    }
+    state.leave.invalidated = false
+    window.gitReport.leaveRestore = async () => ({ ok: true, plan: { ...plan, options: { since: '2026-10-01', until: '2026-10-15', monthToDate: true, reason: '留存事由' } } })
+    app.unmount(); app = mount()
+    await vue.nextTick()
+    assert.equal(state.leave.plan, null, '后端留存的旧默认范围不能覆盖本月')
+    assert.equal(setup.options.reason, '留存事由', '跨月恢复仍保留其他配置')
+    delete window.gitReport.leaveRestore
+    clock = Date.parse('2026-10-15T06:00:00Z')
+    setup.checkAttendanceRange()
     await setup.generate()
     assert.equal(submitCalls, 0, '生成方案不得提交')
     await setup.submit()
@@ -339,6 +394,6 @@ async function main() {
     assert.deepEqual(connectionArguments, [[]], '书签入口恢复旧版无参数连接契约')
     setup.stopLoginWatcher()
     console.log('一键请假界面自测通过：企微登录提醒、直接登录、旧连接契约、确认门、跨页重算锁、过期响应丢弃、手选假种恢复及北森窗口收起/重开/迟到响应/监听清理。')
-  } finally { app.unmount(); global.window = originalWindow }
+  } finally { app.unmount(); Date.now = realNow; global.window = originalWindow }
 }
 main().catch(error => { console.error(error); process.exitCode = 1 })

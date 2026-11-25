@@ -10,7 +10,8 @@
     <AppTitlebar v-if="!state.ui.fullscreen" />
     <AppSidebar
       v-if="!state.ui.fullscreen"
-      v-model="view"
+      :model-value="view"
+      @update:model-value="selectSidebarView"
       :collapsed="state.ui.sidebarCollapsed"
       @toggle-collapse="toggleSidebar"
       @show-changelog="changelogVisible = true"
@@ -34,7 +35,7 @@
           <TerminalWorkbenchView v-else-if="view === 'terminal'" key="terminal" />
           <HarnessView v-else-if="view === 'harness'" key="harness" />
           <FillReportView v-else-if="view === 'fillreport'" key="fillreport" @navigate="navigate" />
-          <LeaveView v-else-if="view === 'leave'" key="leave" />
+          <LeaveView v-else-if="view === 'leave'" ref="leaveView" key="leave" />
           <DeployView v-else-if="view === 'deploy'" key="deploy" @navigate="navigate" />
           <ExtensionsView v-else-if="view === 'extensions'" key="extensions" />
           <SettingsView v-else key="settings" :initial-section="settingsSection" />
@@ -94,6 +95,11 @@ import { shortPath } from './utils/path'
 import { ITALENT_URL, ITALENT_LABEL } from './italent-url'
 
 const view = ref('dashboard')
+const leaveView = ref(null)
+function selectSidebarView(target) {
+  if (target === 'leave' && view.value === target) leaveView.value?.checkAttendanceRange()
+  view.value = target
+}
 const appVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''
 const changelogVisible = ref(false)
 const settingsSection = ref('ai')

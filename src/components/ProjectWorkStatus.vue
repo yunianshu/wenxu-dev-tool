@@ -8,12 +8,13 @@
 <script setup>
 import { computed, onMounted } from 'vue'
 import { useKnowledge } from '../composables/useKnowledge'
+import { knowledgeMatches } from '../utils/knowledge'
 const props = defineProps({ project: { type: Object, required: true }, sessions: { type: Array, default: () => [] }, history: { type: Array, default: () => [] }, loading: Boolean, error: String })
 const knowledge = useKnowledge()
 onMounted(() => knowledge.load())
 const live = computed(() => props.sessions.filter(row => row.projectId === props.project.id && !row.exited))
 const latest = computed(() => props.history.filter(row => row.projectId === props.project.id).sort((a, b) => b.startedAt - a.startedAt)[0])
-const records = computed(() => knowledge.data.records.filter(row => row.projectId === props.project.id && !row.deletedAt).sort((a, b) => b.updatedAt - a.updatedAt))
+const records = computed(() => knowledge.data.records.filter(row => knowledgeMatches(row, { projectId: props.project.id })).sort((a, b) => b.updatedAt - a.updatedAt))
 const labels = { success: '成功', failed: '失败', running: '进行中', rolled_back: '已回滚', canceled: '已取消' }
 const time = value => value ? new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '时间未知'
 </script>

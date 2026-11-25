@@ -2,7 +2,7 @@
   <div class="knowledge-workbench" @keydown.ctrl.s.prevent="saveCurrent" @keydown.meta.s.prevent="saveCurrent">
     <Teleport v-if="topbarReady" to="#app-topbar-slot">
       <div class="topbar-page knowledge-topbar">
-        <h1 class="topbar-page-title">知识库</h1><span class="topbar-context">先把想法记下来</span>
+        <h1 class="topbar-page-title">知识库</h1>
         <div class="knowledge-topbar-actions">
           <el-dropdown trigger="click" @command="handleCommand"><el-button text aria-label="知识库更多操作"><el-icon><MoreFilled /></el-icon></el-button><template #dropdown><el-dropdown-menu>
             <el-dropdown-item command="import">导入 Markdown</el-dropdown-item>
@@ -16,7 +16,7 @@
     <nav class="knowledge-tabs" aria-label="知识视图">
       <button v-for="item in views" :key="item.id" :class="{ active: workspace.view === item.id }" @click="setView(item.id)"><el-icon><component :is="item.icon" /></el-icon>{{ item.label }}</button>
     </nav>
-    <div v-if="projectFields().projectId" class="knowledge-context" role="status">当前项目：{{ projectFields().projectName }} · 新想法会自动关联此项目 <el-button text @click="clearFilters">查看全部项目</el-button><el-button v-if="workspace.view !== 'globe'" text @click="setView('globe')">记录项目想法</el-button></div>
+    <div v-if="workspace.view !== 'insights' && projectFields().projectId" class="knowledge-context" role="status">当前项目：{{ projectFields().projectName }} · 新想法会自动关联此项目 <el-button text @click="clearFilters">查看全部项目</el-button><el-button v-if="workspace.view !== 'globe'" text @click="setView('globe')">记录项目想法</el-button></div>
     <div v-if="data.error" class="knowledge-error" role="alert">{{ data.error }}<el-button text @click="refresh">重试</el-button></div>
     <div v-if="data.backupError" class="knowledge-error" role="alert">{{ data.backupError }}</div>
     <div v-if="data.warnings.length" class="knowledge-error" role="alert">{{ data.warnings.length }} 个文件未能读取，原文件已保留。<el-button text @click="showWarnings = !showWarnings">{{ showWarnings ? '收起' : '查看详情' }}</el-button><pre v-if="showWarnings">{{ data.warnings.map(item => typeof item === 'string' ? item : JSON.stringify(item)).join('\n') }}</pre></div>
@@ -27,6 +27,7 @@
         </form>
         <IdeaGlobe :records="ideaRecords" :selected-id="current?.type === 'idea' ? current.id : ''" :highlight-id="highlightIdeaId" :loading="data.loading" @select="selectRow" />
       </section>
+      <KnowledgeInsights v-else-if="workspace.view === 'insights'" @settings="$emit('navigate', 'settings')" />
       <section v-else class="knowledge-records" aria-label="知识记录">
         <div class="knowledge-filters">
           <el-input ref="searchInput" v-model="workspace.query" clearable :prefix-icon="Search" placeholder="搜索标题、正文或标签" aria-label="搜索知识记录" />
@@ -56,13 +57,14 @@
 <script setup>
 import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, Connection, Collection, Delete } from '@element-plus/icons-vue'
+import { Search, Connection, Collection, Delete, MagicStick } from '@element-plus/icons-vue'
 import { state } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
 import { useKnowledge } from '../composables/useKnowledge'
-import { knowledgeMatches, knowledgeTime } from '../utils/knowledge'
+import { knowledgeMatches, knowledgeProjects, knowledgeTime } from '../utils/knowledge'
 import KnowledgeEditor from '../components/knowledge/KnowledgeEditor.vue'
 import IdeaGlobe from '../components/knowledge/IdeaGlobe.vue'
+import KnowledgeInsights from '../components/knowledge/KnowledgeInsights.vue'
 
 defineEmits(['navigate'])
 const topbarReady = useTopbarReady()
@@ -71,26 +73,39 @@ const { data, workspace } = knowledge
 const capture = ref(''), creating = ref(false), page = ref(1), sort = ref('updated')
 const fileInput = ref(null), searchInput = ref(null), showWarnings = ref(false)
 const highlightIdeaId = ref('')
-const views = [{ id: 'globe', label: '想法地球', icon: Connection }, { id: 'all', label: '全部记录', icon: Collection }, { id: 'trash', label: '回收站', icon: Delete }]
+const views = [{ id: 'globe', label: '想法地球', icon: Connection }, { id: 'insights', label: '模块与灵感', icon: MagicStick }, { id: 'all', label: '全部记录', icon: Collection }, { id: 'trash', label: '回收站', icon: Delete }]
 const current = computed(() => knowledge.record(workspace.selectedId))
 const ideaRecords = computed(() => data.records.filter(row => !row.deletedAt && row.type === 'idea'))
 const sourceRecords = computed(() => (current.value?.sourceIds || []).map(id => data.records.find(row => row.id === id)).filter(Boolean))
-const projectOptions = computed(() => {
-  const options = state.projects.items.map(row => ({ id: row.id, name: row.name }))
-  for (const row of data.records) if (row.projectId && !options.some(item => item.id === row.projectId)) options.push({ id: row.projectId, name: `${row.projectName || '历史项目'}（已移除）` })
-  return options
+const projectNames = computed(() => {
+  const names = new Map(state.projects.items.map(project => [project.id, project.name]))
+  for (const row of data.records) {
+    for (const project of knowledgeProjects(row)) {
+      if (!names.has(project.id)) names.set(project.id, `${project.name || '历史项目'}（已移除）`)
+    }
+  }
+  return names
 })
-const filtered = computed(() => data.records.filter(row => knowledgeMatches({ ...row, projectName: projectLabel(row) }, workspace)).sort((a, b) => sort.value === 'title' ? a.title.localeCompare(b.title, 'zh-CN') : Number(b[sort.value === 'created' ? 'createdAt' : 'updatedAt']) - Number(a[sort.value === 'created' ? 'createdAt' : 'updatedAt'])))
+const projectOptions = computed(() => [...projectNames.value].map(([id, name]) => ({ id, name })))
+const filtered = computed(() => data.records.filter(row => knowledgeMatches(row, workspace, projectNames.value)).sort((a, b) => sort.value === 'title' ? a.title.localeCompare(b.title, 'zh-CN') : Number(b[sort.value === 'created' ? 'createdAt' : 'updatedAt']) - Number(a[sort.value === 'created' ? 'createdAt' : 'updatedAt'])))
 const paged = computed(() => filtered.value.slice((page.value - 1) * 30, page.value * 30))
 watch(() => [workspace.view, workspace.query, workspace.type, workspace.projectId, sort.value], () => {
   page.value = 1
   if (workspace.view === 'globe' ? !ideaRecords.value.some(row => row.id === workspace.selectedId) : !filtered.value.some(row => row.id === workspace.selectedId)) workspace.selectedId = ''
 })
 watch(() => filtered.value.length, length => { page.value = Math.min(page.value, Math.max(1, Math.ceil(length / 30))) })
-function projectLabel(row) { return state.projects.items.find(project => project.id === row.projectId)?.name || (row.projectId ? `${row.projectName || '历史项目'}（已移除）` : '未关联') }
+function projectLabel(row) { return knowledgeProjects(row).map(project => projectNames.value.get(project.id)).join('、') || '未关联' }
 function clearFilters() { workspace.query = ''; workspace.type = ''; workspace.projectId = '' }
 function selectRow(row) { workspace.selectedId = row.id }
-function setView(view) { workspace.view = view; if (view === 'globe' && current.value?.type !== 'idea') workspace.selectedId = '' }
+function setView(view) {
+  if (view === 'insights') {
+    const project = projectFields()
+    if (project.projectId && !knowledge.insights.projectIds.length) knowledge.insights.projectIds = [project.projectId]
+    if (current.value && !current.value.deletedAt && !knowledge.insights.recordIds.length) knowledge.insights.recordIds = [current.value.id]
+    workspace.selectedId = ''
+  } else if (view === 'globe' && current.value?.type !== 'idea') workspace.selectedId = ''
+  workspace.view = view
+}
 function projectFields() { const project = state.projects.items.find(row => row.id === workspace.projectId); return project ? { projectId: project.id, projectName: project.name } : {} }
 async function createRecord(fields = {}) {
   if (creating.value) return
@@ -153,7 +168,7 @@ async function importFiles(files) {
 }
 function onDrop(event) { if (event.dataTransfer?.files?.length) importFiles(event.dataTransfer.files) }
 async function handleCommand(command) { if (command === 'import') fileInput.value?.click(); else if (command === 'refresh') await refresh(); else try { const result = await window.gitReport.openPath(data.directory); if (result?.error) throw new Error(result.error) } catch (error) { ElMessage.error(error.message) } }
-async function shortcut(event) { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); if (workspace.view === 'globe') { setView('all'); await nextTick() } searchInput.value?.focus() } }
+async function shortcut(event) { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); if (workspace.view === 'globe' || workspace.view === 'insights') { setView('all'); await nextTick() } searchInput.value?.focus() } }
 onMounted(() => { knowledge.load(); document.addEventListener('keydown', shortcut) })
 onBeforeUnmount(() => { document.removeEventListener('keydown', shortcut); for (const id of Object.keys(data.drafts)) void knowledge.flush(id) })
 </script>

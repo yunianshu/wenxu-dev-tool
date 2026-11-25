@@ -65,6 +65,7 @@ function normalizeOptions(input = {}, now = Date.now()) {
   const today = shanghaiDate(now)
   const result = { since: input.since || `${today.slice(0, 7)}-01`, until: input.until || today, workStart: input.workStart || '08:30', workEnd: input.workEnd || '17:30', reason: String(input.reason || '').trim() }
   if (!validDate(result.since) || !validDate(result.until) || result.since > result.until || result.until > today) throw new Error('请选择有效的历史日期范围，截止日期不能晚于今天')
+  result.monthToDate = input.monthToDate ?? (!input.since && !input.until)
   if (!validTime(result.workStart) || !validTime(result.workEnd) || result.workStart >= result.workEnd) throw new Error('上下班时间应为同一天内的有效时间，且下班晚于上班')
   if (result.reason.length > 1000) throw new Error('请假事由不能超过 1000 字')
   return result
@@ -463,7 +464,13 @@ class LeaveService {
         this.planStore.clear()
         return { plan: null, notice: '旧方案未核对完整月份，请重新生成请假方案' }
       }
-      const rebuilt = buildPlan(saved.source, saved.publicPlan.options, saved.blocked, new Set(saved.banned || []), saved.overrides || {})
+      const options = { ...saved.publicPlan.options }
+      if (options.monthToDate == null) {
+        // 旧版只保存起止日期。用生成日识别当时的默认范围，恢复后仍能随日期更新。
+        const generatedDay = Number.isFinite(saved.publicPlan.createdAt) ? shanghaiDate(saved.publicPlan.createdAt) : ''
+        options.monthToDate = options.until === generatedDay && options.since === `${generatedDay.slice(0, 7)}-01`
+      }
+      const rebuilt = buildPlan(saved.source, options, saved.blocked, new Set(saved.banned || []), saved.overrides || {})
       const publicPlan = { ...rebuilt, id: saved.publicPlan.id, createdAt: this.now(), expiresAt: this.now() + PLAN_TTL, unresolved: saved.publicPlan.unresolved || [] }
       this.pending = { ...saved, publicPlan }
       this.planStore.save(this.pending)

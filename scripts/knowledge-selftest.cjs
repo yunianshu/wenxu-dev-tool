@@ -203,6 +203,24 @@ async function main() {
     assert.doesNotMatch(service.exportMarkdown(separators.record.id).fileName, /[/\\:*?<>|]/)
     passed('Markdown 无损往返、普通文件导入、外部身份忽略与安全导出文件名')
 
+    const sources = [{ id: 'project-a', name: '租赁' }, { id: 'project-b', name: '采购' }]
+    const moduleRecord = service.save({ title: '审批流', sourceProjects: [{ ...sources[0], extra: '不保存的扩展字段' }, sources[1], sources[0]] }).record
+    assert.deepEqual(moduleRecord.sourceProjects, sources)
+    const reloadedModule = loadService(userData).list().records.find(row => row.id === moduleRecord.id)
+    assert.deepEqual(reloadedModule.sourceProjects, sources)
+    const legacyEdit = { ...reloadedModule, title: '旧编辑器更新标题' }
+    delete legacyEdit.sourceProjects
+    assert.deepEqual(service.save(legacyEdit).record.sourceProjects, sources)
+    const moduleFile = service.exportMarkdown(moduleRecord.id)
+    assert.match(moduleFile.content, /schemaVersion: 1/)
+    assert.deepEqual(service.importMarkdown({ content: moduleFile.content }).record.sourceProjects, sources)
+    assert.deepEqual(service.save({ ...reloadedModule, id: undefined, title: '副本' }).record.sourceProjects, sources)
+    assert(!Object.hasOwn(plain.record, 'sourceProjects'), '已有文件可省略来源项目')
+    for (const invalid of [null, '项目', [{ id: '', name: '项目' }], [{ id: 'p' }], Array(101).fill(sources[0])]) {
+      assert.equal(service.save({ title: '来源无效', sourceProjects: invalid }).code, 'INVALID_RECORD')
+    }
+    passed('多项目来源重启读取、旧编辑器兼容、另存和 Markdown 往返，非法来源不落盘')
+
     const badId = randomUUID()
     const badFile = path.join(dir, `${badId}.md`)
     const badContent = '---\nid: [未闭合\n---\n必须保留的原文'

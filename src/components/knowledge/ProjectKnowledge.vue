@@ -13,12 +13,12 @@
 <script setup>
 import { computed, onMounted } from 'vue'
 import { useKnowledge } from '../../composables/useKnowledge'
-import { KNOWLEDGE_TYPES, KNOWLEDGE_STATUSES, knowledgeTime } from '../../utils/knowledge'
+import { KNOWLEDGE_TYPES, KNOWLEDGE_STATUSES, knowledgeMatches, knowledgeTime } from '../../utils/knowledge'
 const props = defineProps({ project: { type: Object, required: true } })
 const emit = defineEmits(['navigate'])
 const knowledge = useKnowledge()
 const { data } = knowledge
-const records = computed(() => data.records.filter(row => row.projectId === props.project.id && !row.deletedAt).sort((a, b) => b.updatedAt - a.updatedAt))
+const records = computed(() => data.records.filter(row => knowledgeMatches(row, { projectId: props.project.id })).sort((a, b) => b.updatedAt - a.updatedAt))
 function open(row) { knowledge.openRecord(row, props.project.id); emit('navigate', 'knowledge') }
 onMounted(() => knowledge.load())
 </script>
