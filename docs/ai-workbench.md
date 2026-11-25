@@ -2,7 +2,7 @@
 
 ## 日常使用
 
-1. **先记录**。知识库默认显示可拖动、缩放的 3D「想法地球」。输入一句话并按 Enter，想法会保存到本机并成为地球上的光点。点击光点可以用 Markdown 补充正文和预览。
+1. **先记录**。知识库默认显示可拖动、缩放的 3D「想法地球」。输入一句话并按 Enter，想法就会保存到本机。地球也会展示已保存的行动建议，以及带「基础模块」标签的方法记录。点击任一节点可编辑记录，也可查看已有的项目和记录来源。
 2. **关联项目**：在记录中选择项目，或从工作台「记录与复盘」及项目概览「项目记录与复盘」进入，点击「记录项目想法」后新想法自动关联该项目。项目备注继续承载项目简介，记录用于持续积累。
 3. **查找与修改**：「全部记录」提供搜索、项目筛选和排序，搜索同时查找标题、正文、标签和项目名称。点击记录即可编辑标题、正文、标签或关联项目。
 4. **提炼模块和寻找方向**。打开「模块与灵感」，选择要对比的项目，以及与问题有关的想法、问题或已有方法。比如两个项目都做了审批记录，而你记下了“希望按处理人复盘”，可以把这两个项目和这条想法一起交给 AI。
@@ -42,6 +42,7 @@ node scripts/knowledge-state-selftest.cjs
 node scripts/knowledge-rpc-selftest.cjs
 node scripts/knowledge-insights-selftest.mjs
 node scripts/desktop-ui-e2e.cjs --knowledge-only
+node scripts/desktop-ui-e2e.cjs --globe-only
 node scripts/desktop-ui-e2e.cjs
 npm run build:renderer
 ```

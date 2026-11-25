@@ -25,7 +25,7 @@
         <form class="knowledge-capture idea-capture" @submit.prevent="quickCapture">
           <el-icon><EditPen /></el-icon><input v-model="capture" maxlength="2000" aria-label="快速记录" placeholder="写下一个想法，按 Enter 放进地球…" /><button type="submit" :disabled="!capture.trim() || creating" title="Enter 保存想法" aria-label="保存快速记录"><el-icon><TopRight /></el-icon></button>
         </form>
-        <IdeaGlobe :records="ideaRecords" :selected-id="current?.type === 'idea' ? current.id : ''" :highlight-id="highlightIdeaId" :loading="data.loading" @select="selectRow" />
+        <IdeaGlobe :records="globeRecords" :selected-id="selectedGlobeId" :highlight-id="highlightIdeaId" :loading="data.loading" @select="selectRow" />
       </section>
       <KnowledgeInsights v-else-if="workspace.view === 'insights'" @settings="$emit('navigate', 'settings')" />
       <section v-else class="knowledge-records" aria-label="知识记录">
@@ -61,7 +61,7 @@ import { Search, Connection, Collection, Delete, MagicStick } from '@element-plu
 import { state } from '../store'
 import { useTopbarReady } from '../composables/useTopbarReady'
 import { useKnowledge } from '../composables/useKnowledge'
-import { knowledgeMatches, knowledgeProjects, knowledgeTime } from '../utils/knowledge'
+import { globeRecordKind, knowledgeMatches, knowledgeProjects, knowledgeTime } from '../utils/knowledge'
 import KnowledgeEditor from '../components/knowledge/KnowledgeEditor.vue'
 import IdeaGlobe from '../components/knowledge/IdeaGlobe.vue'
 import KnowledgeInsights from '../components/knowledge/KnowledgeInsights.vue'
@@ -75,7 +75,8 @@ const fileInput = ref(null), searchInput = ref(null), showWarnings = ref(false)
 const highlightIdeaId = ref('')
 const views = [{ id: 'globe', label: '想法地球', icon: Connection }, { id: 'insights', label: '模块与灵感', icon: MagicStick }, { id: 'all', label: '全部记录', icon: Collection }, { id: 'trash', label: '回收站', icon: Delete }]
 const current = computed(() => knowledge.record(workspace.selectedId))
-const ideaRecords = computed(() => data.records.filter(row => !row.deletedAt && row.type === 'idea'))
+const globeRecords = computed(() => data.records.filter(globeRecordKind))
+const selectedGlobeId = computed(() => globeRecords.value.some(row => row.id === workspace.selectedId) ? workspace.selectedId : '')
 const sourceRecords = computed(() => (current.value?.sourceIds || []).map(id => data.records.find(row => row.id === id)).filter(Boolean))
 const projectNames = computed(() => {
   const names = new Map(state.projects.items.map(project => [project.id, project.name]))
@@ -89,9 +90,9 @@ const projectNames = computed(() => {
 const projectOptions = computed(() => [...projectNames.value].map(([id, name]) => ({ id, name })))
 const filtered = computed(() => data.records.filter(row => knowledgeMatches(row, workspace, projectNames.value)).sort((a, b) => sort.value === 'title' ? a.title.localeCompare(b.title, 'zh-CN') : Number(b[sort.value === 'created' ? 'createdAt' : 'updatedAt']) - Number(a[sort.value === 'created' ? 'createdAt' : 'updatedAt'])))
 const paged = computed(() => filtered.value.slice((page.value - 1) * 30, page.value * 30))
-watch(() => [workspace.view, workspace.query, workspace.type, workspace.projectId, sort.value], () => {
+watch(() => [workspace.view, workspace.query, workspace.type, workspace.projectId, sort.value, workspace.view === 'globe' && selectedGlobeId.value], () => {
   page.value = 1
-  if (workspace.view === 'globe' ? !ideaRecords.value.some(row => row.id === workspace.selectedId) : !filtered.value.some(row => row.id === workspace.selectedId)) workspace.selectedId = ''
+  if (workspace.view === 'globe' ? !selectedGlobeId.value : !filtered.value.some(row => row.id === workspace.selectedId)) workspace.selectedId = ''
 })
 watch(() => filtered.value.length, length => { page.value = Math.min(page.value, Math.max(1, Math.ceil(length / 30))) })
 function projectLabel(row) { return knowledgeProjects(row).map(project => projectNames.value.get(project.id)).join('、') || '未关联' }
@@ -103,7 +104,7 @@ function setView(view) {
     if (project.projectId && !knowledge.insights.projectIds.length) knowledge.insights.projectIds = [project.projectId]
     if (current.value && !current.value.deletedAt && !knowledge.insights.recordIds.length) knowledge.insights.recordIds = [current.value.id]
     workspace.selectedId = ''
-  } else if (view === 'globe' && current.value?.type !== 'idea') workspace.selectedId = ''
+  } else if (view === 'globe' && !selectedGlobeId.value) workspace.selectedId = ''
   workspace.view = view
 }
 function projectFields() { const project = state.projects.items.find(row => row.id === workspace.projectId); return project ? { projectId: project.id, projectName: project.name } : {} }

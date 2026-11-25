@@ -230,6 +230,18 @@ async function main() {
     ['ai', 'draft', '限定 AI 的来源范围', '只发送所选记录，不默认包含整个知识库。', 0],
     ['idea', 'draft', '个人工作复盘提纲', '记录结果、原因与下一次可执行的调整。', null],
   ].map(([type, status, title, body, projectIndex], index) => ({ id: 'knowledge-' + index, type, status, title, body, projectId: projectIndex === null ? '' : projects[projectIndex].id, projectName: projectIndex === null ? '' : projects[projectIndex].name, tags: ['知识实践', type === 'ai' ? 'AI' : '工作方法'], sourceIds: [], deletedAt: null, revision: 1, createdAt: Date.now() - (7 - index) * 3600000, updatedAt: Date.now() - index * 3600000 }))
+  if (process.argv.includes('--globe-only')) {
+    const titles = ['提取通用的审批记录', '合并重复的权限判断', '整理表单校验规则', '对比两个项目的导出流程', '记录用户遇到的第一个问题', '给重试流程补上反馈', '复用离线草稿能力', '按角色查看审批时间']
+    for (const [i, title] of titles.entries()) {
+      const module = i === 2 || i === 6
+      const derived = module || i === 5 || i === 7
+      knowledgeRecords.push({ ...knowledgeRecords[0], id: 'idea-' + title, title, body: title,
+        type: module ? 'method' : 'idea', status: module ? 'organized' : derived ? 'draft' : 'inbox',
+        tags: [module ? '基础模块' : derived ? '行动建议' : '工作方法'], sourceIds: derived ? ['idea-' + titles[i < 6 ? 0 : 3]] : [],
+        sourceProjects: derived ? projects.slice(0, 2).map(({ id, name }) => ({ id, name })) : [],
+      })
+    }
+  }
   // 测试过程中不接受开发热替换，避免并行编辑重置正在验证的工作区。
   const viteRunner = `
     import http from 'node:http'
@@ -297,6 +309,82 @@ async function main() {
       }
       checks.push({ name, theme, width, height, layout })
       await page.screenshot({ path: path.join(OUTPUT, `${theme}-${width}-${name}.png`), fullPage: false })
+    }
+    if (process.argv.includes('--globe-only')) {
+      await navigate('知识库')
+      await page.locator('.knowledge-tabs').getByRole('button', { name: '想法地球' }).click()
+      const canvas = page.locator('.idea-globe-canvas')
+      await canvas.waitFor()
+      assert.equal(await page.locator('.idea-globe-heading span').innerText(), '8 个想法')
+      assert.match(await page.locator('.idea-globe-heading').innerText(), /2 个基础模块/)
+      assert.match(await page.getByLabel('图例').innerText(), /来源关联/)
+      const nextPaint = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+      for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900], ['light', 1080, 720]]) {
+        await page.setViewportSize({ width, height })
+        await page.evaluate(async value => (await import('/src/utils/ui-prefs.js')).applyTheme(value), theme)
+        await nextPaint()
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width, '地球页面不产生横向溢出')
+        const file = path.join(OUTPUT, 'globe-' + theme + '-' + width + '.png')
+        await page.screenshot({ path: file })
+        console.log('想法地球截图 ' + file)
+      }
+      const box = await canvas.boundingBox()
+      const x = box.x + box.width * 0.5, y = box.y + box.height * 0.49
+      const pixels = () => canvas.evaluate(el => el.toDataURL())
+      await page.mouse.move(x, y)
+      await nextPaint()
+      const beforeDrag = await pixels()
+      await page.mouse.down()
+      await page.mouse.move(x + 90, y + 30, { steps: 8 })
+      await page.mouse.up()
+      await nextPaint()
+      const afterDrag = await pixels()
+      assert(beforeDrag !== afterDrag, '拖动应改变球面投影')
+      assert.equal(await page.locator('.knowledge-editor').count(), 0, '拖动不误选想法')
+      await page.mouse.wheel(0, -180)
+      await nextPaint()
+      assert(afterDrag !== await pixels(), '滚轮应改变显示比例')
+      const title = '把两套审批的提示合起来'
+      await page.getByRole('textbox', { name: '快速记录' }).fill(title)
+      await page.getByRole('button', { name: '保存快速记录' }).click()
+      // 新想法会转到视野中心，移到光点时通过真实提示确认再打开。
+      await page.waitForFunction(title => JSON.parse(localStorage.getItem('desktop-ui-test-knowledge')).some(row => row.title === title), title)
+      const tooltip = page.locator('.idea-globe-tooltip').filter({ hasText: title })
+      let target
+      for (let attempt = 0; attempt < 20 && !target; attempt++) {
+        await nextPaint()
+        for (const level of [0.49, 0.5, 0.47, 0.52]) {
+          const point = { x, y: box.y + box.height * level }
+          await page.mouse.move(point.x, point.y)
+          if (await tooltip.isVisible()) { target = point; break }
+        }
+      }
+      assert(target, '新想法转至视野中心且光点提示显示对应标题')
+      await page.mouse.click(target.x, target.y)
+      const detail = page.getByRole('textbox', { name: '记录标题' })
+      await detail.waitFor()
+      assert.equal(await detail.inputValue(), title, '光点应打开对应原文')
+      await page.locator('.el-message').waitFor({ state: 'detached' })
+      await nextPaint()
+      await page.screenshot({ path: path.join(OUTPUT, 'globe-detail-1080.png') })
+      await page.getByRole('button', { name: '关闭记录详情' }).click()
+      await page.locator('.knowledge-editor').waitFor({ state: 'detached' })
+      await canvas.waitFor()
+      const tabs = page.locator('.knowledge-tabs')
+      await tabs.getByRole('button', { name: '全部记录' }).click()
+      await page.locator('.knowledge-record-title').filter({ hasText: '整理表单校验规则' }).click()
+      await tabs.getByRole('button', { name: '想法地球' }).click()
+      assert.equal(await detail.inputValue(), '整理表单校验规则', '切回地球应保留基础模块的详情')
+      const tagSelect = page.getByRole('combobox', { name: '记录标签' })
+      await page.locator('.el-select__wrapper').filter({ has: tagSelect }).click()
+      await page.getByRole('option', { name: '基础模块', exact: true }).click()
+      await tagSelect.press('Escape')
+      await page.locator('.knowledge-editor').waitFor({ state: 'detached' })
+      assert.match(await page.locator('.idea-globe-heading').innerText(), /1 个基础模块/, '去除基础模块分类后离开地球')
+      assert.deepEqual(errors, [])
+      assert.deepEqual(externalRequests, [])
+      console.log('通过：想法地球拖动、缩放、点选、关闭详情、明暗主题与窄屏。')
+      return
     }
     if (process.argv.includes('--knowledge-only')) {
       await verifyKnowledgeSuggestions(page, navigate)

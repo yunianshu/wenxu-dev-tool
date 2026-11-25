@@ -1,6 +1,13 @@
 export const KNOWLEDGE_TYPES = { idea: '想法', problem: '问题', decision: '决策', experience: '经验', method: '方法', sop: 'SOP', principle: '原则', ai: 'AI 技巧' }
 export const KNOWLEDGE_STATUSES = { inbox: '待整理', draft: '草稿', organized: '已整理', archived: '已归档' }
 
+export function globeRecordKind(record) {
+  if (!record || record.deletedAt) return ''
+  if (record.type === 'idea') return record.tags?.includes('行动建议') ? 'direction' : 'idea'
+  if (record.type === 'method' && record.tags?.includes('基础模块')) return 'module'
+  return ''
+}
+
 export function knowledgeProjects(record) {
   const sources = record.sourceProjects || []
   if (!record.projectId) return sources

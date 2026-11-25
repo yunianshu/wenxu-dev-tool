@@ -282,7 +282,14 @@ const cases = [
     const source = buildSync({ entryPoints: [path.join(__dirname, '../src/utils/knowledge.js')], bundle: true, write: false, platform: 'node', format: 'cjs' }).outputFiles[0].text
     const context = { module: { exports: {} } }
     vm.runInNewContext(source, context)
-    const { knowledgeMatches } = context.module.exports
+    const { globeRecordKind, knowledgeMatches } = context.module.exports
+    assert.equal(globeRecordKind({ type: 'idea' }), 'idea', '已有无标签想法仍在地球上')
+    assert.equal(globeRecordKind({ type: 'idea', tags: ['行动建议'] }), 'direction')
+    assert.equal(globeRecordKind({ type: 'method', tags: ['基础模块'] }), 'module')
+    assert.equal(globeRecordKind({ type: 'method', tags: ['工作方法'] }), '')
+    assert.equal(globeRecordKind({ type: 'experience', tags: ['基础模块'] }), '')
+    assert.equal(globeRecordKind({ type: 'idea', deletedAt: 10 }), '')
+    assert.equal(globeRecordKind({ type: 'method', tags: ['基础模块'], deletedAt: 10 }), '')
     const record = { ...row('A'), title: 'API 故障复盘', body: '检查连接超时', tags: ['排查'], projectId: 'project-A', projectName: '历史项目', type: 'experience', status: 'organized' }
     assert.equal(knowledgeMatches(record, { query: 'api 超时 排查' }), true)
     assert.equal(knowledgeMatches(record, { query: '历史项目' }), true)
