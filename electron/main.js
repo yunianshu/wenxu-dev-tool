@@ -486,7 +486,7 @@ function registerIpc() {
   ipcMain.handle('report:readHistory', (_e, id) => reportHistory.read(id))
   ipcMain.handle('report:deleteHistory', (_e, id) => reportHistory.remove(id))
 
-  // AI 对话（流式）：请求标识隔离项目会话；未带标识的旧调用仍兼容。
+  // 请求标识隔离并发对话，结构化建议和普通聊天均可按请求停止。
   // 安全：明文 API Key 由主进程从 store 解析（getApiKey），渲染层不持有、也不接收
   const aiControllers = new WeakMap()
   ipcMain.handle('ai:chat', async (e, payload) => {
@@ -500,13 +500,22 @@ function registerIpc() {
     const controller = new AbortController()
     requests.set(requestId, controller)
     try {
-      const full = await aiService.chat({
+      const input = {
         baseUrl: (opts && opts.baseUrl) || cfg.ai.baseUrl,
         apiKey: store.getApiKey(), // 忽略渲染层传入的 Key
         model: (opts && opts.model) || cfg.ai.model,
-        temperature: opts && opts.temperature !== undefined ? opts.temperature : cfg.ai.temperature,
         messages,
         signal: controller.signal,
+      }
+      if (opts?.responseFormat === 'json') {
+        const { text, finishReason } = await aiService.complete({
+          ...input, temperature: 0, maxTokens: 8192, responseFormat: 'json',
+        })
+        return { ok: true, text, finishReason }
+      }
+      const full = await aiService.chat({
+        ...input,
+        temperature: opts && opts.temperature !== undefined ? opts.temperature : cfg.ai.temperature,
         onDelta: (text) => {
           if (requests.get(requestId) !== controller || controller.signal.aborted) return
           try { wc.send('ai:chatDelta', requestId ? { requestId, text } : text) } catch { /* noop */ }
@@ -514,7 +523,7 @@ function registerIpc() {
       })
       return { ok: true, text: full }
     } catch (err) {
-      if (err && err.name === 'AbortError') return { ok: false, aborted: true, error: '' }
+      if (controller.signal.aborted || err?.name === 'AbortError') return { ok: false, aborted: true, error: '' }
       return { ok: false, error: (err && err.message) || String(err) }
     } finally {
       if (requests.get(requestId) === controller) requests.delete(requestId)

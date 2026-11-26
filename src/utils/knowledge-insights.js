@@ -100,15 +100,35 @@ function parseCard(row, kind, byKey, hasRecords) {
   return title && summary && nextStep && validation ? { title, summary, nextStep, validation, sources } : null
 }
 
+function readInsightReply(content) {
+  const invalid = 'AI 回复格式不完整，未能读取建议。请重新生成。'
+  if (typeof content !== 'string' || content.length > 100000) throw new Error(invalid)
+  // 有些网关把思考过程放在正文开头，里面可能包含示例 JSON。保留最终 JSON 字段里的原文。
+  const thinking = /[^{]*?<think>[\s\S]*?(?:<\/think>|$)/iy
+  let start = 0
+  while (thinking.test(content)) start = thinking.lastIndex
+  const text = content.slice(start).trim()
+  if (!text) throw new Error('AI 没有返回建议正文，请重新生成。')
+  let result
+  try {
+    result = JSON.parse(text)
+  } catch {
+    // 优先读取完整代码块。对于未加围栏的回复，仅剥离对象前后的解释文字。
+    const fence = /(?:^|\n)[ \t]*```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```/i.exec(text)
+    const first = text.search(/[\[{]/)
+    const last = Math.max(text.lastIndexOf('}'), text.lastIndexOf(']'))
+    const payload = fence ? fence[1] : text.slice(first, last + 1)
+    try { result = JSON.parse(payload) } catch { throw new Error(invalid) }
+  }
+  if (result?.modules === undefined && result?.directions === undefined) throw new Error(invalid)
+  const { modules = [], directions = [], note } = result
+  if (!Array.isArray(modules) || !Array.isArray(directions)) throw new Error(invalid)
+  return { modules, directions, note }
+}
+
 /** 将模型给出的材料编号解析为本次请求的真实来源，任何引用失实的卡片都不能保存。 */
 export function parseKnowledgeInsights(content, sources) {
-  const invalid = 'AI 返回的格式无法识别，请重新生成'
-  if (typeof content !== 'string' || content.length > 100000) throw new Error(invalid)
-  const text = content.trim()
-  const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(text)
-  let result
-  try { result = JSON.parse(fence ? fence[1] : text) } catch { throw new Error(invalid) }
-  if (!Array.isArray(result?.modules) || !Array.isArray(result.directions)) throw new Error(invalid)
+  const result = readInsightReply(content)
   const byKey = new Map(sources.map(source => [source.key, source]))
   const hasRecords = sources.some(source => source.kind === 'record')
   const read = (rows, kind) => rows.map(row => parseCard(row, kind, byKey, hasRecords)).filter(Boolean)

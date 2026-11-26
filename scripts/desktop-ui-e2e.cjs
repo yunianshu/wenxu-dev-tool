@@ -74,11 +74,10 @@ function installFixture({ projects, reports, deployments, knowledgeRecords }) {
     knowledgeExport: id => { const record = readKnowledge().find(row => row.id === id); return record ? { ok: true, fileName: record.title + '.md', content: '# ' + record.title + '\n\n' + record.body } : { ok: false, error: '记录不存在' } },
     aiChat: (messages, options) => {
       window.__uiAiRequests.push(copy({ messages, options }))
-      if (window.__uiFailNextAnalysis) {
-        window.__uiFailNextAnalysis = false
-        return { ok: false, error: '隔离模型暂时不可用' }
-      }
-      return { ok: true, text: JSON.stringify({
+      const failure = window.__uiAnalysisFailures?.shift()
+      if (failure === 'service') return { ok: false, error: '隔离模型暂时不可用' }
+      if (failure === 'length') return { ok: true, text: '{"modules":[', finishReason: 'length' }
+      const reply = JSON.stringify({
         modules: [{
           title: '共用表单校验', summary: '抽取字段校验规则，保留每个项目独立的表单布局。',
           nextStep: '从两个表单各挑一个必填项抽出校验函数。', validation: '两个表单用同一组输入产生一致提示。',
@@ -89,7 +88,8 @@ function installFixture({ projects, reports, deployments, knowledgeRecords }) {
           nextStep: '准备一组合法和非法的输入样例。', validation: '逐项核对错误提示能否定位字段。',
           sources: ['P1', 'P2', 'R1'],
         }], note: '',
-      }) }
+      })
+      return { ok: true, text: '整理结果如下。\n```json\n' + reply + '\n```', finishReason: 'stop' }
     },
     recentCommits: (paths, limit) => paths.map(repo => ({ repo, commits: Array.from({ length: Math.min(12, limit) }, (_, i) => ({
       hash: 'a' + String(i).padStart(9, '0'), date: new Date(Date.UTC(2026, 9, 20 - i)).toISOString(), subject: i === 0 ? '复用表单校验规则' : '提交样例第' + (i + 1) + '条',
@@ -161,14 +161,21 @@ async function verifyKnowledgeSuggestions(page, navigate) {
     }
     await control.press('Escape')
   }
-  await choose('选择对比项目', ['Personnel PLM', '组件文档站'])
-  await choose('选择知识记录', [sourceTitle])
+  const projectNames = ['Personnel PLM', '组件文档站', '内部 API 服务', '交付脚本']
+  const recordTitles = [sourceTitle, '用知识记录积累开发经验']
+  await choose('选择对比项目', projectNames)
+  await choose('选择知识记录', recordTitles)
   assert.equal((await page.evaluate(() => window.__uiAiRequests)).length, 0, '打开页面、保存想法和选择材料均不发起请求')
   const generate = page.getByRole('button', { name: '生成建议', exact: true })
-  await page.evaluate(() => { window.__uiFailNextAnalysis = true })
+  await page.evaluate(() => { window.__uiAnalysisFailures = ['service'] })
   await generate.click()
   await page.getByRole('alert').filter({ hasText: '隔离模型暂时不可用' }).waitFor()
   assert.equal((await recordsInBrowser()).find(row => row.id === original.id).revision, original.revision, '请求失败保留已选想法')
+  await page.evaluate(() => { window.__uiAnalysisFailures = ['length', 'length'] })
+  await generate.click()
+  await page.getByRole('alert').filter({ hasText: '截断' }).waitFor()
+  assert.equal(await page.locator('.insight-card').count(), 0, '截断的回复不能生成建议卡片')
+  await page.evaluate(() => { window.__uiAnalysisFailures = ['length'] })
   await generate.click()
   const moduleTitle = '共用表单校验'
   const directionTitle = '用原型验证表单提示'
@@ -176,14 +183,20 @@ async function verifyKnowledgeSuggestions(page, navigate) {
   const directionCard = page.locator('article').filter({ hasText: directionTitle })
   await moduleCard.getByRole('button', { name: '保存到知识库' }).waitFor()
   const requests = await page.evaluate(() => window.__uiAiRequests)
-  assert.equal(requests.length, 2)
-  assert.deepEqual(requests[0].messages, requests[1].messages, '重试沿用选定材料')
-  assert.notEqual(requests[0].options.requestId, requests[1].options.requestId, '重试具有独立请求 ID')
-  const prompt = requests[1].messages.map(message => message.content).join('\n')
-  for (const material of ['Personnel PLM', '组件文档站', '前端组件与交互规范', '项目资料、Git 活动与部署的统一工作区', 'Vue', '保留项目目录与既有工作流程', '复用表单校验规则', sourceTitle]) {
+  assert.equal(requests.length, 5, '服务失败直接提示，截断仅自动重试一次')
+  assert(requests.every(request => request.options.responseFormat === 'json'), '首次与重试均请求结构化回复')
+  const ids = requests.map(request => request.options.requestId)
+  assert.equal(new Set(ids).size, 3, '每次点击具有独立请求 ID')
+  assert.equal(ids[1], ids[2], '同一轮截断重试可用同一请求 ID 取消')
+  assert.equal(ids[3], ids[4])
+  const materials = requests[0].messages.find(message => message.role === 'user').content
+  assert.deepEqual(JSON.parse(materials).map(row => row.label), [...projectNames, ...recordTitles])
+  for (const request of requests) assert(request.messages.some(message => message.content === materials), '重试沿用全部所选材料')
+  const prompt = requests.at(-1).messages.map(message => message.content).join('\n')
+  for (const material of [...projectNames, ...recordTitles, '前端组件与交互规范', '项目资料、Git 活动与部署的统一工作区', 'Vue', '保留项目目录与既有工作流程', '复用表单校验规则']) {
     assert(prompt.includes(material), '请求应包含所选资料：' + material)
   }
-  for (const omitted of ['内部 API 服务', '排查自动保存中的旧响应', '提交样例第9条', 'committer@example.invalid', '192.0.2.10', 'D:/Projects/']) {
+  for (const omitted of ['实验项目', '排查自动保存中的旧响应', '提交样例第9条', 'committer@example.invalid', '192.0.2.10', 'D:/Projects/']) {
     assert(!prompt.includes(omitted), '请求应排除未选材料或额外的本机数据：' + omitted)
   }
   assert(!(await recordsInBrowser()).some(row => row.title === moduleTitle || row.title === directionTitle), '生成结果只作为预览')
@@ -211,7 +224,7 @@ async function verifyKnowledgeSuggestions(page, navigate) {
   await page.locator('.knowledge-record-title').filter({ hasText: directionTitle }).click()
   await page.getByRole('region', { name: '来源记录' }).getByRole('button', { name: new RegExp(sourceTitle) }).click()
   assert.equal(await page.getByRole('textbox', { name: '记录标题' }).inputValue(), sourceTitle, '重新打开采纳的建议可回到来源原文')
-  assert.equal((await page.evaluate(() => window.__uiAiRequests)).length, 2, '回看记录不重新调用模型')
+  assert.equal((await page.evaluate(() => window.__uiAiRequests)).length, requests.length, '回看记录不重新调用模型')
 }
 
 async function main() {
@@ -391,7 +404,7 @@ async function main() {
       assert.deepEqual(await page.evaluate(() => window.__uiUnknown), [], '知识库验收的 IPC 均应有隔离实现')
       assert.deepEqual(errors, [], '知识库验收不能出现运行时错误')
       assert.deepEqual(externalRequests, [], '隔离验收不能访问外部服务')
-      console.log('通过：项目上下文录入、跨项目建议生成与失败重试、逐条采纳、按两个项目筛选及来源回看。')
+      console.log('通过：四个项目与两条想法生成建议，截断重试与错误提示、逐条采纳、按项目筛选及来源回看。')
       return
     }
     await page.getByRole('button', { name: '记录与复盘', exact: true }).click()

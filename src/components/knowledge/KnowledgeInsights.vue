@@ -117,14 +117,26 @@ async function generate() {
     }
     if (insights.requestId !== requestId) return
     const { messages, sources } = buildKnowledgeInsightRequest({ projects, records, commitsByProject })
-    insights.phase = '正在生成建议'
-    let response
-    try { response = await window.gitReport.aiChat(messages, { requestId }) }
-    catch (error) { throw new Error(`AI 服务请求失败：${error?.message || error}`) }
-    if (insights.requestId !== requestId || response?.aborted) return
-    if (!response?.ok) throw new Error(`AI 服务请求失败：${response?.error || '请检查模型配置后重试'}`)
-    const result = parseKnowledgeInsights(response.text, sources)
-    insights.result = { ...result, sourceLabels: sources.map(source => source.label), notice: [...missing, result.note].filter(Boolean).join(' ') }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      insights.phase = attempt === 0 ? '正在生成建议' : '正在重新生成精简建议'
+      let response
+      try { response = await window.gitReport.aiChat(messages, { requestId, responseFormat: 'json' }) }
+      catch (error) { throw new Error(`AI 服务请求失败：${error?.message || error}`) }
+      if (insights.requestId !== requestId || response?.aborted) return
+      if (!response?.ok) throw new Error(`AI 服务请求失败：${response?.error || '请检查模型配置后重试'}`)
+      if (response.finishReason === 'content_filter') throw new Error('模型服务拦截了这次回复，请调整所选材料后再试。')
+      let result
+      try {
+        if (response.finishReason === 'length') throw new Error('模型回复达到输出上限，建议已被截断。可以减少所选材料，或换用支持更长输出的模型。')
+        result = parseKnowledgeInsights(response.text, sources)
+      } catch (error) {
+        if (attempt === 1) throw error
+        messages[0] = { ...messages[0], content: messages[0].content + '\n请重新生成一份简短的完整 JSON。modules 和 directions 各至多一项，每个说明用一句话，保留来源和引文。直接输出对象。' }
+        continue
+      }
+      insights.result = { ...result, sourceLabels: sources.map(source => source.label), notice: [...missing, result.note].filter(Boolean).join(' ') }
+      return
+    }
   } catch (error) {
     if (insights.requestId === requestId) insights.error = error?.message || '生成失败，请重试'
   } finally {
@@ -135,7 +147,7 @@ async function generate() {
 function cancel() {
   const id = insights.requestId
   if (!id) return
-  const callingAI = insights.phase === '正在生成建议'
+  const callingAI = insights.phase !== '正在读取项目资料'
   insights.requestId = ''
   insights.phase = ''
   if (callingAI) window.gitReport.aiStop(id).catch(() => {})

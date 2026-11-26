@@ -12,6 +12,18 @@ async function main() {
   const { createProjectChat, buildChatMessages } = context.module.exports
   const handlers = new Map()
   const calls = []
+  const bodies = []
+  const replies = []
+  const net = { fetch: async (_url, options) => {
+    bodies.push(JSON.parse(options.body))
+    assert(replies.length, '不应产生额外的模型请求')
+    const reply = replies.shift()
+    return typeof reply === 'function' ? reply(options) : reply
+  } }
+  const aiModule = { exports: {} }
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../electron/ai-service.js'), 'utf8'), {
+    module: aiModule, require: id => id === 'electron' ? { net } : require(id), URL,
+  })
   const listeners = new Set()
   const sender = { send: (_channel, payload) => { for (const fn of listeners) fn(payload) } }
   const source = fs.readFileSync(path.join(__dirname, '../electron/main.js'), 'utf8')
@@ -21,7 +33,7 @@ async function main() {
   vm.runInNewContext(source.slice(start, end), {
     ipcMain: { handle: (name, fn) => handlers.set(name, fn) }, AbortController, Map, WeakMap,
     store: { load: () => ({ ai: { model: '测试模型' } }), getApiKey: () => '测试占位' },
-    aiService: { chat: (input) => new Promise((resolve, reject) => {
+    aiService: { complete: aiModule.exports.complete, chat: (input) => new Promise((resolve, reject) => {
       calls.push({ ...input, resolve })
       input.signal.addEventListener('abort', () => reject(Object.assign(new Error('已停止'), { name: 'AbortError' })))
     }) },
@@ -94,6 +106,59 @@ async function main() {
   chat.dispose()
   assert.equal(listeners.size, 0)
   console.log('  ✓ 旧 IPC 调用保持兼容，消息预算和订阅释放有效')
+
+  const generate = () => api.aiChat([{ role: 'user', content: '请返回 JSON' }], { requestId: 'insights', responseFormat: 'json' })
+  const completion = (content, reason) => Response.json({ choices: [{
+    message: { reasoning_content: '独立的推理内容', content }, finish_reason: reason,
+  }] })
+  replies.push(completion([{ type: 'text', text: '{"ok":' }, { type: 'reasoning', text: '推理片段' }, { type: 'text', text: 'true}' }], 'stop'))
+  const result = await generate()
+  assert.deepEqual(Object.keys(result).sort(), ['finishReason', 'ok', 'text'])
+  assert.equal(result.text, '{"ok":true}')
+  assert.equal(result.finishReason, 'stop')
+  assert.deepEqual(bodies[0].response_format, { type: 'json_object' })
+  assert.equal(bodies[0].stream, false)
+  assert.equal(bodies[0].temperature, 0)
+  assert.equal(bodies[0].max_tokens, 8192)
+  console.log('  ✓ 结构化请求启用 JSON 输出，仅返回正文和终止原因')
+
+  for (const [status, error] of [
+    [400, { error: { message: "Unsupported parameter: 'response_format'" } }],
+    [422, { detail: [{ loc: ['body', 'response_format'], msg: 'Extra inputs are not permitted' }] }],
+  ]) {
+    replies.push(Response.json(error, { status }), completion('{"modules":[', 'length'))
+    const fallback = await generate()
+    assert.equal(fallback.finishReason, 'length')
+    const { response_format, ...params } = bodies.at(-2)
+    assert.deepEqual(response_format, { type: 'json_object' })
+    assert.deepEqual(bodies.at(-1), params)
+  }
+  for (const [status, message, param] of [
+    [429, 'rate limit'],
+    [400, "Unsupported parameter: 'temperature'"],
+    [400, 'response_format requires the word json in the prompt'],
+    [422, 'Unsupported parameter in this request with response_format', 'temperature'],
+  ]) {
+    const before = bodies.length
+    replies.push(Response.json({ error: { message, param } }, { status }))
+    const failure = await generate()
+    assert.equal(failure.ok, false)
+    assert(failure.error.includes(message))
+    assert.equal(bodies.length, before + 1)
+  }
+  console.log('  ✓ 不兼容网关仅在明确拒绝格式参数时回退一次，保留截断标记')
+
+  let notifyStarted
+  const started = new Promise(resolve => { notifyStarted = resolve })
+  replies.push(({ signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason))
+    notifyStarted()
+  }))
+  const pending = generate()
+  await started
+  await api.aiStop('insights')
+  assert.equal((await pending).aborted, true)
+  console.log('  ✓ 结构化请求沿用现有取消入口')
 }
 
 main().catch((error) => { console.error(error); process.exitCode = 1 })

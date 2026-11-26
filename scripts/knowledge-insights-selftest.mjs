@@ -44,6 +44,29 @@ const linked = { ...moduleCard, sources: ['P1', 'P2', 'R1'], evidence: { P1: '�
 assert.equal(result([linked]).modules.length, 1)
 console.log('✓ 模块核对各项目原文、关联记录直接参与举证，建议和保存的正文带上真实来源')
 
+const reply = JSON.stringify({ modules: [moduleCard], directions: [actionCard] })
+const fenced = '```JSON\r\n' + reply + '\r\n```'
+for (const wrapped of [
+  '以下是建议。\n' + fenced + '\n可先从第一步开始。',
+  '根据所选材料：\n' + reply + '\n以上是建议。',
+  '<think>示例：\n```json\n{"modules":[],"directions":[]}\n```\n</think>\n' + fenced,
+  '正在整理。<think>{"directions":[]}</think><think>再次检查</think>' + reply,
+]) assert.deepEqual(parseKnowledgeInsights(wrapped, sources), valid)
+assert.deepEqual(parseKnowledgeInsights(JSON.stringify({ directions: [actionCard] }), sources).directions, valid.directions)
+assert.deepEqual(parseKnowledgeInsights(JSON.stringify({ modules: [moduleCard] }), sources).modules, valid.modules)
+const literalNote = '保留 <think>原文</think>、括号 { } 和 ``` 标记'
+assert.equal(result([], [], literalNote).note, literalNote)
+for (const empty of ['', '  ', '<think>{"modules":[]}\n</think>', '<think>尚未结束\n{"directions":[]}']) {
+  assert.throws(() => parseKnowledgeInsights(empty, sources), /没有返回建议正文/)
+}
+for (const malformed of [
+  '{"note":"没有分组"}', '{"modules":null,"directions":[]}', '{"modules":[],"directions":{}}',
+  '```json\n[{"directions":[]}]\n```', '说明\n{"modules":[],"directions":[{"title":"内容被截断',
+]) {
+  assert.throws(() => parseKnowledgeInsights(malformed, sources), /格式/)
+}
+console.log('✓ 提取解释文字或思考标签之后的建议，兼容省略空分组，拒绝推理示例、截断回复和错误结构')
+
 const invalidModules = [
   { ...moduleCard, sources: ['P1', 'P1'] }, { ...moduleCard, sources: ['P1', 'R1'] },
   { ...moduleCard, sources: ['P1', 'P2', 'R9'] }, { ...moduleCard, evidence: {} },

@@ -131,6 +131,22 @@ async function chat({ baseUrl, apiKey, model, messages, temperature = 0.7, maxTo
   return full
 }
 
+/** 部分兼容网关不支持 JSON 模式，只有明确拒绝该参数时才退回提示词约束。 */
+function rejectsJsonFormat(status, detail) {
+  if (status !== 400 && status !== 422) return false
+  const format = /response[_ ]format|json[_ ]object/i
+  const unsupported = /unsupported|not supported|does(?: not|n't) support|not available|unknown (?:parameter|argument|field)|unrecognized|unexpected (?:parameter|argument|field|keyword)|extra[_ ]forbidden|extra inputs are not permitted|不支持|未知参数/i
+  let data
+  try { data = JSON.parse(detail) } catch { return format.test(detail) && unsupported.test(detail) }
+  const errors = Array.isArray(data?.detail) ? data.detail : [data?.error || data?.detail || data]
+  return errors.some(error => {
+    if (typeof error === 'string') return format.test(error) && unsupported.test(error)
+    const field = error?.param || (Array.isArray(error?.loc) && error.loc.join('.'))
+    const message = [error?.message, error?.msg, error?.type, error?.code].filter(Boolean).join(' ')
+    return format.test(field || message) && unsupported.test(message)
+  })
+}
+
 /**
  * 非流式对话（结构化输出场景用，如 AI 部署方案要一份 JSON）。
  * 与 chat() 的差别：
@@ -142,7 +158,7 @@ async function chat({ baseUrl, apiKey, model, messages, temperature = 0.7, maxTo
  * 出错时抛 Error（message 可直接展示给用户）。
  * @returns {Promise<{text: string, finishReason: string, reasoning: string, model: string}>}
  */
-async function complete({ baseUrl, apiKey, model, messages, temperature = 0, maxTokens = DEFAULT_MAX_TOKENS, reasoningEffort, signal }) {
+async function complete({ baseUrl, apiKey, model, messages, temperature = 0, maxTokens = DEFAULT_MAX_TOKENS, reasoningEffort, responseFormat, signal }) {
   if (!apiKey) throw new Error('未配置 API Key，请先在「设置 → AI 模型」中填写')
   if (!model) throw new Error('未配置模型名称，请先在「设置 → AI 模型」中填写')
   if (!Array.isArray(messages) || !messages.length) throw new Error('消息列表为空')
@@ -150,23 +166,31 @@ async function complete({ baseUrl, apiKey, model, messages, temperature = 0, max
   const url = `${await assertSafeBaseUrl(baseUrl)}/chat/completions`
   const body = { model, messages, temperature, max_tokens: maxTokens, stream: false }
   if (reasoningEffort) body.reasoning_effort = reasoningEffort
-  const resp = await net.fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-    signal,
-  })
-  if (!resp.ok) {
-    let detail = ''
-    try {
-      detail = (await resp.text()).slice(0, 400)
-    } catch { /* noop */ }
-    const err = new Error(`AI 接口请求失败（HTTP ${resp.status}）${detail ? `：${detail}` : ''}`)
-    err.status = resp.status
-    throw err
+  if (responseFormat === 'json') body.response_format = { type: 'json_object' }
+  const send = async () => {
+    const resp = await net.fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal,
+    })
+    if (resp.ok) return resp
+    const detail = await resp.text().catch(() => '')
+    const error = new Error(`AI 接口请求失败（HTTP ${resp.status}）${detail ? `：${detail.slice(0, 400)}` : ''}`)
+    error.status = resp.status
+    error.jsonFormatUnsupported = body.response_format && rejectsJsonFormat(resp.status, detail)
+    throw error
+  }
+  let resp
+  try {
+    resp = await send()
+  } catch (error) {
+    if (signal?.aborted || !error.jsonFormatUnsupported) throw error
+    delete body.response_format
+    resp = await send()
   }
   let json
   try {
@@ -176,8 +200,11 @@ async function complete({ baseUrl, apiKey, model, messages, temperature = 0, max
   }
   const choice = (json.choices && json.choices[0]) || {}
   const msg = choice.message || {}
+  const text = Array.isArray(msg.content)
+    ? msg.content.filter(part => (part?.type === 'text' || part?.type === 'output_text') && typeof part.text === 'string').map(part => part.text).join('')
+    : typeof msg.content === 'string' ? msg.content : ''
   return {
-    text: String(msg.content || ''),
+    text,
     finishReason: String(choice.finish_reason || ''),
     reasoning: String(msg.reasoning_content || msg.reasoning || ''),
     model: String(json.model || model),
