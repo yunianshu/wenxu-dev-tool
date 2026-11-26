@@ -2,12 +2,15 @@
   <section class="deploy-run-workspace">
     <div class="publish-row">
       <div class="version-summary">
-        <span class="ver-label">本地</span><strong class="local-version mono">{{ publishVersion || '未识别' }}</strong>
+        <span class="ver-label">{{ inFlightVersion ? '本次发布' : '本地' }}</span>
+        <strong class="local-version mono">{{ inFlightVersion || publishVersion || '未识别' }}</strong>
         <el-tooltip :content="onlineVersionSource || '查询服务器线上版本'" placement="top">
           <el-button text class="online-version" :disabled="!form.id || dirty || checkingPatchVersion" @click="queryReleases()">线上 {{ onlineVersion || '未知' }}<el-icon><Refresh /></el-icon></el-button>
         </el-tooltip>
-        <span v-if="onlineVersion && publishVersion === onlineVersion" class="version-match"><span />版本一致</span>
-        <span v-else-if="publishVersion && onlineVersion" class="version-pending">待发布版本</span>
+        <template v-if="!inFlightVersion">
+          <span v-if="onlineVersion && publishVersion === onlineVersion" class="version-match"><span />版本一致</span>
+          <span v-else-if="publishVersion && onlineVersion" class="version-pending">待发布版本</span>
+        </template>
       </div>
       <div class="publish-actions">
       <el-select
@@ -169,6 +172,7 @@ const props = defineProps({
 const emit = defineEmits(['history-changed', 'set-version'])
 
 const run = computed(() => deployRunFor(props.form.id))
+const inFlightVersion = computed(() => run.value.running ? run.value.requestedVersion : '')
 const progress = computed(() => deployProgress(run.value, props.form.deployMode))
 const rollingBack = computed(() => run.value.running && run.value.type === 'rollback')
 const cancelAction = computed(() => run.value.queued ? '取消排队' : ({ rollback: '取消回滚', 'db-restore': '取消恢复' }[run.value.type] || '取消发布'))

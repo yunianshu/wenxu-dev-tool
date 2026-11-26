@@ -146,7 +146,7 @@ export const state = reactive({
 })
 
 const idleDeployRun = Object.freeze({
-  id: '', running: false, queued: false, type: '', targetName: '', status: '',
+  id: '', running: false, queued: false, type: '', targetName: '', requestedVersion: '', status: '',
   startedAt: 0, finishedAt: 0, stages: {}, logs: [],
   packageCount: 0, uploadPercent: 0, datasyncPercent: 0,
 })
@@ -155,17 +155,18 @@ export function deployRunFor(projectId) {
   return state.deploy.runs.get(projectId) || idleDeployRun
 }
 
-export function beginDeployRun(projectId, type, targetName) {
+export function beginDeployRun(projectId, type, targetName, requestedVersion = '') {
   const requestId = crypto.getRandomValues(new Uint32Array(3)).join('-')
   state.deploy.runs.set(projectId, {
-    ...idleDeployRun, requestId, type, targetName, running: true, startedAt: Date.now(), stages: {}, logs: [],
+    ...idleDeployRun, requestId, type, targetName, requestedVersion, running: true, startedAt: Date.now(), stages: {}, logs: [],
   })
   return state.deploy.runs.get(projectId)
 }
 
 export async function submitDeployRun(projectId, targetId, targetName, releasePlan) {
   if (deployRunFor(projectId).running) return { ok: false, error: '该项目已有部署任务进行中' }
-  const operation = beginDeployRun(projectId, 'deploy', targetName)
+  const requestedVersion = releasePlan?.versionOverride || releasePlan?.expectedVersion || ''
+  const operation = beginDeployRun(projectId, 'deploy', targetName, requestedVersion)
   let result
   try {
     result = await window.gitReport.deployRun(projectId, targetId, operation.requestId, releasePlan)

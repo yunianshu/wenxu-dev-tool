@@ -378,6 +378,27 @@ async function main() {
     publishPanel.unmount()
     console.log('  ✓ 发布隔离进度与取消，增加发布一次提交一个项目并保留已有任务')
 
+    const patchTarget = { ...emptyTarget(), id: 'production', server: { host: 'example.invalid' }, remotePath: '/apps/patch' }
+    const patchForm = { ...emptyProject(), id: 'patch', name: '补丁发布项目', localPath: '/project/patch', targets: [patchTarget], version: { strategy: 'manual', manual: '1.1.36' } }
+    const patchPanel = mount('src/components/deploy/DeployRunPanel.vue', vue.reactive({
+      form: patchForm, activeTarget: patchTarget, activeTargetId: patchTarget.id, publishVersion: '1.1.36', dirty: false,
+    }))
+    const previousReleases = api.deployReleases
+    api.deployReleases = async () => ({ ok: true, current: '1.1.36', releases: ['1.1.36'] })
+    const patchDone = patchPanel.setup.publishPatch()
+    await settle()
+    const patchRequest = publishRequests.get(patchForm.id)
+    assert.equal(patchRequest?.releasePlan.versionOverride, '1.1.37')
+    assert.equal(patchPanel.setup.inFlightVersion?.value, '1.1.37', '发布任务进行中应立即显示本次版本')
+    assert.equal(patchPanel.setup.onlineVersion.value, '1.1.36', '线上版本应反映当前运行版本')
+    patchRequest.resolve({ ok: false })
+    await patchDone
+    assert.equal(patchPanel.setup.inFlightVersion.value, '', '任务结束后应恢复配置版本展示')
+    assert.equal(patchPanel.setup.onlineVersion.value, '1.1.36', '未发布成功时保持线上版本')
+    api.deployReleases = previousReleases
+    patchPanel.unmount()
+    console.log('  ✓ 一键小版本发布立即显示目标版本，线上版本独立更新')
+
     // 页面加载后磁盘配置可能被外部修复；切换版本不得用旧表单覆盖准备命令。
     const deployProjects = load('electron/deploy/deploy-projects.js')
     const previousList = api.projectsList
