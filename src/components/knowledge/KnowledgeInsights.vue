@@ -23,28 +23,38 @@
         </div>
         <p class="source-hint">生成时会把所选记录和项目资料（简介、备注、标签、最近提交标题）发送给{{ modelLabel }}。</p>
         <div class="generate-actions">
-          <el-button type="primary" native-type="submit" :disabled="!hasMaterials" :loading="!!insights.requestId">{{ insights.phase || '生成建议' }}</el-button>
+          <el-button type="primary" native-type="submit" :disabled="!hasMaterials" :loading="!!insights.requestId">{{ insights.requestId ? '生成中' : '生成建议' }}</el-button>
           <el-button v-if="insights.requestId" text @click="cancel">取消</el-button>
           <span v-if="!state.projects.items.length && !recordOptions.length && !knowledge.data.loading">可以先在「想法地球」记下一条想法。</span>
         </div>
       </form>
 
+      <section v-if="insights.steps.length" class="analysis-progress" role="status" aria-label="分析过程" aria-live="polite" aria-atomic="false">
+        <h3>分析过程</h3>
+        <ol :class="{ running: !!insights.requestId }">
+          <li v-for="(step, index) in insights.steps" :key="index">{{ step }}</li>
+        </ol>
+      </section>
       <div v-if="insights.error" role="alert" class="insights-error">
         <span>{{ insights.error }}</span><el-button v-if="serviceError" text @click="$emit('settings')">AI 服务设置</el-button>
       </div>
       <div v-if="insights.result" class="results" aria-label="提炼结果">
-        <div class="result-caption">上次生成使用的材料：{{ insights.result.sourceLabels.join('、') }}</div>
+        <div class="result-caption">上次成功生成使用的材料：{{ insights.result.sourceLabels.join('、') }}</div>
         <p v-if="insights.result.notice" role="status" class="result-note">{{ insights.result.notice }}</p>
         <div v-for="group in groups" :key="group.key" class="result-group">
           <h3>{{ group.label }} <span>{{ group.cards.length }}</span></h3>
           <article v-for="(card, index) in group.cards" :key="index" class="insight-card">
             <h4>{{ card.title }}</h4>
             <p>{{ card.summary }}</p>
-            <ul class="sources" aria-label="建议依据">
-              <li v-for="source in card.sources" :key="source.key">
-                <strong>{{ source.label }}</strong><span v-if="source.evidence"> · {{ source.evidence }}</span>
-              </li>
-            </ul>
+            <details class="decision-basis" :open="index === 0">
+              <summary>判断依据 <span>· {{ card.sources.length }} 份来源</span></summary>
+              <p v-if="card.decisionBasis">{{ card.decisionBasis }}</p>
+              <ul class="sources" aria-label="建议依据">
+                <li v-for="source in card.sources" :key="source.key">
+                  <strong>{{ source.label }}</strong><span v-if="source.evidence"> · {{ source.evidence }}</span>
+                </li>
+              </ul>
+            </details>
             <dl>
               <dt>第一步</dt><dd>{{ card.nextStep }}</dd>
               <dt>如何验证</dt><dd>{{ card.validation }}</dd>
@@ -97,6 +107,7 @@ async function generate() {
   insights.requestId = requestId
   insights.error = ''
   insights.phase = '正在读取项目资料'
+  insights.steps = [`本次选取了 ${projects.length} 个项目、${records.length} 条想法与记录。`]
   try {
     const repos = projects.map(project => reposForProject(project, state.discoveredRepos).map(repo => repo.path))
     // 两个项目覆盖同一仓库时，不能把同一批提交当成两个独立项目的依据。
@@ -117,12 +128,19 @@ async function generate() {
     }
     if (insights.requestId !== requestId) return
     const { messages, sources } = buildKnowledgeInsightRequest({ projects, records, commitsByProject })
+    if (missing.length) insights.steps.push(...missing)
+    else if (projects.length) {
+      const withEvidence = sources.filter(source => source.kind === 'project' && source.excerpts.some(Boolean)).length
+      insights.steps.push(`${withEvidence} 个项目有简介、备注、标签或近期提交可供比对。`)
+    }
+    insights.steps.push(`等待模型 ${modelLabel.value} 根据所选材料给出建议。`)
     for (let attempt = 0; attempt < 2; attempt++) {
       insights.phase = attempt === 0 ? '正在生成建议' : '正在重新生成精简建议'
       let response
       try { response = await window.gitReport.aiChat(messages, { requestId, responseFormat: 'json' }) }
       catch (error) { throw new Error(`AI 服务请求失败：${error?.message || error}`) }
-      if (insights.requestId !== requestId || response?.aborted) return
+      if (insights.requestId !== requestId) return
+      if (response?.aborted) { insights.steps.push('已取消生成。'); return }
       if (!response?.ok) throw new Error(`AI 服务请求失败：${response?.error || '请检查模型配置后重试'}`)
       if (response.finishReason === 'content_filter') throw new Error('模型服务拦截了这次回复，请调整所选材料后再试。')
       let result
@@ -131,14 +149,19 @@ async function generate() {
         result = parseKnowledgeInsights(response.text, sources)
       } catch (error) {
         if (attempt === 1) throw error
+        insights.steps.push(response.finishReason === 'length' ? '首份回复被截断，正在等待模型重新生成精简建议。' : '首份回复缺少可读取的建议，正在等待模型重新生成精简建议。')
         messages[0] = { ...messages[0], content: messages[0].content + '\n请重新生成一份简短的完整 JSON。modules 和 directions 各至多一项，每个说明用一句话，保留来源和引文。直接输出对象。' }
         continue
       }
       insights.result = { ...result, sourceLabels: sources.map(source => source.label), notice: [...missing, result.note].filter(Boolean).join(' ') }
+      insights.steps.push(`来源核对完成，得到 ${result.modules.length} 个共性模块和 ${result.directions.length} 条行动建议。`)
       return
     }
   } catch (error) {
-    if (insights.requestId === requestId) insights.error = error?.message || '生成失败，请重试'
+    if (insights.requestId === requestId) {
+      insights.error = error?.message || '生成失败，请重试'
+      insights.steps.push('本次分析未完成。')
+    }
   } finally {
     if (insights.requestId === requestId) { insights.requestId = ''; insights.phase = '' }
   }
@@ -148,6 +171,7 @@ function cancel() {
   const id = insights.requestId
   if (!id) return
   const callingAI = insights.phase !== '正在读取项目资料'
+  insights.steps.push('已取消生成。')
   insights.requestId = ''
   insights.phase = ''
   if (callingAI) window.gitReport.aiStop(id).catch(() => {})
@@ -190,6 +214,13 @@ async function save(card, kind) {
 .source-hint { margin: 12px 0; font-size: 12px; }
 .generate-actions, .insights-error { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .generate-actions .el-button + .el-button { margin: 0; }
+.analysis-progress { margin: 18px 0; padding: 0 14px; border-left: 2px solid var(--el-color-primary); }
+.analysis-progress h3 { margin: 0 0 7px; font-size: 14px; }
+.analysis-progress ol { margin: 0; padding-left: 1.35em; color: var(--text-muted); font-size: 13px; line-height: 1.8; overflow-wrap: anywhere; }
+.analysis-progress .running li:last-child { color: var(--brand-text); }
+.decision-basis { margin: 10px 0; }
+.decision-basis summary { width: fit-content; cursor: pointer; color: var(--el-color-primary); }
+.decision-basis summary span { color: var(--text-muted); font-size: 12px; }
 .insights-error, .result-note { margin: 14px 0; padding: 9px 12px; border-radius: 5px; font-size: 13px; overflow-wrap: anywhere; }
 .insights-error { color: var(--danger); background: var(--danger-soft); }
 .result-note { background: var(--surface-subtle); color: var(--text-muted); line-height: 1.6; }

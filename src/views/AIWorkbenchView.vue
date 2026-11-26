@@ -101,8 +101,10 @@ function selectRow(row) { workspace.selectedId = row.id }
 function setView(view) {
   if (view === 'insights') {
     const project = projectFields()
-    if (project.projectId && !knowledge.insights.projectIds.length) knowledge.insights.projectIds = [project.projectId]
-    if (current.value && !current.value.deletedAt && !knowledge.insights.recordIds.length) knowledge.insights.recordIds = [current.value.id]
+    if (!knowledge.insights.requestId) {
+      if (project.projectId && !knowledge.insights.projectIds.length) knowledge.insights.projectIds = [project.projectId]
+      if (current.value && !current.value.deletedAt && !knowledge.insights.recordIds.length) knowledge.insights.recordIds = [current.value.id]
+    }
     workspace.selectedId = ''
   } else if (view === 'globe' && !selectedGlobeId.value) workspace.selectedId = ''
   workspace.view = view

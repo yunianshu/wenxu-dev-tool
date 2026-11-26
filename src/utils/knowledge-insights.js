@@ -8,8 +8,9 @@ const instructions = [
   '每个模块的 sources 包含参与项目的 P 编号。evidence 对象为每个 P 编号给出一段来自其简介、备注、标签或提交标题的连续原文，4 至 160 字，不改写。也可引用关联记录的标题或正文，此时 sources 必须同时含该记录的 R 编号。',
   'directions 给出至多 4 个值得优先试的不同方向。选了记录时，每个方向都要回应至少一条所选记录里的具体想法。可以把一个项目的做法换到另一种使用场景，也可以组合两条想法，说明谁会受益、为什么值得先试。仅有项目时，从项目实际需求出发。',
   '每张卡的 title 是简明名称，summary 说明共同职责与边界或建议理由，nextStep 写一个可以立即开始的小实验，validation 写能判断实验结果的观察或验收标准。用普通文本，引用材料时写名称。',
+  'decisionBasis 是写给使用者的判断依据。用两三句话点出引用材料中的具体现象，说明它为何支持复用这个模块或优先尝试这个方向，并指出仍需核实的条件。材料没有说明的情况应标明未知。',
   '不足以支持某类结论时，该类返回空数组，在 note 中指出缺哪一类具体资料。不要为了凑数量编造来源或把推测写成事实。',
-  '只返回 JSON 对象，格式为 {"modules":[{"title":"…","summary":"…","nextStep":"…","validation":"…","sources":["P1","P2"],"evidence":{"P1":"原文","P2":"原文"}}],"directions":[{"title":"…","summary":"…","nextStep":"…","validation":"…","sources":["R1"]}],"note":""}。',
+  '只返回 JSON 对象，格式为 {"modules":[{"title":"…","summary":"…","decisionBasis":"…","nextStep":"…","validation":"…","sources":["P1","P2"],"evidence":{"P1":"原文","P2":"原文"}}],"directions":[{"title":"…","summary":"…","decisionBasis":"…","nextStep":"…","validation":"…","sources":["R1"]}],"note":""}。',
 ].join('\n')
 
 function plainText(value) {
@@ -95,9 +96,11 @@ function parseCard(row, kind, byKey, hasRecords) {
   }
   const title = excerpt(row.title, 120)
   const summary = excerpt(row.summary, 1400)
+  const decisionBasis = typeof row.decisionBasis === 'string' && !/<\/?think\b/i.test(row.decisionBasis)
+    ? excerpt(row.decisionBasis, 600) : ''
   const nextStep = excerpt(row.nextStep, 700)
   const validation = excerpt(row.validation, 700)
-  return title && summary && nextStep && validation ? { title, summary, nextStep, validation, sources } : null
+  return title && summary && nextStep && validation ? { title, summary, decisionBasis, nextStep, validation, sources } : null
 }
 
 function readInsightReply(content) {
@@ -149,7 +152,9 @@ function markdownText(value) {
 }
 
 export function knowledgeInsightMarkdown(card) {
-  const lines = [markdownText(card.summary), '', '## 下一步', '', markdownText(card.nextStep), '', '## 验证方式', '', markdownText(card.validation), '', '## 来源', '']
+  const lines = [markdownText(card.summary), '']
+  if (card.decisionBasis) lines.push('## 判断依据', '', markdownText(card.decisionBasis), '')
+  lines.push('## 下一步', '', markdownText(card.nextStep), '', '## 验证方式', '', markdownText(card.validation), '', '## 来源', '')
   for (const source of card.sources) {
     const kind = source.kind === 'project' ? '项目' : '记录'
     const quote = source.evidence ? `：${markdownText(source.evidence)}` : ''

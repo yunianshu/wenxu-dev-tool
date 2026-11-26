@@ -72,19 +72,22 @@ function installFixture({ projects, reports, deployments, knowledgeRecords }) {
     },
     knowledgeImport: payload => saveKnowledge({ title: payload.fileName.replace(/\.(md|markdown)$/i, ''), body: payload.content, type: 'idea', status: 'inbox' }),
     knowledgeExport: id => { const record = readKnowledge().find(row => row.id === id); return record ? { ok: true, fileName: record.title + '.md', content: '# ' + record.title + '\n\n' + record.body } : { ok: false, error: '记录不存在' } },
-    aiChat: (messages, options) => {
+    aiChat: async (messages, options) => {
       window.__uiAiRequests.push(copy({ messages, options }))
+      if (window.__uiPauseAnalysis) await new Promise(resolve => { window.__uiContinueAnalysis = resolve })
       const failure = window.__uiAnalysisFailures?.shift()
       if (failure === 'service') return { ok: false, error: '隔离模型暂时不可用' }
       if (failure === 'length') return { ok: true, text: '{"modules":[', finishReason: 'length' }
       const reply = JSON.stringify({
         modules: [{
           title: '共用表单校验', summary: '抽取字段校验规则，保留每个项目独立的表单布局。',
+          decisionBasis: '两个项目的提交都提到复用表单校验规则，适合先抽取字段校验。',
           nextStep: '从两个表单各挑一个必填项抽出校验函数。', validation: '两个表单用同一组输入产生一致提示。',
           sources: ['P1', 'P2'], evidence: { P1: '复用表单校验规则', P2: '复用表单校验规则' },
         }],
         directions: [{
           title: '用原型验证表单提示', summary: '把用户想法转化为两个表单的对照实验。',
+          decisionBasis: '所选想法关注相同的错误提示，用原型可以先验证提示是否易懂。',
           nextStep: '准备一组合法和非法的输入样例。', validation: '逐项核对错误提示能否定位字段。',
           sources: ['P1', 'P2', 'R1'],
         }], note: '',
@@ -175,13 +178,40 @@ async function verifyKnowledgeSuggestions(page, navigate) {
   await generate.click()
   await page.getByRole('alert').filter({ hasText: '截断' }).waitFor()
   assert.equal(await page.locator('.insight-card').count(), 0, '截断的回复不能生成建议卡片')
-  await page.evaluate(() => { window.__uiAnalysisFailures = ['length'] })
+  const progress = page.getByRole('status', { name: '分析过程' })
+  await page.evaluate(() => { window.__uiAnalysisFailures = ['length']; window.__uiPauseAnalysis = true })
   await generate.click()
+  await page.waitForFunction(() => typeof window.__uiContinueAnalysis === 'function')
+  await progress.waitFor()
+  const waiting = await progress.innerText()
+  assert.match(waiting, /4\s*个项目/)
+  assert.match(waiting, /2\s*条(?:想法|记录)/)
+  assert.match(waiting, /模型/)
+  await page.evaluate(() => {
+    const resume = window.__uiContinueAnalysis
+    delete window.__uiContinueAnalysis
+    resume()
+  })
+  await page.waitForFunction(() => typeof window.__uiContinueAnalysis === 'function')
+  assert.match(await progress.innerText(), /精简/, '模型重试等待中展示精简请求的实际进度')
+  await page.evaluate(() => { window.__uiPauseAnalysis = false; window.__uiContinueAnalysis() })
   const moduleTitle = '共用表单校验'
   const directionTitle = '用原型验证表单提示'
   const moduleCard = page.locator('article').filter({ hasText: moduleTitle })
   const directionCard = page.locator('article').filter({ hasText: directionTitle })
   await moduleCard.getByRole('button', { name: '保存到知识库' }).waitFor()
+  assert.match(await progress.innerText(), /完成/, '成功展示卡片时记录本轮分析已完成')
+  const moduleBasis = '两个项目的提交都提到复用表单校验规则，适合先抽取字段校验。'
+  const directionBasis = '所选想法关注相同的错误提示，用原型可以先验证提示是否易懂。'
+  for (const [card, basis] of [[moduleCard, moduleBasis], [directionCard, directionBasis]]) {
+    const explanation = card.getByText(basis, { exact: true })
+    const summary = card.locator('summary').filter({ hasText: '判断依据' })
+    await explanation.waitFor()
+    await summary.click()
+    await explanation.waitFor({ state: 'hidden' })
+    await summary.click()
+    await explanation.waitFor()
+  }
   const requests = await page.evaluate(() => window.__uiAiRequests)
   assert.equal(requests.length, 5, '服务失败直接提示，截断仅自动重试一次')
   assert(requests.every(request => request.options.responseFormat === 'json'), '首次与重试均请求结构化回复')
@@ -210,6 +240,8 @@ async function verifyKnowledgeSuggestions(page, navigate) {
   assert.equal(method.status, 'organized')
   assert.equal(idea.type, 'idea')
   assert.equal(idea.status, 'draft')
+  assert(method.body.includes(moduleBasis), '采纳的模块正文保存模型给出的判断依据')
+  assert(idea.body.includes(directionBasis), '采纳的行动建议正文保存模型给出的判断依据')
   assert.deepEqual(method.sourceProjects, [{ id: 'project-0', name: 'Personnel PLM' }, { id: 'project-1', name: '组件文档站' }])
   assert.deepEqual(idea.sourceIds, [original.id])
   assert.deepEqual(rows.find(row => row.id === original.id), original, '采纳建议保留原始想法和修订号')

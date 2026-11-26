@@ -15,6 +15,7 @@ const { messages, sources } = buildKnowledgeInsightRequest({
 })
 
 assert.deepEqual(messages.map(message => message.role), ['system', 'user'])
+assert.match(messages[0].content, /decisionBasis.*判断依据/)
 assert.doesNotMatch(messages[1].content, /private-|禁止外发|password|localPath/)
 const material = JSON.parse(messages[1].content)
 assert.deepEqual(material.map(item => item.key), ['P1', 'P2', 'R1'])
@@ -43,6 +44,26 @@ assert.match(knowledgeInsightMarkdown(valid.directions[0]), /## 下一步[\s\S]*
 const linked = { ...moduleCard, sources: ['P1', 'P2', 'R1'], evidence: { P1: '租约要能追溯原因', P2: '按金额分级审批' } }
 assert.equal(result([linked]).modules.length, 1)
 console.log('✓ 模块核对各项目原文、关联记录直接参与举证，建议和保存的正文带上真实来源')
+
+const moduleBasis = '租约和采购单都有审批节点，可以先验证相同的状态转换。两种单据的退回规则仍需核实。'
+const directionBasis = '记录提到无法追溯原因，可先在退回时采集 [原因]。仍需确认现有数据能否补全。'
+const explained = result([{ ...moduleCard, decisionBasis: moduleBasis }], [{ ...actionCard, decisionBasis: directionBasis }])
+assert.equal(explained.modules[0].decisionBasis, moduleBasis)
+assert.equal(explained.directions[0].decisionBasis, directionBasis)
+assert(knowledgeInsightMarkdown(explained.directions[0]).includes('## 判断依据\n\n' + directionBasis.replace('[原因]', '\\[原因\\]')))
+assert.equal(valid.modules[0].decisionBasis, '')
+const legacyCard = { ...valid.directions[0] }
+delete legacyCard.decisionBasis
+assert.doesNotMatch(knowledgeInsightMarkdown(legacyCard), /## 判断依据/)
+for (const decisionBasis of [null, {}, 27, '   ', '<think>内部标记</think>']) {
+  const card = result([], [{ ...actionCard, decisionBasis, reasoning_content: '内部输出' }]).directions[0]
+  assert.equal(card.decisionBasis, '')
+  assert.doesNotMatch(knowledgeInsightMarkdown(card), /判断依据|内部/)
+}
+const longBasis = result([], [{ ...actionCard, decisionBasis: '证'.repeat(1000) }]).directions[0].decisionBasis
+assert.equal(longBasis, '证'.repeat(599) + '…')
+assert.equal(result([{ ...moduleCard, decisionBasis: moduleBasis, evidence: {} }]).modules.length, 0)
+console.log('✓ 两类卡片的判断依据随建议保存，兼容旧数据、异常字段和长度上限，来源仍需核对')
 
 const reply = JSON.stringify({ modules: [moduleCard], directions: [actionCard] })
 const fenced = '```JSON\r\n' + reply + '\r\n```'

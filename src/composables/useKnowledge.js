@@ -7,7 +7,7 @@ export function createKnowledgeStore(api, delay = 600, storage = null) {
   const data = reactive({ records: [], drafts: {}, saving: {}, mutating: {}, errors: {}, loading: false, error: '', backupError: '', warnings: [], directory: '', loaded: false })
   const workspace = reactive({ view: 'globe', query: '', type: '', projectId: '', selectedId: '' })
   // 切去查看来源或调整 AI 服务后，仍能回到本次选材与已生成的建议。
-  const insights = reactive({ projectIds: [], recordIds: [], requestId: '', phase: '', error: '', result: null })
+  const insights = reactive({ projectIds: [], recordIds: [], requestId: '', phase: '', steps: [], error: '', result: null })
   const timers = new Map()
   const flights = new Map()
   const edits = new Map()
