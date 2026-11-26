@@ -4,7 +4,7 @@
       <div class="version-summary">
         <span class="ver-label">本地</span><strong class="local-version mono">{{ publishVersion || '未识别' }}</strong>
         <el-tooltip :content="onlineVersionSource || '查询服务器线上版本'" placement="top">
-          <el-button text class="online-version" :disabled="!form.id || dirty" @click="queryReleases()">线上 {{ onlineVersion || '未知' }}<el-icon><Refresh /></el-icon></el-button>
+          <el-button text class="online-version" :disabled="!form.id || dirty || checkingPatchVersion" @click="queryReleases()">线上 {{ onlineVersion || '未知' }}<el-icon><Refresh /></el-icon></el-button>
         </el-tooltip>
         <span v-if="onlineVersion && publishVersion === onlineVersion" class="version-match"><span />版本一致</span>
         <span v-else-if="publishVersion && onlineVersion" class="version-pending">待发布版本</span>
@@ -21,7 +21,7 @@
       <el-button
         v-if="releases.length && rollbackVersion"
         :loading="rollingBack"
-        :disabled="run.running"
+        :disabled="runActionBusy"
         @click="doRollback(rollbackVersion)"
       >回滚到此版本</el-button>
       <el-button
@@ -29,7 +29,17 @@
         plain
         @click="openDbBackups"
       ><el-icon><Coin /></el-icon>数据库备份</el-button>
-      <el-button :disabled="!form.id || run.running || dirty" @click="newVersion"><el-icon><Plus /></el-icon>新版本</el-button>
+      <el-button :disabled="!form.id || runActionBusy || dirty" @click="newVersion"><el-icon><Plus /></el-icon>新版本</el-button>
+      <el-tooltip
+        v-if="!run.running"
+        :content="patchPublishBlockedReason || '递增版本号末位并发布到当前环境'"
+        :disabled="checkingPatchVersion"
+        placement="top"
+      >
+        <span class="publish-button-wrap">
+          <el-button type="primary" plain :loading="checkingPatchVersion" :disabled="!!patchPublishBlockedReason" @click="publishPatch">一键小版本发布</el-button>
+        </span>
+      </el-tooltip>
       <el-button v-if="run.running" type="warning" plain :disabled="!run.id" @click="cancelRun">{{ cancelAction }}</el-button>
       <el-tooltip v-else :disabled="canPublish" :content="publishBlockedReason" placement="top">
         <span class="publish-button-wrap"><el-button type="primary" class="publish-btn" :disabled="!canPublish" @click="publish"><el-icon><Promotion /></el-icon>发布 {{ publishVersion || '' }}</el-button></span>
@@ -129,7 +139,7 @@
       <el-table-column label="文件" prop="fileName" min-width="200" show-overflow-tooltip />
       <el-table-column label="操作" width="90" fixed="right">
         <template #default="{ row }">
-          <el-button text size="small" type="danger" :disabled="restoringDb || run.running || activeDatabase.type !== 'postgres'" @click="doDbRestore(row)">恢复</el-button>
+          <el-button text size="small" type="danger" :disabled="runActionBusy || activeDatabase.type !== 'postgres'" @click="doDbRestore(row)">恢复</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -167,6 +177,7 @@ const rollbackVersion = ref('')
 const logBox = ref(null)
 let selectionEpoch = 0
 let releaseQueryId = 0
+let historyQueryId = 0
 let disposed = false
 
 function captureSelection() {
@@ -180,10 +191,15 @@ function isCurrentSelection(selection) {
 /** 极简配置：用户只填服务器/项目地址/数据同步开关，其余由发布流程自动生成 */
 const quickMode = computed(() => props.form.configMode === 'quick')
 
+const checkingPatchVersion = ref(false)
+const runActionBusy = computed(() => run.value.running || checkingPatchVersion.value)
 const publishBlockedReason = computed(() => publishBlocker(props.form, props.activeTarget, props.publishVersion, {
-  dirty: props.dirty, busy: run.value.running,
+  dirty: props.dirty, busy: runActionBusy.value,
 }))
 const canPublish = computed(() => !publishBlockedReason.value)
+const patchPublishBlockedReason = computed(() => publishBlocker(props.form, props.activeTarget, '', {
+  dirty: props.dirty, busy: runActionBusy.value, checkingVersion: true,
+}) || (props.activeTargetId ? '' : '请先选择部署环境'))
 
 const activeDatabase = computed(() => {
   const target = props.activeTarget
@@ -200,10 +216,9 @@ const activeDatabase = computed(() => {
 const versionDialogVisible = ref(false)
 const versionChoice = ref('')
 const customVersion = ref('')
-const predicted = ref({ patch: '', minor: '', major: '' })
-const versionBase = ref('')
-/** 本地发布记录中该目标最近一次成功发布的版本（切项目/环境即加载，供线上版本回退与预测基准共用） */
-const historyVersion = ref('')
+/** 当前环境的成功发布记录，按时间倒序 */
+const historyVersions = ref([])
+const historyVersion = computed(() => historyVersions.value[0] || '')
 const queriedVersion = computed(() => deployOnlineVersion(props.form.id, props.activeTargetId))
 
 /**
@@ -218,53 +233,45 @@ const onlineVersionSource = computed(() => {
   return highestVersion(releases.value) ? '按服务器版本列表' : ''
 })
 
-/** 基准取自线上/历史发布版本（而非本地识别版本）时给出说明 */
-const versionBaseFromRemote = computed(() => !!versionBase.value && versionBase.value !== props.publishVersion)
-
 /** 预测基准：本地版本、线上版本、本地与服务器历史发布版本中的最高者（spec R7） */
-function rebuildPrediction(force = false) {
-  const candidates = [props.publishVersion, queriedVersion.value, historyVersion.value, ...releases.value]
-  // 全部无法解析为 x.y.z 时回退原始版本串：不产生候选，但让用户看到当前版本并据此自定义（spec R7）
-  const base = highestVersion(candidates)
-    || String(props.publishVersion || queriedVersion.value || historyVersion.value || '').trim()
-  const changed = force || base !== versionBase.value
-  versionBase.value = base
-  predicted.value = {
-    patch: bumpVersion(base, 'patch'),
-    minor: bumpVersion(base, 'minor'),
-    major: bumpVersion(base, 'major'),
-  }
-  if (changed) {
-    versionChoice.value = predicted.value.patch ? 'patch' : 'custom'
-    customVersion.value = base
-  }
+function highestReleaseVersion(localVersion) {
+  return highestVersion([localVersion, queriedVersion.value, ...historyVersions.value, ...releases.value])
 }
+const versionBase = computed(() => highestReleaseVersion(props.publishVersion)
+  || String(props.publishVersion || queriedVersion.value || historyVersion.value || '').trim())
+const versionBaseFromRemote = computed(() => !!versionBase.value && versionBase.value !== props.publishVersion)
+const predicted = computed(() => ({
+  patch: bumpVersion(versionBase.value, 'patch'),
+  minor: bumpVersion(versionBase.value, 'minor'),
+  major: bumpVersion(versionBase.value, 'major'),
+}))
+watch([versionDialogVisible, versionBase], ([open, base]) => {
+  if (!open) return
+  versionChoice.value = predicted.value.patch ? 'patch' : 'custom'
+  customVersion.value = base
+})
 
 /**
- * 读取本地发布记录里该目标最近一次成功发布的版本（快、无需网络，失败静默）。
+ * 读取本地发布记录里该目标成功发布过的版本。
  * 异步返回时项目/环境可能已切换，丢弃过期结果。
  */
-async function loadHistoryVersion() {
+async function loadHistoryVersions() {
   const selection = captureSelection()
-  if (!selection.projectId) { historyVersion.value = ''; return }
+  const queryId = ++historyQueryId
+  if (!selection.projectId) return
   try {
     const rows = await window.gitReport.deployHistoryList(selection.projectId)
-    if (!isCurrentSelection(selection)) return
-    const hit = (Array.isArray(rows) ? rows : []).find(
+    if (!isCurrentSelection(selection) || queryId !== historyQueryId) return
+    historyVersions.value = (Array.isArray(rows) ? rows : []).filter(
       (r) => r && (!r.type || r.type === 'deploy' || r.type === 'rollback')
         && r.status === 'success' && r.version && (!r.targetId || r.targetId === selection.targetId),
-    )
-    historyVersion.value = hit ? hit.version : ''
+    ).map((r) => r.version)
   } catch { /* 历史读取失败不影响展示 */ }
 }
 
 function newVersion() {
-  const selection = captureSelection()
-  rebuildPrediction(true)
   versionDialogVisible.value = true
-  // 基准补全：线上版本需 SSH（失败静默）返回后刷新候选；本地发布记录已随切换预载
-  const refresh = () => { if (isCurrentSelection(selection) && versionDialogVisible.value) rebuildPrediction() }
-  if (!queriedVersion.value) queryReleases(true).then(refresh)
+  if (!queriedVersion.value) void queryReleases(true)
 }
 
 function confirmVersion() {
@@ -356,7 +363,40 @@ async function publish() {
     )
   } catch { return }
   if (!isCurrentSelection(selection) || !canPublish.value) return
-  const result = await submitDeployRun(selection.projectId, selection.targetId, t.name)
+  await startPublish(selection, t.name)
+}
+
+async function publishPatch() {
+  if (patchPublishBlockedReason.value) return
+  const selection = captureSelection()
+  const previousRun = run.value
+  const { name, server, remotePath } = props.activeTarget
+  const plan = {
+    localPath: props.form.localPath,
+    host: server.host, port: Number(server.port) || 22, username: server.username || '',
+    remotePath,
+  }
+  checkingPatchVersion.value = true
+  try {
+    const localVersionRequest = props.form.version.strategy === 'auto'
+      ? window.gitReport.deployDetectVersion({ localPath: plan.localPath, version: { strategy: 'auto' } }).catch(() => null)
+      : null
+    const [detected] = await Promise.all([
+      localVersionRequest, loadHistoryVersions(), remotePath ? queryReleases(true) : null,
+    ])
+    if (!isCurrentSelection(selection) || run.value !== previousRun) return
+    const version = bumpVersion(highestReleaseVersion(detected?.version ?? props.publishVersion), 'patch')
+    if (!version) return ElMessage.warning('请先通过「新版本」设置三段版本号，如 1.2.3')
+    const blockedReason = publishBlocker(props.form, props.activeTarget, version, { dirty: props.dirty, busy: run.value.running })
+    if (blockedReason) return ElMessage.warning(blockedReason)
+    await startPublish(selection, name, { ...plan, versionOverride: version, expectedVersion: version })
+  } finally {
+    if (isCurrentSelection(selection)) checkingPatchVersion.value = false
+  }
+}
+
+async function startPublish(selection, targetName, releasePlan) {
+  const result = await submitDeployRun(selection.projectId, selection.targetId, targetName, releasePlan)
   if (result?.error) ElMessage.error(result.error)
   if (isCurrentSelection(selection)) emit('history-changed')
 }
@@ -411,7 +451,7 @@ watch([() => props.form.id, () => run.value.logs.at(-1)], async () => {
 })
 
 // ─── 版本列表 / 回滚（当前目标） ───
-/** 查询服务器历史版本；silent 用于「新版本」预测基准的后台补查（不打扰用户） */
+/** 查询服务器历史版本；预测版本时静默补查。 */
 async function queryReleases(silent = false) {
   const selection = captureSelection()
   const queryId = ++releaseQueryId
@@ -460,7 +500,7 @@ async function openDbBackups() {
 }
 
 async function doDbRestore(row) {
-  if (run.value.running) return
+  if (runActionBusy.value) return
   const selection = captureSelection()
   try {
     await ElMessageBox.confirm(
@@ -469,7 +509,7 @@ async function doDbRestore(row) {
       { type: 'warning', confirmButtonText: '恢复', cancelButtonText: '取消' },
     )
   } catch { return }
-  if (!isCurrentSelection(selection) || run.value.running) return
+  if (!isCurrentSelection(selection) || runActionBusy.value) return
   const operation = beginDeployRun(selection.projectId, 'db-restore', props.activeTarget?.name)
   let result
   try {
@@ -491,7 +531,7 @@ async function doDbRestore(row) {
 }
 
 async function doRollback(version, targetId) {
-  if (run.value.running) return
+  if (runActionBusy.value) return
   const selection = captureSelection()
   const tid = targetId || props.activeTargetId
   const tName = (props.form.targets.find((x) => x.id === tid) || {}).name || ''
@@ -502,7 +542,7 @@ async function doRollback(version, targetId) {
       { type: 'warning', confirmButtonText: '回滚' },
     )
   } catch { return }
-  if (!isCurrentSelection(selection) || run.value.running) return
+  if (!isCurrentSelection(selection) || runActionBusy.value) return
   const operation = beginDeployRun(selection.projectId, 'rollback', tName)
   let result
   try {
@@ -527,9 +567,10 @@ async function doRollback(version, targetId) {
 /** 切换项目时清空版本列表与回滚选择（由组合层调用） */
 function resetSelection() {
   selectionEpoch += 1
+  checkingPatchVersion.value = false
   releases.value = []
   rollbackVersion.value = ''
-  historyVersion.value = ''
+  historyVersions.value = []
   versionDialogVisible.value = false
   dbDialogVisible.value = false
   dbBackups.value = []
@@ -539,7 +580,7 @@ function resetSelection() {
 // 项目和目标共同决定上下文；同步失效可覆盖 A→B→A 及尚未重渲染的迟到请求。
 watch(() => [props.form.id, props.activeTargetId], () => {
   resetSelection()
-  loadHistoryVersion()
+  loadHistoryVersions()
 }, { immediate: true, flush: 'sync' })
 
 defineExpose({ doRollback, resetSelection })

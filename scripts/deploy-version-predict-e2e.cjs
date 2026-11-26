@@ -12,6 +12,7 @@
  *   A4 再次打开 → 基准随当前版本变为 0.2.0；选「自定义」输入 0.9.9 保存 →
  *      发布按钮显示 0.9.9，且已持久化到磁盘
  *   A5 当前版本无法解析为 x.y.z（如 20260908）→ 不提供候选，仅保留自定义输入且可直接保存
+ *   A6 无法递增时一键发布提示设置版本，设置后连续点击也只提交一次发布，无需确认
  *
  * 前置：npm run build:renderer（驱动 dist/ 产物）
  * 用法：node scripts/deploy-version-predict-e2e.cjs
@@ -22,7 +23,8 @@ const path = require('path')
 const os = require('os')
 
 const ROOT = path.resolve(__dirname, '..')
-const SANDBOX = path.join(os.tmpdir(), `pm-e2e-ver-${Date.now()}`)
+const TEMP_DIR = fs.realpathSync(os.tmpdir())
+const SANDBOX = fs.mkdtempSync(path.join(TEMP_DIR, 'pm-e2e-ver-'))
 const USER_DATA = path.join(SANDBOX, 'appdata')
 const SHOT_DIR = path.join(SANDBOX, 'shots')
 const PROJ_FILE = path.join(USER_DATA, 'deploy-projects.json')
@@ -43,12 +45,17 @@ function mkTarget(id, name) {
 function preseed() {
   fs.mkdirSync(USER_DATA, { recursive: true })
   fs.mkdirSync(SHOT_DIR, { recursive: true })
+  if (process.platform === 'win32') fs.mkdirSync(path.join(SANDBOX, 'AppData', 'Roaming'), { recursive: true })
+  fs.writeFileSync(path.join(USER_DATA, 'config.json'), JSON.stringify({ closeAction: 'quit' }))
   fs.writeFileSync(PROJ_FILE, JSON.stringify({
+    schemaVersion: 3,
     projects: [{
       id: PROJECT_ID,
       name: '版本预测项目',
-      localPath: 'D:\\tmp\\ver-project',
+      localPath: path.join(SANDBOX, 'no-such-project'),
       version: { strategy: 'manual', manual: '0.0.1' }, // 本地（手动）版本
+      configMode: 'manual',
+      deployMode: 'docker',
       composeFile: 'docker-compose.yml',
       deploy: {
         backupCode: true, backupDatabase: false, dbType: 'postgres', dbContainer: '',
@@ -58,15 +65,19 @@ function preseed() {
       targets: [mkTarget(`${PROJECT_ID}_t1`, '环境甲'), mkTarget(`${PROJECT_ID}_t2`, '环境乙')],
     }],
   }, null, 2))
-  // 环境甲历史：最近一次成功发布 0.1.3（环境乙无历史）
+  // 环境甲曾发布 0.1.3，随后回滚到 0.1.2。环境乙无历史。
   const base = Date.now()
+  const successfulRelease = {
+    id: 'h_ver_1', projectId: PROJECT_ID, projectName: '版本预测项目',
+    targetId: `${PROJECT_ID}_t1`, targetName: '环境甲', type: 'deploy',
+    version: '0.1.3', oldVersion: '0.1.2', status: 'success',
+    startedAt: base, finishedAt: base + 1000, durationMs: 1000,
+    host: '127.0.0.1:59999', remotePath: '/opt/apps/dp_e2e_ver_t1', message: '发布成功', logFile: '', stages: {},
+  }
   fs.writeFileSync(path.join(USER_DATA, 'deploy-history.json'), JSON.stringify({
-    records: [{
-      id: 'h_ver_1', projectId: PROJECT_ID, projectName: '版本预测项目',
-      targetId: `${PROJECT_ID}_t1`, targetName: '环境甲', type: 'deploy',
-      version: '0.1.3', oldVersion: '0.1.2', status: 'success',
-      startedAt: base, finishedAt: base + 1000, durationMs: 1000,
-      host: '127.0.0.1:59999', remotePath: '/opt/apps/dp_e2e_ver_t1', message: '发布成功', logFile: '', stages: {},
+    records: [successfulRelease, {
+      ...successfulRelease, id: 'h_ver_2', type: 'rollback', version: '0.1.2', oldVersion: '0.1.3',
+      startedAt: base + 1000, finishedAt: base + 2000, message: '回滚成功',
     }],
   }, null, 2))
 }
@@ -147,7 +158,7 @@ const helpers = `
     return false
   }
   const switchTarget = async (name) => {
-    const sel = q('.bar-card .el-select'); if (!sel) return 'no-select'
+    const sel = q('.environment-select'); if (!sel) return 'no-select'
     const trigger = sel.querySelector('.el-select__wrapper') || sel
     trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     const opt = await new Promise(async (resolve) => {
@@ -166,7 +177,7 @@ const helpers = `
   }
   const ready = async (ms = 10000) => {
     const t0 = Date.now()
-    while (Date.now() - t0 < ms) { if (q('.publish-btn') && q('.bar-card .el-select')) return true; await sleep(150) }
+    while (Date.now() - t0 < ms) { if (q('.publish-btn') && q('.environment-select')) return true; await sleep(150) }
     return false
   }
   const done = () => setTimeout(() => window.close(), 400)
@@ -238,6 +249,15 @@ const EVAL3 = `(async () => {
   const r = {}
   if (!await ready()) { done(); return { fatal: '部署页未就绪' } }
   r.btn0 = publishBtnText()
+  const patchButton = () => [...document.querySelectorAll('.publish-actions button')]
+    .find((b) => b.textContent.trim() === '一键小版本发布')
+  patchButton()?.click()
+  for (let i = 0; i < 30 && !r.noVersionWarning; i++) {
+    r.noVersionWarning = q('.el-message--warning')?.textContent.includes('设置三段版本号')
+    if (!r.noVersionWarning) await sleep(100)
+  }
+  const history = () => window.gitReport.deployHistoryList(${JSON.stringify(PROJECT_ID)})
+  r.noVersionRunCount = (await history()).length
 
   // A5：当前版本无法解析为 x.y.z → 不提供候选，仅保留自定义输入
   r.open1 = await openVerDialog()
@@ -252,6 +272,13 @@ const EVAL3 = `(async () => {
   r.save = clickSave()
   r.btnSaved = await waitPublishBtn('1.0.0')
   r.btn1 = publishBtnText()
+  const patch = patchButton()
+  patch?.click()
+  patch?.click()
+  r.patchUpdated = await waitPublishBtn('1.0.1')
+  r.patchRuns = (await history()).map(({ version, requestedVersion, targetId, status }) => ({
+    version, requestedVersion, targetId, status,
+  }))
   done()
   return r
 })()`
@@ -308,6 +335,7 @@ const ev1 = parseEval(p1.stdout || '')
 if (!ev1) {
   console.log('  FAIL  第一次启动未取到 eval 结果')
   console.log((p1.stdout || '').slice(-2500))
+  console.log((p1.stderr || '').slice(-1500))
   failed++
 } else {
   if (ev1.fatal) assert('第一次启动页面就绪', false, ev1.fatal)
@@ -342,6 +370,7 @@ const ev2 = parseEval(p2.stdout || '')
 if (!ev2) {
   console.log('  FAIL  第二次启动未取到 eval 结果')
   console.log((p2.stdout || '').slice(-2500))
+  console.log((p2.stderr || '').slice(-1500))
   failed++
 } else {
   if (ev2.fatal) assert('第二次启动页面就绪', false, ev2.fatal)
@@ -370,6 +399,7 @@ const ev3 = parseEval(p3.stdout || '')
 if (!ev3) {
   console.log('  FAIL  第三次启动未取到 eval 结果')
   console.log((p3.stdout || '').slice(-2500))
+  console.log((p3.stderr || '').slice(-1500))
   failed++
 } else {
   if (ev3.fatal) assert('第三次启动页面就绪', false, ev3.fatal)
@@ -380,12 +410,21 @@ if (!ev3) {
   assert('A5 自定义输入框默认可见且可用',
     ev3.customInputShown === true && ev3.typed === true && ev3.save === true && ev3.btnSaved === true && String(ev3.btn1).includes('1.0.0'),
     `shown=${ev3.customInputShown} typed=${ev3.typed} btn="${ev3.btn1}"`)
+  assert('A6 缺少三段版本号时提示设置版本，未创建发布任务',
+    ev3.noVersionWarning === true && ev3.noVersionRunCount === 0)
+  assert('A6 连续点击仅启动一次 1.0.1 发布，无需确认',
+    ev3.patchUpdated === true && ev3.patchRuns?.length === 1
+      && ev3.patchRuns[0].version === '1.0.1' && ev3.patchRuns[0].requestedVersion === '1.0.1'
+      && ev3.patchRuns[0].targetId === `${PROJECT_ID}_t1` && ev3.patchRuns[0].status === 'failed',
+    `实际任务=${JSON.stringify(ev3.patchRuns)}`)
   const sv3 = savedVersion()
-  assert('A5 配置持久化（manual=1.0.0）',
-    !!sv3 && sv3.strategy === 'manual' && sv3.manual === '1.0.0', `磁盘=${JSON.stringify(sv3)}`)
+  assert('A6 任务开始时持久化版本（manual=1.0.1）',
+    !!sv3 && sv3.strategy === 'manual' && sv3.manual === '1.0.1', `磁盘=${JSON.stringify(sv3)}`)
   if (failed) console.log('诊断数据:', JSON.stringify(ev3, null, 1))
 }
 
-try { fs.rmSync(SANDBOX, { recursive: true, force: true }) } catch { /* 保留截图便于排查 */ }
+if (!failed && path.dirname(fs.realpathSync(SANDBOX)) === TEMP_DIR) {
+  try { fs.rmSync(SANDBOX, { recursive: true, force: true }) } catch { /* 临时目录可稍后清理 */ }
+}
 console.log(failed ? `\n结果: 失败 ${failed} 项` : '\n全部通过')
 process.exit(failed ? 1 : 0)
