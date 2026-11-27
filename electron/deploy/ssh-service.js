@@ -145,7 +145,7 @@ function execToFile(conn, command, localPath, onProgress) {
     const onDrop = (e) => reject(e)
     const off = () => { if (dropWaiters) dropWaiters.delete(onDrop) }
     if (dropWaiters) dropWaiters.add(onDrop)
-    const output = fs.createWriteStream(localPath)
+    const output = fs.createWriteStream(localPath, { mode: 0o600 })
     let settled = false
     const finish = (fn) => (v) => {
       if (settled) return

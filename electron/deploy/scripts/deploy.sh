@@ -36,6 +36,7 @@ CMD="deploy"
 MODE="docker" APP_NAME="" HOME_DIR="" PACKAGE="" SHA256="" VERSION="" COMPOSE_FILE="docker-compose.yml"
 UPGRADE_SCRIPT="upgrade.sh"
 RELEASE_ID="" PROJECT_NAME=""
+EXPECTED_CURRENT="" CHECK_EXPECTED_CURRENT=0
 DATA_SYNC_SCRIPT=""
 OPENCLAW_SYNC=0
 BACKUP_CODE=1 BACKUP_DB=0 DB_TYPE="postgres" DB_CONTAINER="" DB_SERVICE="" DB_NAME="" DB_USER=""
@@ -58,6 +59,7 @@ while [ $# -gt 0 ]; do
     --version)      VERSION="$2"; shift 2 ;;
     --release-id)   RELEASE_ID="$2"; shift 2 ;;
     --project-name) PROJECT_NAME="$2"; shift 2 ;;
+    --expected-current) EXPECTED_CURRENT="$2"; CHECK_EXPECTED_CURRENT=1; shift 2 ;;
     --data-sync-script) DATA_SYNC_SCRIPT="$2"; shift 2 ;;
     --openclaw-sync) OPENCLAW_SYNC=1; shift ;;
     --backup-code)      BACKUP_CODE=1; shift ;;
@@ -115,7 +117,12 @@ trap cleanup EXIT
 
 acquire_lock() {
   if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    # 锁超过 30 分钟视为残留（上一次异常退出），自动接管
+    local owner=""
+    if [ -f "$LOCK_DIR/pid" ]; then read -r owner < "$LOCK_DIR/pid" || true; fi
+    if [[ "$owner" =~ ^[1-9][0-9]*$ ]] && { [ -d "/proc/$owner" ] || kill -0 "$owner" 2>/dev/null; }; then
+      fail_now "另一个发布正在进行中"
+    fi
+    # 没有活跃进程的旧锁才可接管。慢构建或慢启动可能耗时超过 30 分钟。
     if [ -n "$(find "$LOCK_DIR" -maxdepth 0 -mmin +30 2>/dev/null)" ]; then
       warn "检测到过期发布锁，自动清理"
       rm -rf "$LOCK_DIR"
@@ -125,6 +132,30 @@ acquire_lock() {
     fi
   fi
   LOCK_ACQUIRED=1
+  printf '%s\n' "$$" > "$LOCK_DIR/pid" || fail_now "无法记录发布锁持有者"
+}
+
+check_expected_current() {
+  [ "$CHECK_EXPECTED_CURRENT" = 0 ] || [ "$1" = "$EXPECTED_CURRENT" ] \
+    || fail_now "目标环境版本已变化，请重新检查后再同步"
+}
+
+# 同机环境可能解析出同一个 Compose 项目名。此时 up 会接管另一个环境的容器。
+check_compose_owner() {
+  [ "$CHECK_EXPECTED_CURRENT" = 1 ] || return 0
+  local name owners owner home_real
+  name=$(cd "$NEW_RELEASE" && docker compose -f "$COMPOSE_FILE" config | awk '/^name:[[:space:]]/ {sub(/^name:[[:space:]]+/, ""); gsub(/^[\042\047]|[\042\047]$/, ""); print}') \
+    || fail_rollback "无法解析目标 Compose 项目名"
+  [[ "$name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail_rollback "无法确认目标 Compose 项目名"
+  home_real=$(readlink -f -- "$APP_HOME") || fail_rollback "无法确认目标部署目录"
+  owners=$(docker ps -a --filter "label=com.docker.compose.project=$name" --format '{{.Label "com.docker.compose.project.working_dir"}}') \
+    || fail_rollback "无法检查目标 Compose 项目归属"
+  while IFS= read -r owner; do
+    case "$owner" in
+      ''|"$home_real"/releases/*) ;;
+      *) fail_rollback "Compose 项目 $name 已被其他部署目录使用，请为目标环境配置独立的项目名" ;;
+    esac
+  done <<< "$owners"
 }
 
 # ───────────────────────── 环境检查 ─────────────────────────
@@ -665,7 +696,8 @@ fail_rollback() {
 
 validate_data_sync_script() {
   [ -n "$DATA_SYNC_SCRIPT" ] || return 0
-  [[ "$APP_HOME" = /* ]] && [ "$DATA_SYNC_SCRIPT" = "$APP_HOME/deployer/data-sync.sh" ] \
+  local name="${DATA_SYNC_SCRIPT##*/}"
+  [[ "$APP_HOME" = /* && "$name" =~ ^data-sync(-[0-9a-f]{12})?\.sh$ ]] && [ "$DATA_SYNC_SCRIPT" = "$APP_HOME/deployer/$name" ] \
     || fail_rollback "启动前数据同步脚本不属于当前项目部署目录"
   local part="$DATA_SYNC_SCRIPT" actual home_real links
   while [ "$part" != / ]; do
@@ -676,7 +708,7 @@ validate_data_sync_script() {
     || fail_rollback "启动前数据同步脚本不存在或不可读取"
   actual=$(readlink -f -- "$DATA_SYNC_SCRIPT") || fail_rollback "无法核验数据同步脚本路径"
   home_real=$(readlink -f -- "$APP_HOME") || fail_rollback "无法核验项目部署目录"
-  [ "$actual" = "$home_real/deployer/data-sync.sh" ] || fail_rollback "启动前数据同步脚本路径越界"
+  [ "$actual" = "$home_real/deployer/$name" ] || fail_rollback "启动前数据同步脚本路径越界"
   links=$(stat -c %h -- "$DATA_SYNC_SCRIPT") || fail_rollback "无法核验数据同步脚本文件"
   [ "$links" = 1 ] || fail_rollback "启动前数据同步脚本不能是硬链接"
 }
@@ -817,6 +849,7 @@ do_deploy_script() {
   fi
 
   OLD_CURRENT_NAME="$(get_current)"
+  check_expected_current "$OLD_CURRENT_NAME"
   [ -n "$OLD_CURRENT_NAME" ] && log "当前运行版本目录: $OLD_CURRENT_NAME" || log "首次部署，无旧版本"
 
   # 解压到暂存目录，要求单一顶层目录（发布包结构约定）
@@ -937,6 +970,7 @@ do_deploy() {
 
   # 记录旧版本（方案 §11.2）
   OLD_RELEASE="$(current_release)"
+  check_expected_current "${OLD_RELEASE##*/}"
   [ -n "$OLD_RELEASE" ] && log "当前运行版本目录: $(basename "$OLD_RELEASE")" || log "首次发布，无旧版本"
 
   backup_code
@@ -969,6 +1003,7 @@ do_deploy() {
   # Docker 构建（方案 §12）
   stage build
   (cd "$NEW_RELEASE" && docker compose -f "$COMPOSE_FILE" config --quiet) || fail_rollback "Compose 配置校验失败"
+  check_compose_owner
   log "Docker 镜像构建中（docker compose build）…"
   (cd "$NEW_RELEASE" && docker compose -f "$COMPOSE_FILE" build) \
     || fail_rollback "Docker 镜像构建失败（旧版本保持运行）"

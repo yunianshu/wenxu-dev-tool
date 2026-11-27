@@ -53,6 +53,8 @@
         <div v-if="preview.dataSync.source" class="kv"><span class="k">源数据库</span><span class="v mono">{{ dbText(preview.dataSync.source) }}</span></div>
         <div v-if="preview.dataSync.dest" class="kv"><span class="k">目标数据库</span><span class="v mono">{{ dbText(preview.dataSync.dest) }}</span></div>
         <div v-if="preview.dataSync.available" class="kv"><span class="k">运行配置</span><span class="v">各环境保持独立（shared/.env 不同步）</span></div>
+        <el-alert v-if="preview.dataSync.fresh && !syncData" title="目标环境尚未部署。仅同步版本可能触发空库初始化。迁移现有数据时，请开启同步数据库。" type="warning" :closable="false" class="sync-note" />
+        <el-alert v-if="!preview.needDeploy && preview.dataSync.available && !syncData && !preview.problems.length" title="两侧版本已一致。开启同步数据库后，可用源库覆盖目标库。" type="info" :closable="false" class="sync-note" />
         <el-alert v-for="w in preview.warnings" :key="w" :title="w" type="warning" :closable="false" class="sync-note" />
         <el-alert v-if="preview.problems.length" type="error" :closable="false" show-icon class="sync-note">
           <template #title>
@@ -129,8 +131,6 @@ async function load() {
       return
     }
     preview.value = result
-    // 版本已一致时唯一可做的是同步数据
-    if (!result.needDeploy && result.dataSync.available) syncData.value = true
   } catch (e) {
     if (!disposed && current === request) error.value = e.message || String(e)
   } finally {
@@ -162,6 +162,7 @@ async function start() {
   const data = syncData.value && p.dataSync.available ? p.dataSync : null
   const lines = []
   if (p.needDeploy) lines.push(`将把【${source.name}】的版本 ${version} 发布到【${dest.name}】（${address(dest)}）。`)
+  if (p.dataSync.fresh && !data) lines.push('目标环境尚未部署，仅同步版本可能触发空库初始化。')
   if (data && data.fresh) lines.push(`将先把【${source.name}】的数据库 ${data.source.name} 灌入【${dest.name}】的数据库 ${data.dest.name}，再启动应用；目标库如有数据会先自动保底备份。`)
   else if (data) lines.push(`将用【${source.name}】的数据库 ${data.source.name} 完全替换【${dest.name}】的数据库 ${data.dest.name}，目标库现有数据会先自动保底备份。`)
   try {
@@ -172,7 +173,7 @@ async function start() {
   const operation = beginDeployRun(projectId, 'promote', dest.name, version)
   let result = null
   try {
-    result = await window.gitReport.deployPromote(projectId, source.id, dest.id, { syncData: !!data, expectedVersion: version }, operation.requestId)
+    result = await window.gitReport.deployPromote(projectId, source.id, dest.id, { syncData: !!data, expectedVersion: version, expectedDestVersion: p.dest.version }, operation.requestId)
     const record = result && result.record
     if (result && result.ok) {
       ElMessage.success((record && record.message) || '环境同步完成')

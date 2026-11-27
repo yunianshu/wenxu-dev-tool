@@ -89,9 +89,10 @@ async function main() {
   assert(commands.some((command) => command.includes('sudo -n tee')))
   assert(commands.some((command) => command.includes('sudo -n cat')))
   const args = psqlArgs()
-  assert.equal(args.length, 5)
-  assert(args.slice(0, 3).every((row) => row[row.indexOf('-d') + 1] === 'template1'), '恢复默认 postgres 库时不能连接待删除库')
-  assert(args.some((row) => row.includes('DROP DATABASE "postgres" WITH (FORCE);')))
+  assert.equal(args.length, 6)
+  assert(args.filter((row) => row.includes('-c')).slice(0, -1).every((row) => row[row.indexOf('-d') + 1] === 'template1'), '恢复默认 postgres 库时不能连接待改名的库')
+  assert.match(args[1][args[1].indexOf('-d') + 1], /^plm_import_/)
+  assert(args.some((row) => row.some((value) => /ALTER DATABASE "postgres" RENAME TO .*; ALTER DATABASE .* RENAME TO "postgres";/.test(value))))
   // 灌库之后、重启应用之前刷新查询计划统计信息，且针对恢复出来的库本身
   const analyze = args[args.length - 1]
   assert(analyze.includes('ANALYZE;') && analyze[analyze.indexOf('-d') + 1] === 'postgres', '灌库后应刷新查询计划统计信息')
@@ -114,16 +115,16 @@ async function main() {
   assert.equal(custom.status, 'success', custom.message)
   const customArgs = psqlArgs()
   assert(customArgs.every((row) => row[row.indexOf('-U') + 1] === user))
-  assert(customArgs.some((row) => row.includes(`DROP DATABASE "${name.replace(/"/g, '""')}" WITH (FORCE);`)))
-  assert(customArgs.some((row) => row.includes(`CREATE DATABASE "${name.replace(/"/g, '""')}" OWNER "${user.replace(/"/g, '""')}";`)))
-  assert(customArgs[0].find((value) => value.includes('pg_terminate_backend')).includes("datname=E'order-''\"data'"))
+  assert(customArgs.some((row) => row.some((value) => value.includes(`ALTER DATABASE "${name.replace(/"/g, '""')}" RENAME TO `))))
+  assert(customArgs[0].some((value) => value.endsWith(`OWNER "${user.replace(/"/g, '""')}";`)))
+  assert(customArgs[2].find((value) => value.includes('pg_terminate_backend')).includes("datname = E'order-''\"data'"))
   console.log('  ✓ 库名/用户从 *_FILE 读取，Shell 参数与 SQL 标识符的特殊字符安全往返')
 
   reset()
   project.targets[0].db = { strategy: 'manual', enabled: true, type: 'postgres', container: 'manual-db', name: 'manual-data', user: 'manual-role' }
   const manual = await restore()
   assert.equal(manual.status, 'success', manual.message)
-  assert(psqlArgs().some((row) => row.includes('DROP DATABASE "manual-data" WITH (FORCE);')))
+  assert(psqlArgs().some((row) => row.some((value) => value.includes('ALTER DATABASE "manual-data" RENAME TO '))))
   assert(!commands.some((command) => command.includes('com.docker.compose.service=')))
   console.log('  ✓ 手动配置保留兼容，带连字符的数据库名可正确恢复')
 
