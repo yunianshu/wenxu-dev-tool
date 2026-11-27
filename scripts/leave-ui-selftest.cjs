@@ -38,7 +38,7 @@ async function main() {
     mod.filename = filename
     mod.paths = Module._nodeModulePaths(path.dirname(filename))
     mod.require = id => {
-      if (id === 'element-plus') return { ElMessage: { success(message) { messages.push(message) } } }
+      if (id === 'element-plus') return { ElMessage: Object.fromEntries(['success', 'warning', 'error'].map(kind => [kind, message => { messages.push(message) }])) }
       if (id === '@tauri-apps/api/core') return { invoke: async (command, args) => { invokes.push({ command, args }) } }
       if (id === '@tauri-apps/api/webviewWindow') return { WebviewWindow: LoginWindow, getAllWebviewWindows: async () => [...views.values()] }
       if (id === '@tauri-apps/api/event') return { listen: async (event, handler) => {
@@ -159,9 +159,10 @@ async function main() {
     setup.dateReasons.value['2026-10-15'] = '家里有事'
     const sending = setup.submit()
     assert.equal(state.leave.submitting, true)
-    assert.equal(setup.submitLoadingText.value, '正在提交，逐笔写入北森并回查…（已用时 0 秒）', '加载层显示已用时')
+    assert.equal(setup.reviewVisible.value, false, '确认后弹窗立即收起，提交转到后台')
+    assert.equal(setup.phaseText.value, '正在后台提交，完成后会通知（已用时 0 秒）', '页面状态行显示已用时')
     setup.submitElapsed.value = 61000
-    assert.equal(setup.submitLoadingText.value, '正在提交，逐笔写入北森并回查…（已用时 1 分 1 秒）', '一分钟以上按分秒显示')
+    assert.equal(setup.phaseText.value, '正在后台提交，完成后会通知（已用时 1 分 1 秒）', '一分钟以上按分秒显示')
     setup.submitElapsed.value = 0
     await setup.submit()
     assert.equal(submitCalls, 1, '重复点击不能重复发起')
@@ -169,11 +170,13 @@ async function main() {
     app.unmount(); app = mount()
     assert.equal(setup.plan.value.id, plan.id)
     assert.equal(setup.busy.value, true, '切换视图保留执行状态')
+    assert.equal(setup.reviewVisible.value, false, '后台提交期间切回页面不弹确认框')
     finishSubmit({ ok: true, results: [{ date: '2026-10-15', status: 'success', message: '已提交' }], completed: true, plan: { ...structuredClone(plan), id: 'refreshed-plan', totalHours: 0, entries: [], rows: [{ ...structuredClone(plan.rows[0]), status: 'covered', reason: '已有审批中或已通过的请假覆盖', allocations: [] }] } })
     await sending
     assert.equal(state.leave.submitting, false)
     assert.equal(state.leave.submitStartedAt, 0, '提交结束后清除计时起点')
-    assert.equal(setup.submitLoadingText.value, '正在提交，逐笔写入北森并回查…', '结束后不再显示已用时')
+    assert.equal(setup.phaseText.value, '正在读取出勤、核对余额和校验请假时长…', '提交结束后状态行不再显示后台提交')
+    assert.equal(messages.at(-1), '已提交 1 笔，均已在北森回查确认。', '后台提交完成后全局提示结果')
     assert.equal(setup.allSucceeded.value, true)
     assert.equal(state.leave.plan.id, 'refreshed-plan', '提交后应用平台最新重算的方案')
     assert.equal(state.leave.consumed, false)
@@ -193,6 +196,25 @@ async function main() {
     assert.equal(submitCalls, 1, '解除标记和重新生成不得提交申请')
     assert.equal(setup.resolveTarget.value, null)
     assert.equal(setup.plan.value.id, plan.id, '解除后已重新生成方案')
+    // 后台提交中途停止：用警告提示回到页面核对，不假称完成
+    setup.openReview()
+    const stopping = setup.submit()
+    assert.equal(state.leave.submitting, true)
+    finishSubmit({ ok: true, results: [{ date: '2026-10-15', status: 'failed', message: '平台已拒绝所选假种' }], plan: structuredClone(plan) })
+    await stopping
+    assert.equal(state.leave.submitting, false)
+    assert.equal(setup.allSucceeded.value, false)
+    assert.equal(messages.at(-1), '请假提交已停止，请打开「一键请假」查看结果', '中途停止用警告提示')
+    // 提交失败：页面保留错误，同时全局提示原因
+    setup.openReview()
+    const failing = setup.submit()
+    assert.equal(state.leave.submitting, true)
+    finishSubmit({ ok: false, error: '登录已失效，请重新连接北森' })
+    await failing
+    assert.equal(state.leave.submitting, false)
+    assert.equal(state.leave.error, '登录已失效，请重新连接北森')
+    assert.equal(messages.at(-1), '登录已失效，请重新连接北森', '提交失败时全局提示原因')
+    await setup.generate()
     setup.openResolve(marker)
     setup.reviewVisible.value = true
     // 假种下拉显示当前实际生效的假种；单一假种直接显示，混合分段显示“自动”哨兵。

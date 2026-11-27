@@ -44,7 +44,7 @@
     <el-button v-if="loginWaiting" link @click="loginMode === 'window' ? closeItalentWindow() : stopLoginWatcher()">{{ loginMode === 'window' ? '收起登录窗口' : '停止等待' }}</el-button>
 
     <el-alert v-if="leave.error" :title="leave.error" type="error" show-icon :closable="false" />
-    <div v-if="leave.running || leave.submitting" class="leave-phase" role="status"><el-icon class="is-loading"><Loading /></el-icon>{{ leave.submitting ? '正在重新核对，并按日期倒序提交；请等待平台回查…' : '正在读取出勤、核对余额和校验请假时长…' }}</div>
+    <div v-if="leave.running || leave.submitting" class="leave-phase" role="status"><el-icon class="is-loading"><Loading /></el-icon>{{ phaseText }}</div>
 
     <div v-if="!plan && !busy" class="leave-empty">
       <el-icon><Calendar /></el-icon>
@@ -178,18 +178,19 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="reviewVisible" title="确认请假方案" width="1000px" :close-on-click-modal="false" :close-on-press-escape="!leave.submitting" :show-close="!leave.submitting">
-      <div v-loading="leave.submitting" :element-loading-text="submitLoadingText" class="leave-review-body">
+    <!-- 确认后立即收起：提交在后台进行（侧栏菜单转圈），弹窗打开期间不存在提交中的状态 -->
+    <el-dialog v-model="reviewVisible" title="确认请假方案" width="1000px" :close-on-click-modal="false">
+      <div class="leave-review-body">
       <template v-if="plan">
         <p>{{ plan.staffName?.split('(')[0] }} · 已选 {{ selectedDates.length }} 天 · {{ selectedEntries.length }} 笔、{{ selectedHours }} 小时</p>
         <el-table :data="reviewRows" row-key="date" max-height="420" class="leave-review-table">
           <el-table-column width="52"><template #default="{ row }">
-            <el-checkbox :model-value="selectedDates.includes(row.date)" :disabled="leave.submitting || replanning || row.status === 'blocked' || !row.allocations.length" :aria-label="`选择 ${row.date}`" @change="toggleDate(row.date)" />
+            <el-checkbox :model-value="selectedDates.includes(row.date)" :disabled="replanning || row.status === 'blocked' || !row.allocations.length" :aria-label="`选择 ${row.date}`" @change="toggleDate(row.date)" />
           </template></el-table-column>
           <el-table-column prop="date" label="日期" width="104" />
           <el-table-column label="假种" width="148"><template #default="{ row }">
             <template v-if="row.allocations.length || row.status === 'blocked'">
-              <el-select :model-value="selectedTypeId(row)" :disabled="leave.submitting || replanning" size="small" aria-label="假种" @change="value => setType(row, value)">
+              <el-select :model-value="selectedTypeId(row)" :disabled="replanning" size="small" aria-label="假种" @change="value => setType(row, value)">
                 <el-option label="自动" :value="AUTO_TYPE" />
                 <el-option v-for="balance in shownBalances" :key="balance.id" :label="balance.name" :value="balance.id" />
               </el-select>
@@ -206,18 +207,18 @@
             <span v-if="!row.allocations.length" class="leave-muted">—</span>
           </template></el-table-column>
           <el-table-column label="计算迟到" width="88"><template #default="{ row }">
-            <el-checkbox v-if="row.residualLate > 0" :model-value="row.countLate !== false" :disabled="leave.submitting || replanning" @change="value => setCountLate(row, value)" />
+            <el-checkbox v-if="row.residualLate > 0" :model-value="row.countLate !== false" :disabled="replanning" @change="value => setCountLate(row, value)" />
             <span v-else class="leave-muted">—</span>
           </template></el-table-column>
           <el-table-column label="剩余迟到" width="90"><template #default="{ row }">{{ row.remainingLate ? `${row.remainingLate} 分钟` : '—' }}</template></el-table-column>
           <el-table-column label="请假事由" min-width="180"><template #default="{ row }">
-            <el-input v-model="dateReasons[row.date]" :disabled="leave.submitting || replanning" maxlength="1000" :placeholder="reasonPlaceholder" :aria-label="`${row.date} 请假事由`" />
+            <el-input v-model="dateReasons[row.date]" :disabled="replanning" maxlength="1000" :placeholder="reasonPlaceholder" :aria-label="`${row.date} 请假事由`" />
           </template></el-table-column>
         </el-table>
         <p class="leave-muted">{{ shownBalances.map(b => b.unlimited ? `${b.name} 本次 ${b.used} 小时（不限）` : `${b.name} ${b.hours} → ${b.remaining} 小时`).join('；') }}</p>
       </template>
       </div>
-      <template #footer><el-button :disabled="leave.submitting" @click="reviewVisible = false">返回核对</el-button><el-button type="primary" :loading="leave.submitting" :disabled="busy || replanning || leave.consumed || !selectedEntries.length" @click="submit">{{ leave.submitting ? '提交中' : `确认提交 ${selectedEntries.length} 笔` }}</el-button></template>
+      <template #footer><el-button @click="reviewVisible = false">返回核对</el-button><el-button type="primary" :disabled="busy || replanning || leave.consumed || !selectedEntries.length" @click="submit">确认提交 {{ selectedEntries.length }} 笔</el-button></template>
     </el-dialog>
 
     <el-dialog :model-value="!!resolveTarget" title="核对上次提交结果" width="560px" :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy" @close="resolveTarget = null">
@@ -315,15 +316,14 @@ const locked = computed(() => busy.value || replanning.value)
 const selectedDates = ref([])
 const selectedEntries = computed(() => (plan.value?.entries || []).filter(entry => selectedDates.value.includes(entry.date)))
 const selectedHours = computed(() => selectedEntries.value.reduce((sum, entry) => sum + entry.hours, 0))
-// 提交逐笔写入并回查平台，耗时可能到分钟级；加载层显示已用时，避免看起来卡死。
+// 提交逐笔写入并回查平台，耗时可能到分钟级：确认后转到后台进行，页面状态行显示已用时，避免看起来卡死。
 const submitElapsed = ref(0)
 let submitTimer = null
-const submitLoadingText = computed(() => {
-  const text = '正在提交，逐笔写入北森并回查…'
-  if (!leave.submitting) return text
+const phaseText = computed(() => {
+  if (!leave.submitting) return '正在读取出勤、核对余额和校验请假时长…'
   const seconds = Math.max(0, Math.floor(submitElapsed.value / 1000))
   const elapsed = seconds >= 60 ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒` : `${seconds} 秒`
-  return `${text}（已用时 ${elapsed}）`
+  return `正在后台提交，完成后会通知（已用时 ${elapsed}）`
 })
 function startSubmitTimer() {
   stopSubmitTimer()
@@ -645,6 +645,8 @@ function openReview() {
 async function submit() {
   if (!reviewVisible.value || busy.value || replanning.value || leave.consumed || !selectedEntries.value.length) return
   leave.submitting = true; leave.submitStartedAt = Date.now(); leave.error = ''; leave.consumed = true
+  // 确认后立即收起弹窗：提交在后台进行，侧栏菜单图标转圈，期间可以切到别的页面
+  reviewVisible.value = false
   try {
     const reasons = {}
     for (const entry of selectedEntries.value) reasons[entry.date] = String(dateReasons.value[entry.date] ?? '').trim()
@@ -653,8 +655,13 @@ async function submit() {
     leave.results = result.results
     // 提交后服务端回读平台重算方案：待申请卡片、按钮与余额随提交结果更新，剩余日期可继续提交。
     if (result.plan) { leave.plan = result.plan; leave.consumed = false; leave.invalidated = false }
-  } catch (error) { leave.error = error.message }
-  finally { leave.submitting = false; leave.submitStartedAt = 0; reviewVisible.value = false; stopSubmitTimer() }
+    // 提交在后台进行，用户可能已切到别的页面：用全局提示告知结果
+    if (allSucceeded.value) ElMessage.success(`已提交 ${leave.results.length} 笔，均已在北森回查确认。`)
+    else ElMessage.warning('请假提交已停止，请打开「一键请假」查看结果')
+  } catch (error) {
+    leave.error = error.message
+    ElMessage.error(error.message)
+  } finally { leave.submitting = false; leave.submitStartedAt = 0; reviewVisible.value = false; stopSubmitTimer() }
 }
 function openResolve(entry) {
   if (busy.value || !entry.canRetry) return

@@ -26,10 +26,11 @@
     >
       <el-menu-item-group v-for="group in groups" :key="group.id" :class="{ 'workspace-nav-group': group.id === 'workspace' }">
         <template #title><span class="sidebar-group-label" :aria-hidden="collapsed">{{ group.label }}</span></template>
-        <el-tooltip v-for="item in group.items" :key="item.id" :content="item.label" :disabled="!collapsed" :trigger="['hover', 'focus']" :trigger-keys="[]" placement="right" :show-after="240" :hide-after="0">
-          <el-menu-item :index="item.id" :aria-label="item.label" :tabindex="modelValue === item.id ? 0 : -1" @keydown="onItemKeydown">
-            <el-icon class="nav-ico">
-              <component :is="item.icon" />
+        <el-tooltip v-for="item in group.items" :key="item.id" :content="taskRunning(item) ? `${item.label}（任务进行中）` : item.label" :disabled="!collapsed" :trigger="['hover', 'focus']" :trigger-keys="[]" placement="right" :show-after="240" :hide-after="0">
+          <el-menu-item :index="item.id" :aria-label="taskRunning(item) ? `${item.label}（任务进行中）` : item.label" :tabindex="modelValue === item.id ? 0 : -1" @keydown="onItemKeydown">
+            <!-- 有后台任务时图标换成转圈：收起侧栏后只剩图标，任务状态仍然看得见 -->
+            <el-icon class="nav-ico" :class="{ 'is-loading': taskRunning(item) }">
+              <component :is="taskRunning(item) ? 'Loading' : item.icon" />
               <span v-if="item.id === 'harness' && harnessUpdateAvailable" class="nav-badge" title="有新版本" />
             </el-icon>
             <span class="sidebar-item-label" :aria-hidden="collapsed">{{ item.label }}</span>
@@ -64,6 +65,9 @@ defineEmits(['update:modelValue', 'show-changelog', 'toggle-collapse'])
 const appVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''
 /** 内置 Harness 有新版本时在菜单项上挂角标（提示常驻，不受一次性通知已读影响） */
 const harnessUpdateAvailable = computed(() => state.harnessUpdate?.updateAvailable === true)
+/** 菜单项对应的后台任务（如确认后的请假提交）：进行中时菜单图标转圈，切到别的页面也看得到 */
+const backgroundTasks = { leave: computed(() => state.leave.running || state.leave.submitting) }
+const taskRunning = item => backgroundTasks[item.id]?.value === true
 const groups = [
   { id: 'workspace', label: '', items: [
     { id: 'dashboard', label: '工作台', icon: 'House' },

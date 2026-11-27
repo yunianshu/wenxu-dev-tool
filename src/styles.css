@@ -664,6 +664,8 @@ body {
  * 实心圆+箭头一类的「徽章」视觉过重且易误读为按钮；小圆点是通知惯例，
  * 配一圈与所在行底色一致的隔离环，压住图标线条保证清晰。 */
 .app-menu .el-menu-item .nav-ico { position: relative; }
+/* 后台任务进行中：菜单图标换成转圈，用强调色让它在一排图标里一眼能认出来 */
+.app-menu .el-menu-item .nav-ico.is-loading { color: var(--brand-accent); }
 .nav-badge {
   position: absolute;
   top: -3px;
