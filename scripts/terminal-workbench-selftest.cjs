@@ -10,6 +10,8 @@
  *   - 会话上限保护、过期 sessionId 报错
  *   - 目录切换感知：OSC 提取器纯逻辑（跨块拼接/file:// 与带引号载荷/脏数据），
  *     以及真实 pwsh 里 cd 后会话目录跟随并广播 terminal:cwd
+ *   - 终端模式跟踪：回放缓冲被截断时补回被挤掉的「隐藏光标 / 粘贴包裹 / 光标样式」
+ *     （纯逻辑 + 真实 pwsh 里的截断回放）
  *   - 布局持久化：保存 → 读取 → 脏数据归一化 → 清空
  *
  * 说明：pty-service 通过 `require('node-pty')` 加载原生模块，
@@ -26,6 +28,7 @@ const Module = require('module')
 const { execFileSync } = require('child_process')
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'terminal-workbench-'))
+const ROOT = path.resolve(__dirname, '..')
 
 // ─── electron 桩：让 terminal-layout 把文件写进临时目录 ───
 const originalLoad = Module._load
@@ -333,6 +336,103 @@ async function main() {
       check('目录未变化的提示符不重复广播 cwd 事件', countAfter === countBefore, `${countBefore} → ${countAfter}`)
     } finally {
       ptyService.close(trackPane.id)
+    }
+  }
+
+  // ─── 4e. 终端模式跟踪（纯逻辑）：回放缓冲被截断时补回被挤掉的模式 ───
+  {
+    const fake = {}
+    const feed = ptyService.createModeTracker(fake)
+    const prologue = () => ptyService.modePrologue(fake)
+    // 把复原序列拆成 { 置位: [[模式…]], 复位: [[模式…]], 其它: [...] }，断言不依赖组的排列
+    const groups = () => {
+      const set = []
+      const reset = []
+      const other = []
+      for (const g of prologue().split('\x1b[').slice(1)) {
+        const m = /^(\??)([\d;]*)([hl])$/.exec(g)
+        if (!m) { other.push(`\x1b[${g}`); continue }
+        ;(m[3] === 'h' ? set : reset).push(m[2].split(';'))
+      }
+      return { set, reset, other }
+    }
+    const has = (list, mode) => list.some((modes) => modes.includes(String(mode)))
+    check('还没见到模式序列时不产生复原序列', prologue() === '')
+    feed('\x1b[?25l\x1b[?2004h正文\x1b[?1049h')
+    check('DEC 私有模式按置位 / 复位分组（隐藏光标 → 复位组，粘贴包裹 / 备用屏 → 置位组）',
+      has(groups().reset, 25) && has(groups().set, 2004) && has(groups().set, 1049) && groups().other.length === 0,
+      JSON.stringify(prologue()))
+    feed('\x1b[?1000;10')
+    check('序列被 pty 切成两半：前半块不误记', !has(groups().set, 1000) && !has(groups().set, 1006),
+      JSON.stringify(prologue()))
+    feed('06h')
+    check('续块到达后拼出完整序列并记录（多参数逐个记录）', has(groups().set, 1006) && has(groups().set, 1000),
+      JSON.stringify(prologue()))
+    feed('\x1b[?2004l')
+    check('模式后来被复位：从置位组移到复位组', has(groups().reset, 2004) && !has(groups().set, 2004),
+      JSON.stringify(prologue()))
+    const before = prologue()
+    feed('普通正文 \x1b[2J\x1b[38;5;9m\x1b[?2004;25p\x1b[>4;2m\x1b[>0q\x1b[H\r\n')
+    check('清屏 / 颜色 / 带前缀的查询与键位序列不是模式，不改变状态', prologue() === before, JSON.stringify(prologue()))
+    feed('\x1b[4h')
+    check('ANSI 模式（插入模式）同样记录', has(groups().set, 4) && /\x1b\[4h$/.test(prologue()), JSON.stringify(prologue()))
+    feed('\x1b[?3h\x1b[40h')
+    check('DECCOLM（132 列）不补回：会改终端列数', !has(groups().set, 3) && has(groups().set, 40),
+      JSON.stringify(prologue()))
+    feed('\x1b[>0q')
+    check('未发过 DECSCUSR 时不补光标样式', !/\d* q$/.test(prologue()))
+    feed('\x1b[6 ')
+    check('DECSCUSR 被切开：前半块（CSI 6 空格）不误记', !/ q$/.test(prologue()))
+    feed('q')
+    check('续块到达后拼出 DECSCUSR 并补在复原序列末尾', prologue().endsWith('\x1b[6 q'), JSON.stringify(prologue()))
+    feed('\x1b[2 q')
+    check('光标样式取最近一次', prologue().endsWith('\x1b[2 q') && !prologue().includes('\x1b[6 q'), JSON.stringify(prologue()))
+  }
+
+  // ─── 4f. 截断回放（真实 pwsh + 真实 pty + 真实 ConPTY）：缓冲头部被丢弃后模式仍在 ───
+  if (process.platform === 'win32') {
+    // 前台 TUI 的做法：隐藏硬件光标 + 粘贴包裹 + 竖线光标 → 海量输出 → 硬件光标停在右下角
+    const fixture = path.join(ROOT, 'scripts', 'terminal-replay-fixture.cjs')
+    const parked = ptyService.create({ paneId: 'pane-replay', projectId: 'p-replay', cwd: workDir, cols: 90, rows: 24 })
+    try {
+      const floodDeadline = Date.now() + 60000
+      let floodSent = 0
+      let replay = null
+      for (;;) {
+        if (floodSent < 3 && Date.now() < floodDeadline) {
+          try { ptyService.write(parked.id, `Clear-Host; node "${fixture}" --stay\r`); floodSent += 1 } catch { /* 会话结束由断言报出 */ }
+        }
+        try { replay = ptyService.attach(parked.id) } catch { replay = null }
+        if (replay?.output.includes('REPLAY-PARKED')) break
+        if (Date.now() > floodDeadline) break
+        await new Promise((r) => setTimeout(r, 500))
+      }
+      check('夹具跑到收尾（屏幕标记进了会话缓冲）', !!replay && replay.output.includes('REPLAY-PARKED'),
+        `发送 ${floodSent} 次，缓冲 ${replay ? replay.output.length : 0} 字符`)
+      check('夹具输出超过缓冲上限，缓冲头部已被丢弃', replay?.truncated === true)
+      const head = replay ? replay.output.slice(ptyService.TRUNCATED_NOTICE.length, 400) : ''
+      const headGroups = head.split('\x1b[').slice(1).map((g) => /^(\??)([\d;]*)([hl])$/.exec(g)).filter(Boolean)
+      const setGroups = headGroups.filter((m) => m[3] === 'h').map((m) => m[2].split(';'))
+      const resetGroups = headGroups.filter((m) => m[3] === 'l').map((m) => m[2].split(';'))
+      check('回放以截断提示开头', !!replay && replay.output.startsWith(ptyService.TRUNCATED_NOTICE))
+      check('截断回放头部补上「隐藏硬件光标」（缓冲头部那条 ESC[?25l 已被挤掉）',
+        resetGroups.some((modes) => modes.includes('25')),
+        `头部 ${JSON.stringify(head.slice(0, 120))}`)
+      check('截断回放头部补上 bracketed paste', setGroups.some((modes) => modes.includes('2004')))
+      check('截断回放头部补上光标样式', /\x1b\[\d* q/.test(head), `头部 ${JSON.stringify(head.slice(0, 120))}`)
+    } finally {
+      ptyService.close(parked.id)
+    }
+    // 未截断的会话：回放原样，不插任何东西
+    const fresh = ptyService.create({ paneId: 'pane-fresh', projectId: 'p-fresh', cwd: workDir, cols: 90, rows: 24 })
+    try {
+      await waitFor(() => (ptyService.attach(fresh.id).output.includes('> ') ? true : false), { label: '新会话提示符' })
+      const freshReplay = ptyService.attach(fresh.id)
+      check('未截断的回放保持原样（不插提示与模式复原序列）',
+        freshReplay.truncated === false && freshReplay.output.startsWith('\x1b[?9001h'),
+        `开头 ${JSON.stringify(freshReplay.output.slice(0, 30))}`)
+    } finally {
+      ptyService.close(fresh.id)
     }
   }
 

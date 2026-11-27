@@ -282,6 +282,70 @@ function createCwdTracker(session) {
   }
 }
 
+// ─── 终端模式跟踪：回放缓冲被截断时，补回被挤掉的模式状态 ───
+// TUI 启动时发一次模式序列——隐藏硬件光标（ESC[?25l）、bracketed paste、鼠标上报、
+// 备用屏——之后只在状态变化时再发。会话输出超过 OUTPUT_LIMIT 后缓冲头部被丢弃，
+// 这些序列随之丢失；渲染层 attach 回放前会 reset 终端（全部模式回到默认：光标可见），
+// 回放里又没人再设置。表现为长会话切页回来后硬件光标重新出现：Claude Code 这类 TUI
+// 隐藏硬件光标、自绘光标，并把硬件光标停在行末，于是看到「光标跑到右下角」。
+// 所以从会话建立起全程解析模式序列，attach 时若缓冲被截断过，在回放头部补上当前模式。
+// conhost 实测（build 26300）会转发：?25 光标显隐、?5 反色、?2004 粘贴包裹、?2026 同步输出、
+// ?1049 备用屏、DECSCUSR 光标样式（Claude Code 抓包里还见到鼠标上报的复位序列）；
+// DECAWM / DECOM / DECCKM、DECSTBM 滚动区、DECSC / DECRC、IRM / LNM 它直接吞掉，终端侧
+// 从没见过，不必补。
+/** CSI … h / l：带「?」前缀是 DEC 私有模式，不带是 ANSI 模式；「>」等前缀不是模式 */
+const MODE_RE = /\x1b\[(\??)([\d;]*)([hl])/g
+/** DECSCUSR：CSI Ps 空格 q（0/1 闪烁块、2 静止块、3/4 下划线、5/6 竖线） */
+const CURSOR_STYLE_RE = /\x1b\[(\d*) q/g
+/** 块尾可能是被切开的模式序列（ESC[ 后还没收到终止符）：留到下一块拼接 */
+const MODE_TAIL_RE = /\x1b\[[\d;? ]*$/
+/** 不补回的私有模式：DECCOLM（132 列）会改终端列数，与窗格尺寸冲突 */
+const SKIP_RESTORE_MODES = new Set([3])
+
+/**
+ * 建一个跨数据块的模式提取器（绑定到会话），在 session.modes / session.ansiModes 里
+ * 维护每个模式当前的开关状态（Map<模式号, 是否置位>），session.cursorStyle 记最近一次 DECSCUSR。
+ */
+function createModeTracker(session) {
+  if (!(session.modes instanceof Map)) session.modes = new Map()
+  if (!(session.ansiModes instanceof Map)) session.ansiModes = new Map()
+  if (typeof session.cursorStyle !== 'number') session.cursorStyle = null
+  return function feed(chunk) {
+    const text = session.modeTail + chunk
+    const tail = MODE_TAIL_RE.exec(text)
+    session.modeTail = tail && tail[0].length <= 32 ? tail[0] : ''
+    MODE_RE.lastIndex = 0
+    let match
+    while ((match = MODE_RE.exec(text))) {
+      const table = match[1] ? session.modes : session.ansiModes
+      const on = match[3] === 'h'
+      for (const part of match[2].split(';')) {
+        if (!part) continue
+        table.set(Number(part), on)
+      }
+    }
+    CURSOR_STYLE_RE.lastIndex = 0
+    if ((match = CURSOR_STYLE_RE.exec(text))) session.cursorStyle = Number(match[1] || 0)
+  }
+}
+
+/** 回放头部的模式复原序列：置位的发 h、复位的发 l（reset 后默认全灭，复位组只为自动换行等默认开启的模式兜底） */
+function modePrologue(session) {
+  let out = ''
+  for (const [table, prefix] of [[session.modes, '?'], [session.ansiModes, '']]) {
+    const set = []
+    const reset = []
+    for (const [mode, on] of table) {
+      if (prefix && SKIP_RESTORE_MODES.has(mode)) continue
+      ;(on ? set : reset).push(mode)
+    }
+    if (set.length) out += `\x1b[${prefix}${set.join(';')}h`
+    if (reset.length) out += `\x1b[${prefix}${reset.join(';')}l`
+  }
+  if (session.cursorStyle !== null) out += `\x1b[${session.cursorStyle} q`
+  return out
+}
+
 /**
  * 创建会话。
  * options: { paneId, projectId, projectName, cwd, cols, rows, shellId }
@@ -347,14 +411,21 @@ function create(options = {}) {
     truncated: false,
     chunks: [],
     bytes: 0,
+    modes: new Map(),
+    ansiModes: new Map(),
+    modeTail: '',
+    cursorStyle: null,
     term,
   }
   sessions.set(id, session)
 
   // 从输出流里跟踪工作目录（OSC 7 / OSC 9;9）：会话 cwd 与窗格标题因此能跟着 cd 走
   const trackCwd = createCwdTracker(session)
+  // 跟踪终端模式：缓冲截断后 attach 回放要靠它补回隐藏光标等状态
+  const trackModes = createModeTracker(session)
   term.onData((data) => {
     trackCwd(data)
+    trackModes(data)
     appendOutput(session, data)
     // 会话回放靠 attach；实时输出只推给已附加的会话（渲染层用同一 sessionId 区分窗格）
     emit('terminal:data', { sessionId: id, data })
@@ -422,11 +493,13 @@ function resize(sessionId, cols, rows) {
 /**
  * 附加：回放缓冲输出。渲染层切回页面时调用，先 reset 再写快照，
  * 让 xterm 从干净状态重绘（避免上次残留的滚屏内容与新内容交错）。
- * 缓冲被截断过时在开头插入提示，用户能知道「上面还有更早的输出没显示」。
+ * 缓冲被截断过时在开头插入提示，用户能知道「上面还有更早的输出没显示」；
+ * 同时在提示之后补上当前终端模式——被丢掉的缓冲头部里可能有 TUI 发过的
+ * 「隐藏光标 / bracketed paste」等模式序列，回放本身已经带不回来（见 createModeTracker）。
  */
 function attach(sessionId) {
   const session = requireSession(sessionId)
-  const body = (session.truncated ? TRUNCATED_NOTICE : '') + session.chunks.join('')
+  const body = (session.truncated ? TRUNCATED_NOTICE + modePrologue(session) : '') + session.chunks.join('')
   return { ...info(session), output: body, truncated: session.truncated }
 }
 
@@ -506,9 +579,12 @@ module.exports = {
   close,
   stop,
   createCwdTracker,
+  createModeTracker,
+  modePrologue,
   decodeOscFileUrl,
   decodeOsc99Payload,
   CWD_HOOK_PS,
+  TRUNCATED_NOTICE,
   OUTPUT_LIMIT,
   MAX_SESSIONS,
 }
