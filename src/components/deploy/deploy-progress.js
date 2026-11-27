@@ -12,10 +12,14 @@ const STAGE_LIST = [
   { id: 'datasync', label: '数据同步' },
 ]
 
+/** 环境同步不经过本机打包：发布包直接取自源环境 */
+const PROMOTE_LABELS = { package: '获取版本包', upload: '传输发布包' }
+
 export function deployProgress(run, deployMode) {
-  const stages = deployMode === 'script'
+  let stages = deployMode === 'script'
     ? STAGE_LIST.map((stage) => stage.id === 'build' ? { ...stage, label: '项目脚本' } : stage)
     : STAGE_LIST
+  if (run.type === 'promote') stages = stages.map((stage) => PROMOTE_LABELS[stage.id] ? { ...stage, label: PROMOTE_LABELS[stage.id] } : stage)
   const counts = { success: 0, skipped: 0, failed: 0, rollback: 0 }
   for (const { id } of stages) {
     const status = run.stages[id]?.status

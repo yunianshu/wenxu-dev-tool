@@ -32,6 +32,7 @@ const SUITES = [
   'deploy-prestart-data-selftest.cjs',
   'deploy-history-selftest.cjs',
   'deploy-scriptmode-selftest.cjs',
+  'deploy-promote-selftest.cjs',
   'deploy-image-prepull-selftest.cjs',
   'deploy-datasync-selftest.cjs',
   'deploy-openclaw-selftest.cjs',

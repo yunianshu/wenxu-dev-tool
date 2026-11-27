@@ -134,6 +134,44 @@ function exec(conn, command, onLine) {
 }
 
 /**
+ * 执行命令并把 stdout 流式写入本地文件（环境同步经本机中转发布包或数据库导出）。
+ * stdout 是二进制数据，不转字符串；stderr 累积后返回；带背压，大文件不占内存。
+ * onProgress(receivedBytes) 持续回调；断连立即拒绝。
+ * @returns {Promise<{code: number, stderr: string, bytes: number}>}
+ */
+function execToFile(conn, command, localPath, onProgress) {
+  return new Promise((resolve, reject) => {
+    const dropWaiters = conn.__dropWaiters
+    const onDrop = (e) => reject(e)
+    const off = () => { if (dropWaiters) dropWaiters.delete(onDrop) }
+    if (dropWaiters) dropWaiters.add(onDrop)
+    const output = fs.createWriteStream(localPath)
+    let settled = false
+    const finish = (fn) => (v) => {
+      if (settled) return
+      settled = true
+      off()
+      output.destroy()
+      fn(v)
+    }
+    output.on('error', finish(reject))
+    conn.exec(command, (err, stream) => {
+      if (err) return finish(reject)(enhanceExecError(err))
+      const errBufs = []
+      let bytes = 0
+      stream.stderr.on('data', (d) => errBufs.push(d))
+      stream.on('data', (d) => { bytes += d.length; if (onProgress) onProgress(bytes) })
+      stream.on('error', finish(reject))
+      // 等本地文件落盘后再落定，调用方可立即读取或计算校验和
+      stream.on('close', (code) => output.end(() => finish(resolve)({
+        code: code || 0, stderr: Buffer.concat(errBufs).toString('utf8'), bytes,
+      })))
+      stream.pipe(output)
+    })
+  })
+}
+
+/**
  * SFTP 上传文件。onProgress(uploadedBytes, totalBytes) 持续回调；断连立即拒绝。
  * @returns {Promise<{remotePath: string}>}
  */
@@ -182,4 +220,4 @@ function remoteJoin(...parts) {
   return joined.replace(/\/{2,}/g, '/')
 }
 
-module.exports = { connect, close, exec, upload, mkdirp, remoteJoin }
+module.exports = { connect, close, exec, execToFile, upload, mkdirp, remoteJoin }

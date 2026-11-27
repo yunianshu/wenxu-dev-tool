@@ -196,7 +196,9 @@ export function finishDeployRun(run, record) {
   run.status = record.status
   run.finishedAt = record.finishedAt || Date.now()
   if (record.stages) run.stages = record.stages
-  if (record.status === 'success' && (record.type === 'deploy' || record.type === 'rollback')) {
+  // 环境同步在版本已切换（record.deployed）时线上版本即已变化，即使后续数据同步失败
+  const switched = record.type === 'promote' ? record.deployed === true : record.status === 'success'
+  if ((record.type === 'deploy' || record.type === 'rollback' || record.type === 'promote') && switched) {
     setDeployOnlineVersion(record.projectId, record.targetId, record.releaseId || record.version)
   }
 }

@@ -145,6 +145,11 @@ contextBridge.exposeInMainWorld('gitReport', {
     ipcRenderer.invoke('deploy:releases', { projectId, targetId }),
   deployRollback: (projectId, targetId, version, requestId) =>
     ipcRenderer.invoke('deploy:rollback', { projectId, targetId, version, requestId }),
+  // 环境同步：源环境（如测试）当前版本 → 目标环境（如正式），可选同步数据库；preview 只读
+  deployPromotePreview: (projectId, sourceTargetId, destTargetId) =>
+    ipcRenderer.invoke('deploy:promote:preview', { projectId, sourceTargetId, destTargetId }),
+  deployPromote: (projectId, sourceTargetId, destTargetId, options, requestId) =>
+    ipcRenderer.invoke('deploy:promote', { projectId, sourceTargetId, destTargetId, options: toPlain(options), requestId }),
   deployHistoryList: (projectId) => ipcRenderer.invoke('deploy:history:list', projectId),
   deployHistoryReadLog: (logFile) => ipcRenderer.invoke('deploy:history:readLog', logFile),
   deployHistoryClear: (projectId) => ipcRenderer.invoke('deploy:history:clear', projectId),

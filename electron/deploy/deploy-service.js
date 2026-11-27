@@ -5,6 +5,7 @@
  * 服务器端逻辑收敛在 deploy.sh（方案 §10.2），本模块只负责编排、日志流与阶段映射。
  */
 const fs = require('fs')
+const os = require('os')
 const path = require('path')
 const crypto = require('crypto')
 const { spawn, spawnSync } = require('child_process')
@@ -83,6 +84,7 @@ function cancel(projectId, runId) {
   operation.controller.abort()
   if (operation.pkgChild) killTree(operation.pkgChild)
   ssh.close(operation.conn)
+  for (const conn of operation.auxConns || []) ssh.close(conn)
   return { ok: true }
 }
 
@@ -134,6 +136,8 @@ async function withRun(projectId, targetId, type, execute, { version = '', reque
   const lines = []
   const operation = {
     id, host, dir, controller, released, conn: null, queued: blockers.length > 0,
+    // 环境同步会同时连接源环境服务器；取消与收尾时一并关闭
+    auxConns: [],
     project, target, record, tracker, publish, releasePlan,
     log(level, text) {
       const safeText = operation.redact ? operation.redact(text) : text
@@ -173,6 +177,7 @@ async function withRun(projectId, targetId, type, execute, { version = '', reque
     history.add(record)
   } finally {
     ssh.close(operation.conn)
+    for (const conn of operation.auxConns) ssh.close(conn)
     activeRuns.delete(projectId)
     release()
   }
@@ -322,6 +327,8 @@ function buildDeployArgs(project, target, pack, version) {
   }
   args.push('--keep-releases', String(d.keepReleases ?? 10), '--keep-backups', String(d.keepBackups ?? 10))
   args.push(d.deleteUploadAfterSuccess ? '--delete-upload' : '--keep-upload')
+  // 多环境项目留存原始发布包：环境同步据此把已验证的版本原样搬到其他环境
+  if (keepsReleasePackage(project)) args.push('--keep-package')
   return args
 }
 
@@ -422,6 +429,11 @@ function releaseDirNameOf(fileName) {
 /** 项目部署形态（缺省 docker，向后兼容旧配置） */
 function deployModeOf(project) {
   return project.deployMode === 'script' ? 'script' : 'docker'
+}
+
+/** 配置了两个及以上环境的项目发布后留存原始发布包（服务器 releases/.packages/），供环境同步原样搬运 */
+function keepsReleasePackage(project) {
+  return (Array.isArray(project.targets) ? project.targets : []).filter((t) => t && t.server && t.server.host).length >= 2
 }
 
 /** 终止进程树：Windows 下 child.kill() 不杀子进程（mvn→java / npm→node），用 taskkill */
@@ -1508,6 +1520,26 @@ function dbSudo(project, target) {
   return project.deployMode === 'auto' && target.autoSudo ? 'sudo -n ' : ''
 }
 
+/** 容器内读取 PostgreSQL 现有库名和用户（环境变量或 *_FILE）；密码不经输出传递 */
+const POSTGRES_NAMES_SCRIPT = [
+  'db_user="${POSTGRES_USER:-}"',
+  'if [ -z "$db_user" ] && [ -n "${POSTGRES_USER_FILE:-}" ]; then db_user="$(cat "$POSTGRES_USER_FILE")"; fi',
+  'db_user="${db_user:-postgres}"',
+  'db_name="${POSTGRES_DB:-}"',
+  'if [ -z "$db_name" ] && [ -n "${POSTGRES_DB_FILE:-}" ]; then db_name="$(cat "$POSTGRES_DB_FILE")"; fi',
+  'db_name="${db_name:-$db_user}"',
+  'printf "%s\\n%s\\n" "$db_user" "$db_name"',
+].join('\n')
+
+async function readPostgresNames(conn, docker, container) {
+  const names = await ssh.exec(conn, `${docker} exec ${quoteArg(container)} sh -ceu ${quoteArg(POSTGRES_NAMES_SCRIPT)}`)
+  const rows = (names.stdout || '').replace(/\r?\n$/, '').split('\n')
+  if (names.code !== 0 || rows.length !== 2 || rows.some((value) => !value || /[\x00-\x1f\x7f]/.test(value))) {
+    throw new Error('无法读取数据库现有库名和用户，请检查容器的 PostgreSQL 环境配置')
+  }
+  return { user: rows[0], name: rows[1] }
+}
+
 /** 标签同时限定项目和服务；多副本不能猜测要恢复哪一个数据库。 */
 async function resolveRestoreDb(conn, project, target, db) {
   if (!db.auto) return db
@@ -1517,21 +1549,7 @@ async function resolveRestoreDb(conn, project, target, db) {
   if (result.code !== 0 || ids.length !== 1 || !/^[a-f0-9]{12,64}$/.test(ids[0])) {
     throw new Error('无法唯一定位当前项目的运行中数据库容器，请检查服务状态后重试')
   }
-  const readNames = [
-    'db_user="${POSTGRES_USER:-}"',
-    'if [ -z "$db_user" ] && [ -n "${POSTGRES_USER_FILE:-}" ]; then db_user="$(cat "$POSTGRES_USER_FILE")"; fi',
-    'db_user="${db_user:-postgres}"',
-    'db_name="${POSTGRES_DB:-}"',
-    'if [ -z "$db_name" ] && [ -n "${POSTGRES_DB_FILE:-}" ]; then db_name="$(cat "$POSTGRES_DB_FILE")"; fi',
-    'db_name="${db_name:-$db_user}"',
-    'printf "%s\\n%s\\n" "$db_user" "$db_name"',
-  ].join('\n')
-  const names = await ssh.exec(conn, `${docker} exec ${quoteArg(ids[0])} sh -ceu ${quoteArg(readNames)}`)
-  const rows = (names.stdout || '').replace(/\r?\n$/, '').split('\n')
-  if (names.code !== 0 || rows.length !== 2 || rows.some((value) => !value || /[\x00-\x1f\x7f]/.test(value))) {
-    throw new Error('无法读取数据库现有库名和用户，请检查容器的 PostgreSQL 环境配置')
-  }
-  return { ...db, container: ids[0], user: rows[0], name: rows[1] }
+  return { ...db, container: ids[0], ...(await readPostgresNames(conn, docker, ids[0])) }
 }
 
 /** 密码始终在容器内读取，不经 inspect、SSH 输出、客户端变量或日志传递。 */
@@ -1595,7 +1613,6 @@ async function runDbRestore(operation, fileName) {
   const backupDir = ssh.remoteJoin(home, 'backups')
   const stamp = new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14)
   const sudo = dbSudo(project, target)
-  const docker = `${sudo}docker`
 
   try {
     const sqlFile = ssh.remoteJoin(backupDir, fileName)
@@ -1603,51 +1620,7 @@ async function runDbRestore(operation, fileName) {
     if ((has.stdout || '').trim() !== 'Y') throw new Error(`备份文件不存在：${fileName}`)
 
     log('info', `开始恢复数据库：${fileName}（库 ${db.name}@${db.container}）`)
-    // 1. 保底备份当前库（失败即中止）
-    const guardName = `db_guard_${stamp}_${runId}.sql`
-    const guardFile = ssh.remoteJoin(backupDir, guardName)
-    log('info', '恢复前先保底备份当前数据库……')
-    const dump = postgresCommand(docker, db, 'pg_dump', ['-U', db.user, '--', db.name])
-    // sudo docker 不会提升 shell 重定向的权限，备份文件也须在相同权限下写入。
-    const dumpToFile = sudo ? `${dump} | ${sudo}tee ${quoteArg(guardFile)} >/dev/null` : `${dump} > ${quoteArg(guardFile)}`
-    const guard = await ssh.exec(conn, `bash -o pipefail -c ${quoteArg(`umask 077; ${dumpToFile} && ${sudo}chmod 600 ${quoteArg(guardFile)} && echo __GUARD_OK__`)}`)
-    if (guard.code !== 0 || !/__GUARD_OK__/.test(guard.stdout || '')) {
-      throw new Error('保底备份失败，已中止恢复（当前数据未做任何改动）')
-    }
-    log('success', `保底备份完成：${guardName}`)
-
-    // 2. 杀连接 + 重建空库 + 灌入（单条命令链，任一步失败整体失败）
-    log('info', '重建数据库并灌入备份……')
-    // 默认库本身可能是 postgres，维护连接不能连接即将删除的数据库。
-    const maintenance = db.name === 'postgres' ? 'template1' : 'postgres'
-    const psql = (sql) => postgresCommand(docker, db, 'psql', ['-U', db.user, '-d', maintenance, '-v', 'ON_ERROR_STOP=1', '-c', sql])
-    const importSql = postgresCommand(docker, db, 'psql', ['-U', db.user, '-d', db.name, '-v', 'ON_ERROR_STOP=1'], true)
-    const restoreSteps = [
-      psql(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=${sqlLiteral(db.name)} AND pid <> pg_backend_pid();`),
-      psql(`DROP DATABASE ${sqlIdentifier(db.name)} WITH (FORCE);`),
-      psql(`CREATE DATABASE ${sqlIdentifier(db.name)} OWNER ${sqlIdentifier(db.user)};`),
-      sudo ? `${sudo}cat ${quoteArg(sqlFile)} | ${importSql}` : `${importSql} < ${quoteArg(sqlFile)}`,
-      `echo __DB_RESTORE_OK__`,
-    ].join(' && ')
-    const restoreCmd = `bash -o pipefail -c ${quoteArg(restoreSteps)}`
-    const res = await ssh.exec(conn, restoreCmd, (chunk) => {
-      for (const line of String(chunk).split(/\r?\n/)) {
-        const t = line.replace(/\s+$/, '')
-        if (t && !/^(__DB_RESTORE_OK__|DROP DATABASE|CREATE DATABASE|pg_terminate_backend)/.test(t)) log('info', `[恢复] ${t}`)
-      }
-    })
-    if (res.code !== 0 || !/__DB_RESTORE_OK__/.test(res.stdout || '')) {
-      throw new Error(`数据库恢复失败（退出码 ${res.code}），可用保底备份 ${guardName} 再次恢复`)
-    }
-    log('success', '备份已灌入')
-
-    // 3. 重启同 compose 项目的容器（应用连接池指向已重建的库）
-    log('info', '重启应用容器……')
-    const projectName = db.auto ? quoteArg(automatic.identity(project, target.id))
-      : `$(${docker} inspect ${quoteArg(db.container)} --format '{{index .Config.Labels "com.docker.compose.project"}}')`
-    const restarted = await ssh.exec(conn,
-      `PROJ=${projectName}; if [ -n "$PROJ" ]; then CONTAINERS=$(${docker} ps --filter "label=com.docker.compose.project=$PROJ" -q) && [ -n "$CONTAINERS" ] && ${docker} restart $CONTAINERS; else echo __NO_COMPOSE__; fi`)
-    if (restarted.code !== 0) throw new Error('数据库已恢复，但应用容器重启失败，请检查服务状态')
+    await replaceDatabaseWithSql(conn, project, target, db, sqlFile, { stamp, runId, log })
     log('success', `数据库恢复完成：${fileName}`)
     return finish('success', `数据库已恢复到备份 ${fileName}`)
   } catch (err) {
@@ -1655,6 +1628,64 @@ async function runDbRestore(operation, fileName) {
     log('error', `数据库恢复异常: ${msg}`)
     return finish('failed', msg)
   }
+}
+
+/**
+ * 用服务器上的 SQL 文件整体替换数据库（数据库恢复与环境同步的数据同步共用）：
+ * 保底备份当前库 → 杀连接并重建空库 → 灌入 SQL（出错即停）→ 重启同 compose 项目容器。
+ * 保底备份失败则中止——绝不覆盖「唯一可能完好的当前数据」。返回保底备份文件名。
+ */
+async function replaceDatabaseWithSql(conn, project, target, db, sqlFile, { stamp, runId, log }) {
+  const backupDir = ssh.remoteJoin(target.remotePath, 'backups')
+  const sudo = dbSudo(project, target)
+  const docker = `${sudo}docker`
+
+  // 1. 保底备份当前库（失败即中止）
+  const guardName = `db_guard_${stamp}_${runId}.sql`
+  const guardFile = ssh.remoteJoin(backupDir, guardName)
+  log('info', '恢复前先保底备份当前数据库……')
+  const dump = postgresCommand(docker, db, 'pg_dump', ['-U', db.user, '--', db.name])
+  // sudo docker 不会提升 shell 重定向的权限，备份文件也须在相同权限下写入。
+  const dumpToFile = sudo ? `${dump} | ${sudo}tee ${quoteArg(guardFile)} >/dev/null` : `${dump} > ${quoteArg(guardFile)}`
+  const guard = await ssh.exec(conn, `bash -o pipefail -c ${quoteArg(`umask 077; ${dumpToFile} && ${sudo}chmod 600 ${quoteArg(guardFile)} && echo __GUARD_OK__`)}`)
+  if (guard.code !== 0 || !/__GUARD_OK__/.test(guard.stdout || '')) {
+    throw new Error('保底备份失败，已中止恢复（当前数据未做任何改动）')
+  }
+  log('success', `保底备份完成：${guardName}`)
+
+  // 2. 杀连接 + 重建空库 + 灌入（单条命令链，任一步失败整体失败）
+  log('info', '重建数据库并灌入备份……')
+  // 默认库本身可能是 postgres，维护连接不能连接即将删除的数据库。
+  const maintenance = db.name === 'postgres' ? 'template1' : 'postgres'
+  const psql = (sql) => postgresCommand(docker, db, 'psql', ['-U', db.user, '-d', maintenance, '-v', 'ON_ERROR_STOP=1', '-c', sql])
+  const importSql = postgresCommand(docker, db, 'psql', ['-U', db.user, '-d', db.name, '-v', 'ON_ERROR_STOP=1'], true)
+  const restoreSteps = [
+    psql(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=${sqlLiteral(db.name)} AND pid <> pg_backend_pid();`),
+    psql(`DROP DATABASE ${sqlIdentifier(db.name)} WITH (FORCE);`),
+    psql(`CREATE DATABASE ${sqlIdentifier(db.name)} OWNER ${sqlIdentifier(db.user)};`),
+    sudo ? `${sudo}cat ${quoteArg(sqlFile)} | ${importSql}` : `${importSql} < ${quoteArg(sqlFile)}`,
+    `echo __DB_RESTORE_OK__`,
+  ].join(' && ')
+  const restoreCmd = `bash -o pipefail -c ${quoteArg(restoreSteps)}`
+  const res = await ssh.exec(conn, restoreCmd, (chunk) => {
+    for (const line of String(chunk).split(/\r?\n/)) {
+      const t = line.replace(/\s+$/, '')
+      if (t && !/^(__DB_RESTORE_OK__|DROP DATABASE|CREATE DATABASE|pg_terminate_backend)/.test(t)) log('info', `[恢复] ${t}`)
+    }
+  })
+  if (res.code !== 0 || !/__DB_RESTORE_OK__/.test(res.stdout || '')) {
+    throw new Error(`数据库恢复失败（退出码 ${res.code}），可用保底备份 ${guardName} 再次恢复`)
+  }
+  log('success', '备份已灌入')
+
+  // 3. 重启同 compose 项目的容器（应用连接池指向已重建的库）
+  log('info', '重启应用容器……')
+  const projectName = db.auto ? quoteArg(automatic.identity(project, target.id))
+    : `$(${docker} inspect ${quoteArg(db.container)} --format '{{index .Config.Labels "com.docker.compose.project"}}')`
+  const restarted = await ssh.exec(conn,
+    `PROJ=${projectName}; if [ -n "$PROJ" ]; then CONTAINERS=$(${docker} ps --filter "label=com.docker.compose.project=$PROJ" -q) && [ -n "$CONTAINERS" ] && ${docker} restart $CONTAINERS; else echo __NO_COMPOSE__; fi`)
+  if (restarted.code !== 0) throw new Error('数据库已恢复，但应用容器重启失败，请检查服务状态')
+  return guardName
 }
 
 /** 手动回滚到指定版本（方案 §20：直接使用服务器已有 release，不重新上传） */
@@ -1721,8 +1752,620 @@ async function runRollback(operation, version) {
   }
 }
 
+// ═════════════════════════ 环境同步（测试 → 正式） ═════════════════════════
+// 把源环境正在运行的版本原样发布到目标环境，可选把源环境的 PostgreSQL 数据灌入目标环境。
+// 版本来源优先是服务器留存的原始发布包（发布时的上传包，与已验证的内容逐字节一致）；
+// 旧版本没有留存包时回退为重新打包版本目录，并剔除环境专属文件与运行期文件。
+// 数据同步在版本发布成功之后执行：新版本先在目标环境启动，再灌入同版本的数据库内容。
+
+/** 版本目录名会进入服务器路径与命令，只放行安全字符 */
+function safeReleaseName(name) {
+  return /^[\w][\w.+~-]*$/.test(String(name)) && String(name).length <= 128
+}
+
+function normalizeHome(target) {
+  return String((target && target.remotePath) || '').replace(/\/+$/, '')
+}
+
+/** 两个目标是否同一台服务器（同主机、端口、账号即同一 SSH 连接端点） */
+function sameEndpoint(a, b) {
+  const endpoint = (t) => {
+    const server = (t && t.server) || {}
+    return [String(server.host || '').trim().toLowerCase(), Number(server.port) || 22, String(server.username || '').trim()]
+  }
+  const [host, port, user] = endpoint(a)
+  const other = endpoint(b)
+  return !!host && host === other[0] && port === other[1] && user === other[2]
+}
+
+/** 校验源环境与目标环境，返回两个目标与阻塞项（不连接服务器） */
+function promoteEnvironments(project, sourceTargetId, destTargetId) {
+  const targets = Array.isArray(project.targets) ? project.targets : []
+  const source = targets.find((t) => t && t.id === sourceTargetId)
+  const dest = targets.find((t) => t && t.id === destTargetId)
+  if (!source || !dest) throw new Error('部署环境不存在，请重新选择')
+  if (source.id === dest.id) throw new Error('源环境与目标环境不能相同')
+  const problems = []
+  for (const [label, target] of [['源环境', source], ['目标环境', dest]]) {
+    if (!(target.server && target.server.host)) problems.push(`${label}「${target.name}」未配置服务器`)
+    if (!String(target.remotePath || '').trim()) problems.push(`${label}「${target.name}」未配置部署目录`)
+  }
+  if (sameEndpoint(source, dest) && normalizeHome(source) === normalizeHome(dest)) {
+    problems.push('源环境与目标环境是同一个部署目录')
+  }
+  // deployModeOf() 会把 auto 归并为 docker，这里必须看原始值
+  if (project.deployMode !== 'docker' && project.deployMode !== 'script') {
+    problems.push('自动发布形态的版本包含环境专属配置，暂不支持环境同步')
+  }
+  return { source, dest, problems }
+}
+
+/** 线上当前版本：docker 形态读 current 软链接，脚本形态读 CURRENT 指针文件 */
+function currentVersionCommand(home, mode) {
+  return mode === 'script'
+    ? `cat ${quoteArg(ssh.remoteJoin(home, 'CURRENT'))} 2>/dev/null || true`
+    : `readlink ${quoteArg(ssh.remoteJoin(home, 'current'))} 2>/dev/null || true`
+}
+
+async function readCurrentVersion(conn, home, mode) {
+  const res = await ssh.exec(conn, currentVersionCommand(home, mode))
+  if (res.code !== 0) throw new Error(`读取线上版本失败：${(res.stderr || '').trim().slice(0, 200) || `退出码 ${res.code}`}`)
+  return (res.stdout || '').trim().split('/').pop() || ''
+}
+
+/**
+ * 源环境版本的可搬运来源：留存的原始发布包优先（返回 { package }）；
+ * 没有留存包时列出版本目录内指向源环境自身的绝对链接（这些链接搬到目标后仍指回源环境，必须拦下）。
+ */
+async function inspectSourceRelease(conn, home, release) {
+  const dir = ssh.remoteJoin(home, 'releases', release)
+  const pkgDir = ssh.remoteJoin(home, 'releases', '.packages')
+  const res = await ssh.exec(conn, [
+    `if [ -d ${quoteArg(dir)} ]; then echo __RELEASE_OK__; else echo __RELEASE_MISSING__; fi`,
+    `pkg=''; for ext in zip tar.gz tgz; do f=${quoteArg(pkgDir)}/${release}."$ext"; if [ -f "$f" ]; then pkg="$f"; break; fi; done`,
+    'printf \'__PKG__%s\\n\' "$pkg"',
+  ].join('; '))
+  const out = res.stdout || ''
+  if (res.code !== 0 || !out.includes('__RELEASE_OK__')) return { missing: true, package: '', links: [] }
+  const pkg = ((out.match(/__PKG__(.*)/) || [])[1] || '').trim()
+  if (pkg) return { missing: false, package: pkg, links: [] }
+  // deploy.sh 链接的 .env 指向本环境 shared/.env，重新打包时本就剔除，不算越界
+  const links = await ssh.exec(conn, [
+    `cd ${quoteArg(dir)} && find . -type l -printf '%p\\t%l\\n' 2>/dev/null`,
+    `awk -F'\\t' -v home=${quoteArg(`${normalizeHome({ remotePath: home })}/`)} 'index($2, home) == 1 && $1 !~ /(^|\\/)\\.env$/ {print $1 " -> " $2}' | head -5`,
+  ].join(' | ') + ' || true')
+  return { missing: false, package: '', links: (links.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean) }
+}
+
+/** 源环境版本目录里的 Compose 文件：配置的文件存在则原样使用，否则按常见命名回退 */
+async function findReleaseCompose(conn, dir, configured) {
+  const candidates = [...new Set([String(configured || 'docker-compose.yml').trim() || 'docker-compose.yml', ...COMPOSE_CANDIDATES])]
+  const res = await ssh.exec(conn, `for f in ${candidates.map(quoteArg).join(' ')}; do if [ -f ${quoteArg(dir)}/"$f" ]; then printf '%s\\n' "$f"; break; fi; done; true`)
+  return (res.stdout || '').trim()
+}
+
+/**
+ * 重新打包版本目录的命令：docker 形态平铺（与发布 ZIP 同形），脚本形态保留单一顶层目录（发布包契约）。
+ * 剔除 deploy.sh 链接的 .env 软链（环境专属配置）、socket/FIFO，以及运行期写入版本目录的
+ * pid/日志/启动标记/字节码缓存（项目脚本把 pid 写进版本目录时，带到目标环境会让启动脚本误判已在运行）。
+ */
+function buildReleaseArchiveScript(home, release, output, { flat = false, toStdout = false } = {}) {
+  const base = flat ? ssh.remoteJoin(home, 'releases', release) : ssh.remoteJoin(home, 'releases')
+  const filter = `find ${quoteArg(flat ? '.' : release)} -name __pycache__ -type d -prune -o `
+    + `\\( \\( ! -name .env -o ! -type l \\) ! -type s ! -type p ! -name '*.pid' ! -name '*.log' ! -name '*.sock' ! -name .started \\) -print0`
+  return [
+    'set -uo pipefail',
+    `cd ${quoteArg(base)}`,
+    `{ ${filter} | tar --null --no-recursion -czf ${toStdout ? '-' : quoteArg(output)} -T -; }`,
+    'rc=$?',
+    // tar 退出码 1 只表示归档期间有文件变化（运行中的日志等），归档仍可用；更高退出码才是失败
+    '[ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] || exit "$rc"',
+    toStdout ? 'echo __ARCHIVE_OK__ >&2' : 'echo __ARCHIVE_OK__',
+  ].join('\n')
+}
+
+/** 镜像对应的数据库产品：官方或名称含 postgres 的兼容产品归为 PostgreSQL，MySQL/MariaDB 单列 */
+function databaseEngine(image) {
+  const repo = String(image || '').trim().toLowerCase()
+    .replace(/^(?:docker\.io|index\.docker\.io|registry-1\.docker\.io)\//, '').replace(/^library\//, '').split(/[@:]/)[0]
+  if (/(^|\/)(mysql|mariadb)(-|$)/.test(repo)) return 'mysql'
+  if (/(^|\/)(postgres|postgresql)(-|$)/.test(repo) || /pgvector|timescale|postgis|postgres/.test(repo)) return 'postgres'
+  return ''
+}
+
+/** 按部署目录识别环境的数据库容器：Compose 工作目录位于该环境 releases/ 下的数据库镜像容器 */
+async function detectComposeDatabase(conn, home) {
+  const prefix = `${normalizeHome({ remotePath: home })}/releases/`
+  const res = await ssh.exec(conn, 'docker ps --format \'{{.Names}}\\t{{.Image}}\\t{{.Label "com.docker.compose.project.working_dir"}}\'')
+  if (res.code !== 0) return { problem: `无法查询容器：${(res.stderr || res.stdout || '').trim().slice(0, 200) || `退出码 ${res.code}`}` }
+  const found = []
+  for (const line of (res.stdout || '').split(/\r?\n/)) {
+    const [name, image, dir] = line.split('\t')
+    const engine = databaseEngine(image)
+    if (name && engine && String(dir || '').startsWith(prefix)) found.push({ name: name.trim(), engine })
+  }
+  const mysql = found.find((item) => item.engine === 'mysql')
+  if (mysql) return { problem: `环境的数据库 ${mysql.name} 是 MySQL/MariaDB，仅支持 PostgreSQL` }
+  const names = [...new Set(found.map((item) => item.name))]
+  if (!names.length) return { problem: '未识别到数据库容器，可在部署设置的数据库备份中指定' }
+  if (names.length > 1) return { problem: `识别到多个数据库容器（${names.join('、')}），请在部署设置的数据库备份中指定` }
+  return { db: { container: names[0], type: 'postgres', ...(await readPostgresNames(conn, 'docker', names[0])) } }
+}
+
+/** 环境要同步的 PostgreSQL：优先数据库备份配置；未配置或已关闭时按部署目录识别 */
+async function resolveSyncDatabase(conn, project, target) {
+  const d = databaseFor(project, target)
+  let db
+  if (d.enabled) {
+    if (d.type !== 'postgres' || d.service) {
+      return { problem: `配置的数据库${d.type === 'mysql' ? '是 MySQL' : d.service ? '由自动发布识别' : `类型为 ${d.type || '未知'}`}，仅支持手动指定的 PostgreSQL` }
+    }
+    const container = String(d.container || '').trim()
+    const name = String(d.name || '').trim()
+    if (!container || !name) return { problem: '数据库容器名或库名未配置' }
+    db = { container, name, user: String(d.user || '').trim() || 'postgres' }
+  } else {
+    const found = await detectComposeDatabase(conn, target.remotePath)
+    if (found.problem) return found
+    db = found.db
+  }
+  if (!/^[a-zA-Z0-9_.-]+$/.test(db.container)) return { problem: `数据库容器名含非法字符：${db.container}` }
+  if (!db.name || !db.user || [db.name, db.user].some((value) => /[\x00-\x1f\x7f]/.test(value))) return { problem: '数据库名称或用户无效' }
+  return { db }
+}
+
+/** 数据库版本、大小、字符集与排序规则；读不到时返回 problem */
+async function describeDatabase(conn, db) {
+  const sql = "select current_setting('server_version'), pg_size_pretty(pg_database_size(current_database())), "
+    + '(select encoding from pg_database where datname = current_database()), (select datcollate from pg_database where datname = current_database())'
+  try {
+    const res = await ssh.exec(conn, postgresCommand('docker', db, 'psql', ['-U', db.user, '-d', db.name, '-At', '-v', 'ON_ERROR_STOP=1', '-c', sql]))
+    const row = (res.stdout || '').trim().split('|').map((s) => s.trim())
+    if (res.code !== 0 || row.length !== 4) return { problem: `无法读取数据库信息：${(res.stderr || '').trim().slice(0, 200) || `退出码 ${res.code}`}` }
+    return { version: row[0], size: row[1], encoding: row[2], collate: row[3] }
+  } catch (err) {
+    return { problem: (err && err.message) || String(err) }
+  }
+}
+
+/** 逐表精确行数（不用统计估算值）：同步前后核对源库与目标库的数据量 */
+const ROW_COUNT_SQL = "select (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', schemaname, tablename), false, true, '')))[1]::text::bigint "
+  + "from pg_tables where schemaname not in ('pg_catalog', 'information_schema')"
+
+async function countDatabaseRows(conn, db) {
+  try {
+    const res = await ssh.exec(conn, postgresCommand('docker', db, 'psql', ['-U', db.user, '-d', db.name, '-At', '-v', 'ON_ERROR_STOP=1',
+      '-c', "SET statement_timeout = '120s'", '-c', ROW_COUNT_SQL]))
+    const counts = (res.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter((line) => /^\d+$/.test(line))
+    if (res.code !== 0 || !counts.length) return null
+    return { tables: counts.length, rows: counts.reduce((sum, n) => sum + Number(n), 0) }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 两侧 shared/.env 中同名的应用密钥（KEY / SECRET / TOKEN，不含数据库口令）取值是否一致。
+ * 只返回「名称 + 取值哈希」，取值本身不出服务器；应用用它加密的数据换环境后要靠同一把密钥才能解开。
+ */
+async function secretEnvKeys(conn, home) {
+  const file = ssh.remoteJoin(home, 'shared', '.env')
+  const script = [
+    `[ -f ${quoteArg(file)} ] || exit 0`,
+    `grep -E '^[A-Za-z_][A-Za-z0-9_]*(KEY|SECRET|TOKEN)[A-Za-z0-9_]*=' ${quoteArg(file)} | while IFS= read -r line; do`,
+    '  name="${line%%=*}"',
+    `  printf '%s\\t%s\\n' "$name" "$(printf %s "\${line#*=}" | sha256sum | cut -c1-16)"`,
+    'done',
+  ].join('\n')
+  const res = await ssh.exec(conn, `bash -c ${quoteArg(script)}`)
+  const map = {}
+  for (const line of (res.stdout || '').split(/\r?\n/)) {
+    const [name, hash] = line.trim().split('\t')
+    if (name && hash) map[name] = hash
+  }
+  return map
+}
+
+/**
+ * 数据同步可行性（只读）：识别两侧数据库并拦截同一库、非 PostgreSQL、源版本高于目标。
+ * available=false 时 reason 为用户可读原因；已识别出的一侧仍随 source / dest 返回。
+ */
+async function inspectDataSync({ srcConn, dstConn, project, source, dest, sameServer, srcDeployed = true, dstDeployed = true }) {
+  const unavailable = (reason, identified = {}) => ({ available: false, reason, source: identified.source || null, dest: identified.dest || null })
+  try {
+    const a = await resolveSyncDatabase(srcConn, project, source)
+    if (a.problem) return unavailable(srcDeployed ? `源环境${a.problem}` : '源环境尚未部署，没有可同步的数据库')
+    const b = await resolveSyncDatabase(dstConn, project, dest)
+    if (b.problem) return unavailable(dstDeployed ? `目标环境${b.problem}` : '目标环境尚未部署，先同步版本后再同步数据库')
+    if (sameServer && a.db.container === b.db.container && a.db.name === b.db.name) return unavailable('源环境与目标环境是同一个数据库')
+    const src = await describeDatabase(srcConn, a.db)
+    if (src.problem) return unavailable(`源环境${src.problem}`)
+    const dst = await describeDatabase(dstConn, b.db)
+    if (dst.problem) return unavailable(`目标环境${dst.problem}`, { source: { ...a.db, ...src } })
+    const major = (version) => Number.parseInt(version, 10) || 0
+    if (major(src.version) > major(dst.version)) {
+      return unavailable(`源数据库 PostgreSQL ${src.version} 高于目标 ${dst.version}，无法保证导入成功`, { source: { ...a.db, ...src }, dest: { ...b.db, ...dst } })
+    }
+    return { available: true, reason: '', source: { ...a.db, ...src }, dest: { ...b.db, ...dst } }
+  } catch (err) {
+    return unavailable((err && err.message) || String(err))
+  }
+}
+
+/** 环境同步预检（只读，不改服务器）：两侧当前版本、可搬运来源、数据库识别与全部阻塞项 */
+async function promotePreview(projectId, { sourceTargetId, destTargetId } = {}) {
+  const project = projects.list().find((p) => p.id === projectId)
+  if (!project) return { ok: false, error: '项目配置不存在，请重新保存' }
+  let pair
+  try {
+    pair = promoteEnvironments(project, sourceTargetId, destTargetId)
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) }
+  }
+  const { source, dest, problems } = pair
+  const mode = deployModeOf(project)
+  const sameServer = sameEndpoint(source, dest)
+  const preview = {
+    ok: true, mode, sameServer,
+    source: { targetId: source.id, name: source.name, host: String((source.server || {}).host || ''), remotePath: source.remotePath, version: '', package: '' },
+    dest: { targetId: dest.id, name: dest.name, host: String((dest.server || {}).host || ''), remotePath: dest.remotePath, version: '' },
+    needDeploy: false,
+    dataSync: { available: false, reason: '', source: null, dest: null },
+    warnings: [],
+    problems,
+  }
+  if (problems.length) return preview
+  let srcConn = null
+  let dstConn = null
+  try {
+    srcConn = await connectProjectTarget(project, source)
+    dstConn = sameServer ? srcConn : await connectProjectTarget(project, dest)
+    preview.source.version = await readCurrentVersion(srcConn, source.remotePath, mode)
+    if (!preview.source.version) throw new Error(`源环境「${source.name}」尚未发布任何版本`)
+    if (!safeReleaseName(preview.source.version)) throw new Error('源环境的版本目录名含非法字符')
+    const info = await inspectSourceRelease(srcConn, source.remotePath, preview.source.version)
+    if (info.missing) throw new Error(`源环境版本目录不存在：releases/${preview.source.version}`)
+    if (info.links.length) throw new Error(`源环境版本目录含指向源环境的链接：${info.links.join('；')}`)
+    preview.source.package = info.package ? 'kept' : 'archive'
+    if (!info.package) preview.warnings.push('该版本发布时未留存原始发布包，将重新打包服务器上的版本目录')
+    if (mode === 'docker' && !(await findReleaseCompose(srcConn, ssh.remoteJoin(source.remotePath, 'releases', preview.source.version), project.composeFile))) {
+      throw new Error(`源环境版本目录中没有 Compose 文件（${project.composeFile || 'docker-compose.yml'}）`)
+    }
+    preview.dest.version = await readCurrentVersion(dstConn, dest.remotePath, mode)
+    preview.needDeploy = preview.dest.version !== preview.source.version
+    preview.dataSync = await inspectDataSync({
+      srcConn, dstConn, project, source, dest, sameServer,
+      srcDeployed: !!preview.source.version, dstDeployed: !!preview.dest.version,
+    })
+    if (preview.dataSync.available) {
+      const a = preview.dataSync.source
+      const b = preview.dataSync.dest
+      if (a.encoding !== b.encoding || a.collate !== b.collate) {
+        preview.warnings.push(`数据库字符集或排序规则不同（源 ${a.encoding}/${a.collate}，目标 ${b.encoding}/${b.collate}）`)
+      }
+      // 应用密钥各环境独立生成时，用密钥加密保存的数据换环境后无法解开；运行配置不随数据同步，必须提前说明
+      const srcKeys = await secretEnvKeys(srcConn, source.remotePath)
+      const dstKeys = await secretEnvKeys(dstConn, dest.remotePath)
+      const differing = Object.keys(srcKeys).filter((name) => dstKeys[name] && dstKeys[name] !== srcKeys[name])
+      if (differing.length) {
+        preview.warnings.push(`两侧运行配置中 ${differing.join('、')} 取值不同：数据库里若有用这些密钥加密保存的内容，同步后需在目标环境对齐`)
+      }
+    } else if (!preview.needDeploy) {
+      preview.problems.push('目标环境已是该版本，没有可同步的内容')
+    }
+  } catch (err) {
+    preview.problems.push((err && err.message) || String(err))
+  } finally {
+    ssh.close(srcConn)
+    if (dstConn !== srcConn) ssh.close(dstConn)
+  }
+  return preview
+}
+
+function promote(projectId, { sourceTargetId, destTargetId, options, requestId } = {}) {
+  const plan = { sourceTargetId, destTargetId, options: options || {} }
+  return withRun(projectId, destTargetId, 'promote', (operation) => runPromotion(operation, plan), {
+    requestId, version: String(plan.options.expectedVersion || ''),
+  })
+}
+
+async function runPromotion(operation, { sourceTargetId, options = {} }) {
+  const { project, target: dest, record, tracker, log, finish, controller, publish, id: runId } = operation
+  const isCanceled = () => controller.signal.aborted
+  const syncData = options.syncData === true
+  const stamp = new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14)
+  const resultBox = { ok: false, message: '', rolledBack: false, oldVersion: '' }
+  let srcConn = null
+  let dstConn = null
+  let localPackage = ''
+  let remotePackage = ''
+  let deployed = false
+  let synced = false
+
+  try {
+    // ── 阶段 1：检查源环境与目标环境 ─────────────────────────────
+    tracker.begin('check')
+    const t0 = Date.now()
+    if (isCanceled()) return finish('canceled', '任务尚未执行')
+    if (project.configMode === 'quick' && project.localPath && fs.existsSync(project.localPath)) {
+      // 与发布一致：极简配置在执行前按项目重新生成目标环境的派生配置
+      const gen = await aiDeploy.generateQuickConfig(project.id, dest.id, { log })
+      if (!gen.ok) throw new Error(gen.error || '自动生成部署配置失败')
+      Object.assign(project, gen.project)
+      const freshTarget = (gen.project.targets || []).find((t) => t.id === dest.id) || (gen.project.targets || [])[0]
+      if (freshTarget) Object.assign(dest, freshTarget)
+    } else if (project.configMode === 'quick') {
+      log('warn', '本地项目目录不可用，沿用已保存的部署配置')
+    }
+    if (isCanceled()) throw new Error('同步已取消')
+    // 同步的版本目录名就是源环境当前版本，不能带上以往自动发布留下的版本目录后缀
+    delete project.releaseId
+    const mode = deployModeOf(project)
+    const { source, problems } = promoteEnvironments(project, sourceTargetId, dest.id)
+    if (problems.length) {
+      for (const problem of problems) log('error', problem)
+      tracker.end('check', 'failed', t0)
+      return finish('failed', problems[0])
+    }
+    const sameServer = sameEndpoint(source, dest)
+    if (sameServer) {
+      dstConn = operation.conn = await connectProjectTarget(project, dest)
+      srcConn = dstConn
+    } else {
+      srcConn = await connectProjectTarget(project, source)
+      operation.auxConns.push(srcConn)
+      dstConn = operation.conn = await connectProjectTarget(project, dest)
+    }
+    if (isCanceled()) throw new Error('同步已取消')
+    const sourceVersion = await readCurrentVersion(srcConn, source.remotePath, mode)
+    if (!sourceVersion) throw new Error(`源环境「${source.name}」尚未发布任何版本`)
+    if (!safeReleaseName(sourceVersion)) throw new Error('源环境的版本目录名含非法字符')
+    if (options.expectedVersion && options.expectedVersion !== sourceVersion) {
+      throw new Error(`源环境版本已变化（确认 ${options.expectedVersion}，当前 ${sourceVersion}），请重新检查`)
+    }
+    const releaseInfo = await inspectSourceRelease(srcConn, source.remotePath, sourceVersion)
+    if (releaseInfo.missing) throw new Error(`源环境版本目录不存在：releases/${sourceVersion}`)
+    if (releaseInfo.links.length) throw new Error(`源环境版本目录含指向源环境的链接：${releaseInfo.links.join('；')}`)
+    const composeFile = mode === 'docker'
+      ? await findReleaseCompose(srcConn, ssh.remoteJoin(source.remotePath, 'releases', sourceVersion), project.composeFile) : ''
+    if (mode === 'docker' && !composeFile) {
+      throw new Error(`源环境版本目录中没有 Compose 文件（${project.composeFile || 'docker-compose.yml'}）`)
+    }
+    const destVersion = await readCurrentVersion(dstConn, dest.remotePath, mode)
+    const needDeploy = destVersion !== sourceVersion
+    record.version = sourceVersion
+    record.releaseId = sourceVersion
+    record.oldVersion = destVersion
+    record.sourceTargetId = source.id
+    record.sourceTargetName = source.name
+    // 界面据此区分「版本已切换」与「只同步数据」，失败时同样能判断服务器处于哪种状态
+    record.deployed = false
+    record.dataSynced = false
+    let srcDb = null
+    let dstDb = null
+    if (syncData) {
+      const plan = await inspectDataSync({ srcConn, dstConn, project, source, dest, sameServer, dstDeployed: !!destVersion })
+      if (!plan.available) throw new Error(`数据同步不可用：${plan.reason}`)
+      srcDb = plan.source
+      dstDb = plan.dest
+    }
+    if (!needDeploy && !syncData) throw new Error(`目标环境已是该版本（${destVersion}），没有可同步的内容`)
+    if (composeFile && composeFile !== String(project.composeFile || '').trim()) log('warn', `配置的 Compose 文件不在版本目录中，改用 ${composeFile}`)
+    log('info', `源环境「${source.name}」当前版本 ${sourceVersion}（${releaseInfo.package ? '留存原始发布包' : '重新打包版本目录'}），目标环境「${dest.name}」当前版本 ${destVersion || '无'}`)
+    if (syncData) log('info', `数据同步：${srcDb.container}/${srcDb.name}（PostgreSQL ${srcDb.version}）→ ${dstDb.container}/${dstDb.name}（PostgreSQL ${dstDb.version}）`)
+    log('success', needDeploy ? '环境检查通过' : '目标环境已是该版本，跳过版本同步')
+    tracker.end('check', 'success', t0)
+
+    let pack = null
+    if (needDeploy) {
+      // ── 阶段 2：把源环境的版本搬到目标环境的上传目录 ─────────────
+      tracker.begin('package')
+      const t1 = Date.now()
+      // 留存包文件名是 <版本目录名>.<扩展名>；重新打包的固定为 tar.gz
+      const ext = releaseInfo.package ? path.posix.basename(releaseInfo.package).slice(sourceVersion.length + 1) : 'tar.gz'
+      const fileName = `promote_${runId}.${ext}`
+      remotePackage = ssh.remoteJoin(dest.remotePath, 'uploads', fileName)
+      await ssh.mkdirp(dstConn, ssh.remoteJoin(dest.remotePath, 'uploads'))
+      const uploadPercent = (done, total) => publish('deploy:progress', { kind: 'upload', percent: total ? Math.round((done / total) * 100) : 0 })
+      if (sameServer) {
+        log('info', releaseInfo.package ? '源环境与目标环境在同一台服务器，复制留存的原始发布包……' : '源环境与目标环境在同一台服务器，正在打包版本目录……')
+        const made = await ssh.exec(dstConn, releaseInfo.package
+          ? `cp -f ${quoteArg(releaseInfo.package)} ${quoteArg(remotePackage)} && sha256sum ${quoteArg(releaseInfo.package)} ${quoteArg(remotePackage)} | awk '{print $1}' && echo __PACKAGE_OK__`
+          : `bash -c ${quoteArg(buildReleaseArchiveScript(source.remotePath, sourceVersion, remotePackage, { flat: mode === 'docker' }))} && sha256sum ${quoteArg(remotePackage)} | awk '{print $1}' && echo __PACKAGE_OK__`)
+        const sums = (made.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[a-f0-9]{64}$/.test(line))
+        const sha256 = sums[releaseInfo.package ? 1 : 0] || ''
+        if (made.code !== 0 || !/__PACKAGE_OK__|__ARCHIVE_OK__/.test(made.stdout || '') || !sha256 || (releaseInfo.package && sums[0] !== sha256)) {
+          throw new Error(`生成发布包失败：${(made.stderr || '').trim().slice(0, 300) || `退出码 ${made.code}`}`)
+        }
+        pack = { fileName, zipPath: '', sha256, keepLocal: true }
+      } else {
+        // 跨服务器：发布包经本机中转，两端各算一次 SHA256
+        localPackage = path.join(os.tmpdir(), `plm-env-sync-${runId}.${ext}`)
+        const fetched = await ssh.execToFile(srcConn, releaseInfo.package
+          ? `cat ${quoteArg(releaseInfo.package)}`
+          : `bash -c ${quoteArg(buildReleaseArchiveScript(source.remotePath, sourceVersion, '', { flat: mode === 'docker', toStdout: true }))}`, localPackage)
+        if (fetched.code !== 0 || !fetched.bytes || (!releaseInfo.package && !/__ARCHIVE_OK__/.test(fetched.stderr || ''))) {
+          throw new Error(`获取发布包失败：${(fetched.stderr || '').trim().slice(0, 300) || `退出码 ${fetched.code}`}`)
+        }
+        pack = { fileName, zipPath: localPackage, sha256: await sha256File(localPackage), keepLocal: false }
+      }
+      log('success', `发布包就绪：${releaseInfo.package ? path.posix.basename(releaseInfo.package) : `${sourceVersion}.tar.gz`}`)
+      tracker.end('package', 'success', t1)
+
+      // ── 阶段 3：部署脚本与发布包就位 ────────────────────────────
+      tracker.begin('upload')
+      const t2 = Date.now()
+      await ssh.mkdirp(dstConn, ssh.remoteJoin(dest.remotePath, 'deployer'))
+      const scriptRemote = ssh.remoteJoin(dest.remotePath, 'deployer', 'deploy.sh')
+      log('info', '上传部署脚本……')
+      await uploadTextFile(dstConn, readDeployScript(), scriptRemote)
+      if (localPackage) {
+        log('info', `正在传输发布包到 ${dest.name}……`)
+        await ssh.upload(dstConn, localPackage, remotePackage, uploadPercent)
+        const sum = await ssh.exec(dstConn, `sha256sum ${quoteArg(remotePackage)} | awk '{print $1}'`)
+        const remoteSha = (sum.stdout || '').trim()
+        if (remoteSha !== pack.sha256) throw new Error(`发布包传输校验失败（本机 ${pack.sha256.slice(0, 8)} / 目标 ${remoteSha.slice(0, 8)}）`)
+        log('success', '发布包 SHA256 校验通过')
+      }
+      tracker.end('upload', 'success', t2)
+
+      // ── 阶段 4~8：目标环境按常规发布流程切换版本 ─────────────────
+      if (isCanceled()) throw new Error('同步已取消')
+      if (composeFile) project.composeFile = composeFile
+      const cmd = `bash ${quoteArg(scriptRemote)} ${buildDeployArgs(project, dest, pack, sourceVersion).map(quoteArg).join(' ')}`
+      const res = await execDeployScript(dstConn, cmd, tracker, resultBox, log)
+      if (!(resultBox.ok && res.code === 0)) {
+        if (tracker.state.datasync.status === 'waiting') tracker.end('datasync', 'skipped')
+        for (const s of STAGES) {
+          if (tracker.state[s.id].status === 'running') tracker.end(s.id, resultBox.rolledBack ? 'rollback' : 'failed')
+        }
+        log('error', resultBox.message || `部署脚本退出码 ${res.code}`)
+        return finish(resultBox.rolledBack ? 'rolled_back' : 'failed', resultBox.message || '发布失败')
+      }
+      for (const s of ['backup', 'extract', 'build', 'start', 'health']) {
+        const status = tracker.state[s] ? tracker.state[s].status : ''
+        if (status === 'running') tracker.end(s, 'success')
+        else if (status === 'waiting') tracker.end(s, s === 'health' || (mode === 'script' && (s === 'build' || s === 'backup')) ? 'skipped' : 'success')
+      }
+      // 版本此刻已在目标环境生效：后续数据同步或 OpenClaw 校验失败时，界面与历史据此判断服务器状态
+      deployed = true
+      record.deployed = true
+      remotePackage = ''
+      if (dest.openclaw && dest.openclaw.enabled && !resultBox.openclawSynced) throw new Error('服务器未确认 OpenClaw 同步完成，不能将本次同步视为成功')
+      log('success', `版本已同步：${dest.name} 当前版本 ${sourceVersion}`)
+    } else {
+      for (const id of ['package', 'upload', 'backup', 'extract', 'build', 'start', 'health', 'openclaw']) tracker.end(id, 'skipped')
+    }
+
+    // ── 阶段 9：数据同步（版本已在新环境启动后，再灌入同版本的数据库内容） ──
+    if (syncData) {
+      tracker.begin('datasync')
+      const tds = Date.now()
+      try {
+        if (isCanceled()) throw new Error('同步已取消（目标数据库未改动）')
+        const guardName = await syncDatabaseData({ srcConn, dstConn, project, dest, srcDb, dstDb, runId, stamp, log, isCanceled })
+        record.dataGuard = guardName
+        synced = true
+        record.dataSynced = true
+        tracker.end('datasync', 'success', tds)
+      } catch (dsErr) {
+        tracker.end('datasync', 'failed', tds)
+        const msg = (dsErr && dsErr.message) || String(dsErr)
+        log('error', `数据同步失败: ${msg}`)
+        if (deployed) log('warn', '版本已同步到目标环境；数据库保持同步前状态，可用保底备份核对')
+        return finish('failed', `${deployed ? '版本已发布，' : ''}数据同步失败：${msg}`)
+      }
+    } else {
+      tracker.end('datasync', 'skipped')
+    }
+    if (isCanceled()) return finish('canceled', '同步已取消')
+    const parts = []
+    if (deployed) parts.push(`版本 ${sourceVersion} 已发布到 ${dest.name}`)
+    if (synced) parts.push(`数据库 ${dstDb.name} 已同步到 ${dstDb.container}`)
+    log('success', `环境同步完成：${parts.join('，')}`)
+    return finish('success', `环境同步完成：${parts.join('，')}`)
+  } catch (err) {
+    if (isCanceled()) {
+      log('warn', '同步已取消')
+      return finish('canceled', '同步已取消')
+    }
+    const msg = (err && err.message) || String(err)
+    log('error', `环境同步异常: ${msg}`)
+    for (const s of STAGES) {
+      if (tracker.state[s.id].status === 'running') tracker.end(s.id, 'failed')
+    }
+    return finish('failed', `${deployed ? '版本已发布，' : ''}${msg}`)
+  } finally {
+    // 中转文件与未被部署脚本消费的发布包随手清理；用户取消时不碰服务器（脚本可能正在回滚）
+    if (localPackage) {
+      try { fs.rmSync(localPackage, { force: true }) } catch { /* 本机临时文件清理失败不影响结果 */ }
+    }
+    if (remotePackage && dstConn && !isCanceled()) {
+      try { await ssh.exec(dstConn, `rm -f ${quoteArg(remotePackage)}`) } catch { /* 服务器残留由部署脚本的历史包清理兜底 */ }
+    }
+  }
+}
+
+/**
+ * 把源环境的数据库灌入目标环境：导出到目标环境 backups/db_sync_*.sql → 校验导出完整 →
+ * 保底备份目标库后重建灌入 → 重启应用容器 → 核对行数 → 等待健康检查。返回保底备份文件名。
+ */
+async function syncDatabaseData({ srcConn, dstConn, project, dest, srcDb, dstDb, runId, stamp, log, isCanceled }) {
+  const dumpName = `db_sync_${stamp}_${runId}.sql`
+  const dumpFile = ssh.remoteJoin(dest.remotePath, 'backups', dumpName)
+  const srcCount = await countDatabaseRows(srcConn, srcDb)
+  // 导出去掉属主与权限语句：目标库对象归目标库用户所有，不依赖源库的角色
+  const dump = postgresCommand('docker', srcDb, 'pg_dump', ['--no-owner', '--no-privileges', '-U', srcDb.user, '--', srcDb.name])
+  await ssh.mkdirp(dstConn, ssh.remoteJoin(dest.remotePath, 'backups'))
+  if (srcConn === dstConn) {
+    const res = await ssh.exec(dstConn, `bash -o pipefail -c ${quoteArg(`umask 077; ${dump} > ${quoteArg(dumpFile)} && chmod 600 ${quoteArg(dumpFile)} && echo __DUMP_OK__`)}`)
+    if (res.code !== 0 || !/__DUMP_OK__/.test(res.stdout || '')) {
+      throw new Error(`源数据库导出失败：${(res.stderr || '').trim().slice(0, 300) || `退出码 ${res.code}`}（目标数据库未改动）`)
+    }
+  } else {
+    // 跨服务器：导出内容经本机中转，两端 SHA256 一致才继续
+    const local = path.join(os.tmpdir(), `plm-env-sync-${runId}.sql`)
+    try {
+      const got = await ssh.execToFile(srcConn, dump, local)
+      if (got.code !== 0 || !got.bytes) {
+        throw new Error(`源数据库导出失败：${(got.stderr || '').trim().slice(0, 300) || `退出码 ${got.code}`}（目标数据库未改动）`)
+      }
+      await ssh.upload(dstConn, local, dumpFile)
+      const sum = await ssh.exec(dstConn, `sha256sum ${quoteArg(dumpFile)} | awk '{print $1}'`)
+      if ((sum.stdout || '').trim() !== await sha256File(local)) throw new Error('数据库导出传输校验失败（目标数据库未改动）')
+    } finally {
+      try { fs.rmSync(local, { force: true }) } catch { /* 本机临时文件清理失败不影响结果 */ }
+    }
+  }
+  const complete = await ssh.exec(dstConn, `tail -c 400 ${quoteArg(dumpFile)} | grep -q 'PostgreSQL database dump complete' && echo __DUMP_COMPLETE__`)
+  if (complete.code !== 0 || !/__DUMP_COMPLETE__/.test(complete.stdout || '')) {
+    await ssh.exec(dstConn, `rm -f ${quoteArg(dumpFile)}`)
+    throw new Error('源数据库导出不完整（缺少结束标记），目标数据库未改动')
+  }
+  if (isCanceled()) throw new Error('同步已取消（目标数据库未改动）')
+  log('success', `源数据库已导出：${dumpName}`)
+  const guardName = await replaceDatabaseWithSql(dstConn, project, dest, dstDb, dumpFile, { stamp, runId, log })
+  if (!(await waitDatabaseReady(dstConn, dstDb))) log('warn', '目标数据库重启后未在 60 秒内就绪，跳过行数核对')
+
+  const dstCount = await countDatabaseRows(dstConn, dstDb)
+  if (srcCount && dstCount && srcCount.tables === dstCount.tables && srcCount.rows === dstCount.rows) {
+    log('success', `行数核对一致：${dstCount.tables} 张表 ${dstCount.rows} 行`)
+  } else if (srcCount && dstCount) {
+    log('warn', `行数核对不一致：源 ${srcCount.tables} 张表 ${srcCount.rows} 行，目标 ${dstCount.tables} 张表 ${dstCount.rows} 行（源环境在同步期间可能有写入，请核对）`)
+  }
+
+  const health = healthFor(project, dest)
+  if (health.enabled && health.url && !(await waitForHttpHealth(dstConn, health.url, health.timeout, health.interval))) {
+    throw new Error(`数据已灌入，但应用健康检查未通过：${health.url}（可用保底备份 ${guardName} 恢复）`)
+  }
+  log('success', `数据同步完成，目标数据库同步前的保底备份：${guardName}`)
+  return guardName
+}
+
+/** 容器重启后 PostgreSQL 需要几秒才接受连接：等到 pg_isready 通过或超时 */
+async function waitDatabaseReady(conn, db) {
+  const deadline = Date.now() + 60000
+  while (Date.now() < deadline) {
+    const ready = await ssh.exec(conn, postgresCommand('docker', db, 'pg_isready', ['-U', db.user, '-d', db.name]))
+    if (ready.code === 0) return true
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+  }
+  return false
+}
+
+/** 等目标环境的 HTTP 健康检查恢复（容器重启后应用需要启动时间） */
+async function waitForHttpHealth(conn, url, timeout, interval) {
+  const step = Number(interval) > 0 ? Number(interval) : 3
+  const tries = Math.max(1, Math.floor((Number(timeout) || 90) / step))
+  const res = await ssh.exec(conn, `for i in $(seq 1 ${tries}); do if curl -fsS --max-time 5 ${quoteArg(url)} >/dev/null 2>&1; then echo __HEALTH_OK__; exit 0; fi; sleep ${step}; done; echo __HEALTH_FAIL__; exit 1`)
+  return res.code === 0 && /__HEALTH_OK__/.test(res.stdout || '')
+}
+
 module.exports = {
-  run, cancel, isBusy, testConnection, listReleases, rollback,
+  run, cancel, isBusy, testConnection, listReleases, rollback, promote, promotePreview,
+  keepsReleasePackage, safeReleaseName, sameEndpoint, promoteEnvironments, readCurrentVersion, inspectSourceRelease,
+  findReleaseCompose, buildReleaseArchiveScript, databaseEngine, resolveSyncDatabase, inspectDataSync,
+  countDatabaseRows, replaceDatabaseWithSql,
   listDbBackups, restoreDbBackup, assertDbBackupName,
   setEmitter, STAGES, resolveVersion, buildDeployArgs, preCheckLocal, releaseContentProblems, findReleaseCopy, runReleasePrepare,
   resolveCompose, resolveArtifact, sha256File, releaseDirNameOf, deployModeOf, runPackageCommand,

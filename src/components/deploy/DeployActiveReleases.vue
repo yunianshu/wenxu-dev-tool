@@ -43,7 +43,7 @@ import { deployProgress } from './deploy-progress'
 
 const projects = computed(() => new Map(state.deploy.projects.map((project) => [project.id, project])))
 const tasks = computed(() => [...state.deploy.runs]
-  .filter(([, run]) => run.running && run.type === 'deploy')
+  .filter(([, run]) => run.running && (run.type === 'deploy' || run.type === 'promote'))
   .map(([projectId, run]) => {
     const project = projects.value.get(projectId)
     return { projectId, name: project?.name || projectId, run, progress: deployProgress(run, project?.deployMode) }

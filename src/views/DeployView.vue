@@ -23,6 +23,12 @@
       :current-target-id="activeTargetId"
       :current-dirty="dirty"
     />
+    <DeployEnvSyncDialog
+      v-model="envSyncOpen"
+      :form="form"
+      :active-target-id="activeTargetId"
+      @done="onPromoted"
+    />
 
     <DeployActiveReleases />
 
@@ -101,6 +107,7 @@
           :dirty="dirty"
           @history-changed="reloadHistory"
           @set-version="onNewVersion"
+          @promote="envSyncOpen = true"
         />
         <DeployHistoryTable
           ref="historyRef"
@@ -123,6 +130,7 @@ import TopbarProjectSelect from '../components/TopbarProjectSelect.vue'
 import DeployConfigDrawer from '../components/deploy/DeployConfigDrawer.vue'
 import DeployAiAssistant from '../components/deploy/DeployAiAssistant.vue'
 import DeployAddPublish from '../components/deploy/DeployAddPublish.vue'
+import DeployEnvSyncDialog from '../components/deploy/DeployEnvSyncDialog.vue'
 import DeployActiveReleases from '../components/deploy/DeployActiveReleases.vue'
 import DeployRunPanel from '../components/deploy/DeployRunPanel.vue'
 import DeployHistoryTable from '../components/deploy/DeployHistoryTable.vue'
@@ -135,6 +143,7 @@ const topbarReady = useTopbarReady()
 
 const form = reactive(emptyProject())
 const addPublishOpen = ref(false)
+const envSyncOpen = ref(false)
 const configOpen = ref(false)
 const serverManagerOpen = ref(false)
 const servers = ref([])
@@ -264,6 +273,12 @@ function onHistoryRollback(version, targetId) {
   runPanelRef.value?.doRollback(version, targetId)
 }
 
+/** 环境同步结束：目标环境按项目重新生成过派生配置，重新拉取并回填，当前环境保持不变 */
+async function onPromoted() {
+  await loadProjects({ preserveDraft: true })
+  reloadHistory()
+}
+
 function rememberDraft() {
   if (!form.id) return
   if (dirty.value) state.deploy.configDrafts[form.id] = { form: JSON.parse(JSON.stringify(form)), targetId: activeTargetId.value }
@@ -273,6 +288,7 @@ function rememberDraft() {
 function onSelectProject(id) {
   rememberDraft()
   addPublishOpen.value = false
+  envSyncOpen.value = false
   configOpen.value = false
   aiOpen.value = false
   detected.value = { version: '', source: '' }

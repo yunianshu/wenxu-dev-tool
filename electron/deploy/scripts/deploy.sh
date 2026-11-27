@@ -42,6 +42,7 @@ BACKUP_CODE=1 BACKUP_DB=0 DB_TYPE="postgres" DB_CONTAINER="" DB_SERVICE="" DB_NA
 AUTO_ROLLBACK=1 HEALTH_URL="" HEALTH_TIMEOUT=90 HEALTH_INTERVAL=3
 KEEP_RELEASES=10 KEEP_BACKUPS=10 DELETE_UPLOAD=1
 BOOTSTRAP_JAVA=0 BOOTSTRAP_PGDUMP=0
+KEEP_PACKAGE=0
 
 if [ $# -gt 0 ]; then CMD="$1"; shift; fi
 
@@ -78,6 +79,7 @@ while [ $# -gt 0 ]; do
     --keep-backups)  KEEP_BACKUPS="$2"; shift 2 ;;
     --delete-upload) DELETE_UPLOAD=1; shift ;;
     --keep-upload)   DELETE_UPLOAD=0; shift ;;
+    --keep-package)  KEEP_PACKAGE=1; shift ;;
     --bootstrap-java)    BOOTSTRAP_JAVA=1; shift ;;
     --no-bootstrap-java) BOOTSTRAP_JAVA=0; shift ;;
     --bootstrap-pgdump)    BOOTSTRAP_PGDUMP=1; shift ;;
@@ -129,22 +131,87 @@ acquire_lock() {
 check_env() {
   command -v docker >/dev/null 2>&1 || fail_now "服务器未安装 docker"
   docker compose version >/dev/null 2>&1 || fail_now "服务器未安装 Docker Compose V2（需要 docker compose 子命令）"
-  command -v unzip >/dev/null 2>&1 || fail_now "服务器未安装 unzip（如 CentOS: yum install -y unzip）"
+  check_package_tool
   command -v sha256sum >/dev/null 2>&1 || fail_now "服务器未安装 sha256sum"
   if [ -n "$HEALTH_URL" ]; then
     command -v curl >/dev/null 2>&1 || fail_now "启用了健康检查但服务器未安装 curl"
   fi
-  ok "服务器环境检查通过（docker/compose/unzip 可用）"
+  ok "服务器环境检查通过（docker/compose/解压工具可用）"
+}
+
+# 发布包按类型依赖解压工具：zip 用 unzip，tar 包用 tar（tar 包由环境同步生成）
+check_package_tool() {
+  case "${PACKAGE,,}" in
+    *.tar.gz|*.tgz) command -v tar >/dev/null 2>&1 || fail_now "服务器未安装 tar（.tar.gz 发布包需要）" ;;
+    *.zip)          command -v unzip >/dev/null 2>&1 || fail_now "服务器未安装 unzip（如 CentOS: yum install -y unzip）" ;;
+    *) fail_now "不支持的发布包类型: $PACKAGE（支持 .tar.gz / .tgz / .zip）" ;;
+  esac
+}
+
+# 发布包内的文件清单与单文件读取；tar 包成员统一去掉前导 ./，与 zip 条目同形
+package_list() {
+  case "${PACKAGE,,}" in
+    *.tar.gz|*.tgz) tar -tzf "$UPLOADS/$PACKAGE" | sed 's|^\./||' ;;
+    *) unzip -Z1 "$UPLOADS/$PACKAGE" ;;
+  esac
+}
+package_print() {
+  case "${PACKAGE,,}" in
+    *.tar.gz|*.tgz) tar -xzOf "$UPLOADS/$PACKAGE" "./$1" 2>/dev/null || tar -xzOf "$UPLOADS/$PACKAGE" "$1" ;;
+    *) unzip -p "$UPLOADS/$PACKAGE" "$1" ;;
+  esac
+}
+
+# 解压发布包到指定目录：zip 平铺在根目录，tar 包（环境同步生成）同为平铺内容
+extract_release() {
+  case "${PACKAGE,,}" in
+    *.tar.gz|*.tgz) tar -xzf "$UPLOADS/$PACKAGE" -C "$2" ;;
+    *.zip)          unzip -q -o "$UPLOADS/$PACKAGE" -d "$2" ;;
+  esac
+}
+
+# 发布包扩展名（留存原始发布包时沿用）
+package_ext() {
+  case "${PACKAGE,,}" in
+    *.tar.gz) printf 'tar.gz' ;; *.tgz) printf 'tgz' ;; *) printf 'zip' ;; esac
+}
+
+# 成功后处理上传包：留存供环境同步使用，或直接删除
+dispose_upload() {
+  [ "$DELETE_UPLOAD" = "1" ] || return 0
+  if [ "$KEEP_PACKAGE" = "1" ]; then
+    # 原始发布包按版本目录名留存：环境同步据此原样搬运已验证的版本，不依赖升级后的版本目录
+    local kept="$RELEASES/.packages/$1.$(package_ext)"
+    mkdir -p -- "$RELEASES/.packages"
+    if mv -f -- "$UPLOADS/$PACKAGE" "$kept"; then
+      log "已留存原始发布包: releases/.packages/$(basename -- "$kept")"
+      return 0
+    fi
+    warn "留存原始发布包失败，改为删除上传包"
+  fi
+  rm -f "$UPLOADS/$PACKAGE"
+  log "已清理上传包: $PACKAGE"
+}
+
+# 清理版本目录已不存在的留存发布包（与版本轮转同步）；只认发布包扩展名，不碰其他文件
+cleanup_packages() {
+  [ -d "$RELEASES/.packages" ] || return 0
+  local file name
+  for file in "$RELEASES/.packages"/*; do
+    [ -f "$file" ] || continue
+    case "$file" in *.zip|*.tar.gz|*.tgz) ;; *) continue ;; esac
+    name="$(basename -- "$file")"
+    name="${name%.zip}"; name="${name%.tar.gz}"; name="${name%.tgz}"
+    [ -d "$RELEASES/$name" ] && continue
+    rm -f -- "$file"
+    log "清理已下线版本的留存发布包: $(basename -- "$file")"
+  done
 }
 
 # 脚本部署环境：不需要 docker，按发布包类型要求 tar 或 unzip
 check_env_script() {
   command -v sha256sum >/dev/null 2>&1 || fail_now "服务器未安装 sha256sum"
-  case "${PACKAGE,,}" in
-    *.tar.gz|*.tgz) command -v tar >/dev/null 2>&1 || fail_now "服务器未安装 tar（.tar.gz 发布包需要）" ;;
-    *.zip)          command -v unzip >/dev/null 2>&1 || fail_now "服务器未安装 unzip（.zip 发布包需要）" ;;
-    *) fail_now "不支持的发布包类型: $PACKAGE（支持 .tar.gz / .tgz / .zip）" ;;
-  esac
+  check_package_tool
   if [ -n "$HEALTH_URL" ]; then
     command -v curl >/dev/null 2>&1 || fail_now "启用了健康检查但服务器未安装 curl"
   fi
@@ -461,13 +528,13 @@ backup_code() {
     trap 'rm -f -- "$work/archive.tar.gz" "$work/error.log" "$work/entries" "$work/rules.raw" "$work/rules"; rmdir -- "$work"' EXIT
     local -a excludes=()
     # 首次接管时旧目录还没有规则，从本次校验过的发布包读取项目声明。
-    if ! unzip -Z1 "$UPLOADS/$PACKAGE" > "$work/entries" 2> "$work/error.log"; then
+    if ! package_list > "$work/entries" 2> "$work/error.log"; then
       err "无法读取发布包中的代码备份规则"
       tail -n 12 "$work/error.log" | sed 's/^/[ERROR] /'
       exit 1
     fi
     if grep -Fxq '.backupignore' "$work/entries"; then
-      if ! unzip -p "$UPLOADS/$PACKAGE" .backupignore > "$work/rules.raw" 2> "$work/error.log"; then
+      if ! package_print .backupignore > "$work/rules.raw" 2> "$work/error.log"; then
         err "读取 .backupignore 失败"
         tail -n 12 "$work/error.log" | sed 's/^/[ERROR] /'
         exit 1
@@ -822,10 +889,8 @@ do_deploy_script() {
   ok "CURRENT -> $entries"
 
   cleanup_releases_script
-  if [ "$DELETE_UPLOAD" = "1" ]; then
-    rm -f "$pkg"
-    log "已清理上传包: $PACKAGE"
-  fi
+  cleanup_packages
+  dispose_upload "$entries"
   find "$UPLOADS" -maxdepth 1 -name '*.zip' -mmin +60 -delete 2>/dev/null
   find "$UPLOADS" -maxdepth 1 -name '*.tar.gz' -mmin +60 -delete 2>/dev/null
   write_history "success"
@@ -870,7 +935,7 @@ do_deploy() {
   if [ -n "$OLD_RELEASE" ] && [ "$OLD_RELEASE" = "$NEW_RELEASE" ]; then fail_now "当前版本目录正在运行，请生成新的发布版本"; fi
   rm -rf "$NEW_RELEASE"
   mkdir -p "$NEW_RELEASE"
-  unzip -q -o "$pkg" -d "$NEW_RELEASE" || fail_rollback "解压失败: $pkg"
+  extract_release "$pkg" "$NEW_RELEASE" || fail_rollback "解压失败: $pkg"
   ok "新版本已解压: releases/$VERSION"
 
   # 共享配置（方案 §11.5）：.env 由 shared 目录软链，不随版本删除
@@ -924,12 +989,11 @@ do_deploy() {
 
   cleanup_releases
   cleanup_backups
-  if [ "$DELETE_UPLOAD" = "1" ]; then
-    rm -f "$pkg"
-    log "已清理上传包: $PACKAGE"
-  fi
-  # 顺带清理历史失败遗留的上传包（1 小时前的旧 zip）
+  cleanup_packages
+  dispose_upload "${RELEASE_ID:-$VERSION}"
+  # 顺带清理历史失败遗留的上传包（1 小时前的旧包）
   find "$UPLOADS" -maxdepth 1 -name '*.zip' -mmin +60 -delete 2>/dev/null
+  find "$UPLOADS" -maxdepth 1 -name '*.tar.gz' -mmin +60 -delete 2>/dev/null
   write_history "success"
 
   echo "__DEPLOY_OK__:$VERSION"

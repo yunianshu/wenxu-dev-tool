@@ -35,7 +35,7 @@
       <el-table-column label="类型" width="88">
         <template #default="{ row }">
           <el-tag size="small" :type="{ rollback: 'warning', 'db-restore': 'danger' }[row.type] || 'primary'" effect="plain">
-            {{ { deploy: '发布', rollback: '回滚', 'db-restore': '数据恢复' }[row.type] || row.type }}
+            {{ { deploy: '发布', rollback: '回滚', 'db-restore': '数据恢复', promote: '环境同步' }[row.type] || row.type }}
           </el-tag>
         </template>
       </el-table-column>
@@ -61,7 +61,7 @@
               <el-dropdown-menu>
                 <el-dropdown-item command="log">查看日志</el-dropdown-item>
                 <el-dropdown-item command="changes" :disabled="!hasChanges(row)">查看更新内容</el-dropdown-item>
-                <el-dropdown-item v-if="row.projectId === projectId && row.type === 'deploy' && row.status === 'success' && !isOnline(row)" command="rollback" divided :disabled="deployRunFor(projectId).running">回滚到此版本</el-dropdown-item>
+                <el-dropdown-item v-if="row.projectId === projectId && canRollback(row) && !isOnline(row)" command="rollback" divided :disabled="deployRunFor(projectId).running">回滚到此版本</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
@@ -208,8 +208,13 @@ function isOnline(row) {
   return (row.releaseId || row.version) === deployOnlineVersion(row.projectId, row.targetId)
 }
 
+/** 可回滚的记录：成功发布，或环境同步已把版本切换到目标环境（即使之后数据同步失败） */
+function canRollback(row) {
+  return (row.type === 'deploy' && row.status === 'success') || (row.type === 'promote' && row.deployed === true)
+}
+
 function rollbackRecord(row) {
-  if (!props.projectId || row.projectId !== props.projectId || row.type !== 'deploy' || row.status !== 'success') return
+  if (!props.projectId || row.projectId !== props.projectId || !canRollback(row)) return
   const release = row.releaseId || row.version
   if (release && !isOnline(row)) emit('rollback', release, row.targetId)
 }

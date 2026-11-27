@@ -772,6 +772,22 @@ function registerIpc() {
     }
   })
   ipcMain.handle('deploy:history:list', (_e, projectId) => deployHistory.list(projectId))
+  // 环境同步：把源环境（如测试）正在运行的版本发布到目标环境（如正式），可选同步数据库
+  ipcMain.handle('deploy:promote:preview', async (_e, { projectId, sourceTargetId, destTargetId } = {}) => {
+    try {
+      return await deployService.promotePreview(projectId, { sourceTargetId, destTargetId })
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) }
+    }
+  })
+  ipcMain.handle('deploy:promote', async (_e, { projectId, sourceTargetId, destTargetId, options, requestId } = {}) => {
+    try {
+      const record = await deployService.promote(projectId, { sourceTargetId, destTargetId, options, requestId })
+      return { ok: record.status === 'success', record }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) }
+    }
+  })
   ipcMain.handle('deploy:history:readLog', (_e, logFile) => deployHistory.readLog(logFile))
   ipcMain.handle('deploy:history:clear', (_e, projectId) => deployHistory.clear(projectId))
   // 更新内容：按提交记录生成通俗中文说明（AI 优先、失败退回本地整理）

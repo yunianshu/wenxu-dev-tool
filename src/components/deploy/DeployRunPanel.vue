@@ -2,7 +2,7 @@
   <section class="deploy-run-workspace">
     <div class="publish-row">
       <div class="version-summary">
-        <span class="ver-label">{{ inFlightVersion ? '本次发布' : '本地' }}</span>
+        <span class="ver-label">{{ inFlightVersion ? (promoting ? '同步版本' : '本次发布') : '本地' }}</span>
         <strong class="local-version mono">{{ inFlightVersion || publishVersion || '未识别' }}</strong>
         <el-tooltip :content="onlineVersionSource || '查询服务器线上版本'" placement="top">
           <el-button text class="online-version" :disabled="!form.id || dirty || checkingPatchVersion" @click="queryReleases()">线上 {{ onlineVersion || '未知' }}<el-icon><Refresh /></el-icon></el-button>
@@ -32,6 +32,12 @@
         plain
         @click="openDbBackups"
       ><el-icon><Coin /></el-icon>数据库备份</el-button>
+      <el-button
+        v-if="canPromote"
+        plain
+        :disabled="!form.id || runActionBusy || dirty"
+        @click="emit('promote')"
+      ><el-icon><Switch /></el-icon>环境同步</el-button>
       <el-button :disabled="!form.id || runActionBusy || dirty" @click="newVersion"><el-icon><Plus /></el-icon>新版本</el-button>
       <el-tooltip
         v-if="!run.running"
@@ -169,13 +175,14 @@ const props = defineProps({
   /** 表单是否有未保存修改 */
   dirty: { type: Boolean, default: false },
 })
-const emit = defineEmits(['history-changed', 'set-version'])
+const emit = defineEmits(['history-changed', 'set-version', 'promote'])
 
 const run = computed(() => deployRunFor(props.form.id))
 const inFlightVersion = computed(() => run.value.running ? run.value.requestedVersion : '')
 const progress = computed(() => deployProgress(run.value, props.form.deployMode))
 const rollingBack = computed(() => run.value.running && run.value.type === 'rollback')
-const cancelAction = computed(() => run.value.queued ? '取消排队' : ({ rollback: '取消回滚', 'db-restore': '取消恢复' }[run.value.type] || '取消发布'))
+const cancelAction = computed(() => run.value.queued ? '取消排队'
+  : ({ rollback: '取消回滚', 'db-restore': '取消恢复', promote: '取消同步' }[run.value.type] || '取消发布'))
 const releases = ref([])
 const rollbackVersion = ref('')
 const logBox = ref(null)
@@ -194,6 +201,11 @@ function isCurrentSelection(selection) {
 
 /** 极简配置：用户只填服务器/项目地址/数据同步开关，其余由发布流程自动生成 */
 const quickMode = computed(() => props.form.configMode === 'quick')
+
+/** 环境同步入口：配置了两个及以上「服务器 + 部署目录」的环境时可用 */
+const canPromote = computed(() => (props.form.targets || [])
+  .filter((target) => target.server && target.server.host && target.remotePath).length >= 2)
+const promoting = computed(() => run.value.type === 'promote')
 
 const checkingPatchVersion = ref(false)
 const runActionBusy = computed(() => run.value.running || checkingPatchVersion.value)
@@ -304,7 +316,7 @@ const hasRun = computed(() => !!run.value.startedAt)
 const activeStageLabel = computed(() => {
   if (run.value.queued) return '等待可用资源'
   if (restoringDb.value) return '恢复数据库'
-  return progress.value.activeStage?.label || (rollingBack.value ? '准备回滚' : '准备发布')
+  return progress.value.activeStage?.label || (rollingBack.value ? '准备回滚' : promoting.value ? '准备同步' : '准备发布')
 })
 const activeStageDetail = computed(() => {
   if (run.value.queued) return '前序任务结束后自动执行'
@@ -316,12 +328,13 @@ const runFailed = computed(() => ['failed', 'rolled_back'].includes(run.value.st
   || progress.value.counts.failed > 0 || progress.value.counts.rollback > 0)
 const runTitle = computed(() => {
   if (run.value.queued) return '排队中'
-  if (run.value.running) return restoringDb.value ? '正在恢复' : rollingBack.value ? '正在回滚' : '正在发布'
-  if (!hasRun.value) return '发布阶段'
+  if (run.value.running) return restoringDb.value ? '正在恢复' : rollingBack.value ? '正在回滚' : promoting.value ? '正在同步环境' : '正在发布'
+  if (!hasRun.value) return promoting.value ? '环境同步阶段' : '发布阶段'
   if (run.value.status === 'canceled') return '任务已取消'
   if (run.value.status === 'rolled_back') return '已自动回滚'
   if (run.value.type === 'db-restore') return run.value.status === 'success' ? '恢复完成' : '恢复失败'
-  if (runFailed.value) return '发布异常'
+  if (runFailed.value) return promoting.value ? '同步异常' : '发布异常'
+  if (promoting.value) return run.value.status === 'success' ? '同步完成' : '同步已结束'
   if (run.value.type === 'rollback' && run.value.status === 'success') return '回滚完成'
   return progress.value.doneCount === progress.value.stageTotal ? '发布完成' : '发布已结束'
 })
@@ -412,7 +425,7 @@ async function cancelRun() {
   const action = cancelAction.value
   try {
     await ElMessageBox.confirm(
-      `确认对「${props.form.name}」执行${action}？${type === 'deploy' ? '若服务器已开始执行，将按配置的自动回滚策略处理。' : ''}`,
+      `确认对「${props.form.name}」执行${action}？${type === 'deploy' ? '若服务器已开始执行，将按配置的自动回滚策略处理。' : ''}${type === 'promote' ? '目标环境已开始发布时按自动回滚策略处理；数据库灌入一旦开始不会撤回，可用同步前的保底备份恢复。' : ''}`,
       action, { type: 'warning' },
     )
   } catch { return }
