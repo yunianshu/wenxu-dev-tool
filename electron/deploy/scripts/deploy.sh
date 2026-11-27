@@ -457,6 +457,13 @@ link_current() {
   ln -sfn "$target" "$CURRENT"
 }
 
+# 当前运行版本的真实目录；current 不存在（首次部署）时为空。
+# readlink -f 对不存在的路径同样会输出一个路径，直接使用会把首次部署误判成「当前运行版本目录: current」
+current_release() {
+  [ -e "$CURRENT" ] || return 0
+  readlink -f "$CURRENT" 2>/dev/null || echo ""
+}
+
 # ───────────────────────── 失败回滚 ─────────────────────────
 sync_openclaw() {
   local release="$1"
@@ -566,6 +573,12 @@ backup_db() {
   fi
   [ -n "$DB_CONTAINER" ] || fail_rollback "已启用数据库备份但未配置数据库容器名"
   [ -n "$DB_NAME" ] || fail_rollback "已启用数据库备份但未配置数据库名"
+  # 首次发布：数据库容器随本次发布才会创建，没有可备份的数据库（与自动方案的首次发布一致）；
+  # 容器已存在时（沿用已有的外部数据库）照常备份
+  if [ -z "$OLD_RELEASE" ] && ! docker inspect "$DB_CONTAINER" >/dev/null 2>&1; then
+    log "首次发布，数据库容器 $DB_CONTAINER 尚未创建，跳过数据库备份"
+    return 0
+  fi
   mkdir -p "$BACKUPS"
   local out="$BACKUPS/db_${TS}.sql"
   case "$DB_TYPE" in
@@ -923,7 +936,7 @@ do_deploy() {
   fi
 
   # 记录旧版本（方案 §11.2）
-  OLD_RELEASE="$(readlink -f "$CURRENT" 2>/dev/null || echo "")"
+  OLD_RELEASE="$(current_release)"
   [ -n "$OLD_RELEASE" ] && log "当前运行版本目录: $(basename "$OLD_RELEASE")" || log "首次发布，无旧版本"
 
   backup_code
@@ -1012,7 +1025,7 @@ do_rollback_cmd() {
   if [ "$OPENCLAW_SYNC" = 1 ] && [ ! -f "$target/.onedeploy-openclaw/sync.sh" ]; then
     fail_now '目标旧版本缺少 OpenClaw 同步产物，无法保证插件和 Skill 一起回滚'
   fi
-  OLD_RELEASE="$(readlink -f "$CURRENT" 2>/dev/null || echo "")"
+  OLD_RELEASE="$(current_release)"
   # 手动回滚失败也必须恢复操作前的可用服务。
   NEW_RELEASE="$target"
   AUTO_ROLLBACK=1

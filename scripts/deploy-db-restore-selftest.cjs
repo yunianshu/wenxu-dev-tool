@@ -89,9 +89,16 @@ async function main() {
   assert(commands.some((command) => command.includes('sudo -n tee')))
   assert(commands.some((command) => command.includes('sudo -n cat')))
   const args = psqlArgs()
-  assert.equal(args.length, 4)
+  assert.equal(args.length, 5)
   assert(args.slice(0, 3).every((row) => row[row.indexOf('-d') + 1] === 'template1'), '恢复默认 postgres 库时不能连接待删除库')
   assert(args.some((row) => row.includes('DROP DATABASE "postgres" WITH (FORCE);')))
+  // 灌库之后、重启应用之前刷新查询计划统计信息，且针对恢复出来的库本身
+  const analyze = args[args.length - 1]
+  assert(analyze.includes('ANALYZE;') && analyze[analyze.indexOf('-d') + 1] === 'postgres', '灌库后应刷新查询计划统计信息')
+  const analyzeAt = commands.findIndex((command) => command.includes('ANALYZE;'))
+  const restartAt = commands.findIndex((command) => command.includes('docker restart'))
+  assert(analyzeAt > commands.findIndex((command) => command.includes('DROP DATABASE')) && analyzeAt < restartAt, '统计信息应在灌库之后、重启应用之前刷新')
+  assert(logRows.some((row) => row.includes('查询计划统计信息已刷新')), '日志应说明统计信息已刷新')
   assert.equal(closed, connections)
   assert(!JSON.stringify({ commands, logRows, recordRows }).includes(password), '密码不得离开容器命令的环境或进入日志')
   console.log('  ✓ 自动 PostgreSQL 按项目标签定位，默认值、容器内密码文件和 sudo 文件权限贯通')

@@ -16,6 +16,7 @@ const history = require('./history')
 const releaseNotes = require('./release-notes')
 const store = require('../store')
 const automatic = require('./auto-deploy')
+const { parse: parseYaml } = require('yaml')
 const aiDeploy = require('./ai-deploy')
 const moduleDataSync = require('./data-sync')
 const moduleOpenClaw = require('./openclaw-sync')
@@ -63,14 +64,24 @@ function emitStandaloneLog(level, text) {
 
 function newStageTracker(publish) {
   const state = Object.fromEntries(STAGES.map((s) => [s.id, { status: 'waiting', durationMs: 0 }]))
+  const order = STAGES.map((s) => s.id)
   const stage = (id, status, durationMs = 0) => publish('deploy:stage', { stage: id, status, durationMs })
-  const begin = (id) => { if (state[id]) { state[id].status = 'running'; stage(id, 'running') } }
   const end = (id, status, startedAt) => {
     if (state[id]) {
       state[id].status = status
       if (startedAt) state[id].durationMs = Date.now() - startedAt
       stage(id, status, state[id].durationMs)
     }
+  }
+  const begin = (id) => {
+    if (!state[id]) return
+    // 服务器脚本只发「阶段开始」标记、不发结束标记：后一阶段开始即说明排在前面的阶段已经完成。
+    // 不在此收尾的话，前面所有阶段都会一直挂着 running，运行面板的「当前阶段」停在最先开始的那个
+    for (const previous of order.slice(0, order.indexOf(id))) {
+      if (state[previous].status === 'running') end(previous, 'success')
+    }
+    state[id].status = 'running'
+    stage(id, 'running')
   }
   return { state, begin, end }
 }
@@ -1678,6 +1689,12 @@ async function replaceDatabaseWithSql(conn, project, target, db, sqlFile, { stam
   }
   log('success', '备份已灌入')
 
+  // 刚灌入的库还没有查询计划统计信息（autovacuum 要过一阵才收集）：应用重启后马上就查，先刷新；
+  // 失败只提醒，不影响已灌入的数据
+  const analyzed = await ssh.exec(conn, postgresCommand(docker, db, 'psql', ['-U', db.user, '-d', db.name, '-q', '-v', 'ON_ERROR_STOP=1', '-c', 'ANALYZE;']))
+  if (analyzed.code === 0) log('success', '查询计划统计信息已刷新')
+  else log('warn', '查询计划统计信息刷新失败（不影响已灌入的数据），应用刚启动时的查询可能偏慢')
+
   // 3. 重启同 compose 项目的容器（应用连接池指向已重建的库）
   log('info', '重启应用容器……')
   const projectName = db.auto ? quoteArg(automatic.identity(project, target.id))
@@ -1844,6 +1861,64 @@ async function findReleaseCompose(conn, dir, configured) {
   return (res.stdout || '').trim()
 }
 
+/** 读远端文本文件的内容；读不到返回空串 */
+async function readRemoteText(conn, file) {
+  try {
+    const res = await ssh.exec(conn, `cat ${quoteArg(file)}`)
+    return res.code === 0 ? String(res.stdout || '') : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 读源环境版本目录里的 Compose 声明，找出发布流程不会创建、目标服务器必须预先具备的东西：
+ * 声明为 external 的网络（缺少时服务启动必然失败）与绝对路径的宿主机挂载（缺少时只会被建成空目录）。
+ * 读不到或解析失败返回 null，不因此阻塞同步。
+ */
+async function readReleasePrerequisites(conn, dir, composeFile) {
+  try {
+    const res = await ssh.exec(conn, `cat ${quoteArg(ssh.remoteJoin(dir, composeFile))}`)
+    if (res.code !== 0 || !res.stdout.trim()) return null
+    const doc = parseYaml(res.stdout)
+    if (!doc || typeof doc !== 'object') return null
+    const networks = []
+    for (const [name, spec] of Object.entries(doc.networks || {})) {
+      if (!spec || typeof spec !== 'object' || spec.external === undefined || spec.external === false) continue
+      const external = spec.external
+      networks.push(typeof external === 'string' ? external : (external && typeof external.name === 'string' ? external.name : name))
+    }
+    const paths = new Set()
+    for (const service of Object.values(doc.services || {})) {
+      for (const volume of [].concat((service && service.volumes) || [])) {
+        const source = typeof volume === 'string' ? volume.split(':')[0] : volume && volume.source
+        // 含变量占位的来源运行时才确定，无法提前检查
+        if (typeof source === 'string' && source.startsWith('/') && !source.includes('$')) paths.add(source.replace(/\/+$/, ''))
+      }
+    }
+    return { networks, paths: [...paths] }
+  } catch {
+    return null
+  }
+}
+
+/** 目标服务器是否已具备这些前提；返回缺失的外部网络与宿主机目录 */
+async function checkDestPrerequisites(conn, prerequisites) {
+  if (!prerequisites) return { networks: [], paths: [] }
+  const networks = prerequisites.networks.filter((name) => /^[\w.-]+$/.test(name))
+  const probe = [
+    ...networks.map((name) => `docker network inspect ${quoteArg(name)} >/dev/null 2>&1 || echo ${quoteArg(`NET:${name}`)};`),
+    ...prerequisites.paths.map((dir) => `[ -e ${quoteArg(dir)} ] || echo ${quoteArg(`PATH:${dir}`)};`),
+  ].join(' ')
+  if (!probe) return { networks: [], paths: [] }
+  const res = await ssh.exec(conn, probe)
+  const out = res.stdout || ''
+  return {
+    networks: networks.filter((name) => out.includes(`NET:${name}`)),
+    paths: prerequisites.paths.filter((dir) => out.includes(`PATH:${dir}`)),
+  }
+}
+
 /**
  * 重新打包版本目录的命令：docker 形态平铺（与发布 ZIP 同形），脚本形态保留单一顶层目录（发布包契约）。
  * 剔除 deploy.sh 链接的 .env 软链（环境专属配置）、socket/FIFO，以及运行期写入版本目录的
@@ -1969,24 +2044,34 @@ async function secretEnvKeys(conn, home) {
 /**
  * 数据同步可行性（只读）：识别两侧数据库并拦截同一库、非 PostgreSQL、源版本高于目标。
  * available=false 时 reason 为用户可读原因；已识别出的一侧仍随 source / dest 返回。
+ * 目标环境尚未部署、也没有现成的数据库容器时：编排里能确定唯一的数据库服务就按
+ * 「应用首次启动前灌入」处理（available=true、fresh=true，dest 给出服务名与库账号），否则提示先只同步版本。
  */
-async function inspectDataSync({ srcConn, dstConn, project, source, dest, sameServer, srcDeployed = true, dstDeployed = true }) {
+async function inspectDataSync({ srcConn, dstConn, project, source, dest, sameServer, srcDeployed = true, dstDeployed = true, composeText = null }) {
   const unavailable = (reason, identified = {}) => ({ available: false, reason, source: identified.source || null, dest: identified.dest || null })
   try {
     const a = await resolveSyncDatabase(srcConn, project, source)
     if (a.problem) return unavailable(srcDeployed ? `源环境${a.problem}` : '源环境尚未部署，没有可同步的数据库')
+    const describedSource = await describeDatabase(srcConn, a.db)
+    if (describedSource.problem) return unavailable(`源环境${describedSource.problem}`)
+    const src = { ...a.db, ...describedSource }
     const b = await resolveSyncDatabase(dstConn, project, dest)
-    if (b.problem) return unavailable(dstDeployed ? `目标环境${b.problem}` : '目标环境尚未部署，先同步版本后再同步数据库')
+    if (b.problem) {
+      if (dstDeployed) return unavailable(`目标环境${b.problem}`, { source: src })
+      const manual = dest.db && dest.db.strategy === 'manual' ? dest.db : {}
+      const db = composeText ? composeDatabase(composeText, { user: manual.user, name: manual.name }) : null
+      if (db) return { available: true, fresh: true, reason: '', source: src, dest: db }
+      // 目标尚未部署时仍把源数据库展示出来，让用户知道同步版本后要搬的是哪个库
+      return unavailable('目标环境尚未部署，且无法从版本目录的编排里确定数据库服务；请先只同步版本，再同步数据库', { source: src })
+    }
     if (sameServer && a.db.container === b.db.container && a.db.name === b.db.name) return unavailable('源环境与目标环境是同一个数据库')
-    const src = await describeDatabase(srcConn, a.db)
-    if (src.problem) return unavailable(`源环境${src.problem}`)
     const dst = await describeDatabase(dstConn, b.db)
-    if (dst.problem) return unavailable(`目标环境${dst.problem}`, { source: { ...a.db, ...src } })
+    if (dst.problem) return unavailable(`目标环境${dst.problem}`, { source: src })
     const major = (version) => Number.parseInt(version, 10) || 0
     if (major(src.version) > major(dst.version)) {
-      return unavailable(`源数据库 PostgreSQL ${src.version} 高于目标 ${dst.version}，无法保证导入成功`, { source: { ...a.db, ...src }, dest: { ...b.db, ...dst } })
+      return unavailable(`源数据库 PostgreSQL ${src.version} 高于目标 ${dst.version}，无法保证导入成功`, { source: src, dest: { ...b.db, ...dst } })
     }
-    return { available: true, reason: '', source: { ...a.db, ...src }, dest: { ...b.db, ...dst } }
+    return { available: true, reason: '', source: src, dest: { ...b.db, ...dst } }
   } catch (err) {
     return unavailable((err && err.message) || String(err))
   }
@@ -2027,20 +2112,30 @@ async function promotePreview(projectId, { sourceTargetId, destTargetId } = {}) 
     if (info.missing) throw new Error(`源环境版本目录不存在：releases/${preview.source.version}`)
     if (info.links.length) throw new Error(`源环境版本目录含指向源环境的链接：${info.links.join('；')}`)
     preview.source.package = info.package ? 'kept' : 'archive'
-    if (!info.package) preview.warnings.push('该版本发布时未留存原始发布包，将重新打包服务器上的版本目录')
-    if (mode === 'docker' && !(await findReleaseCompose(srcConn, ssh.remoteJoin(source.remotePath, 'releases', preview.source.version), project.composeFile))) {
+    const releaseDir = ssh.remoteJoin(source.remotePath, 'releases', preview.source.version)
+    const composeFile = mode === 'docker' ? await findReleaseCompose(srcConn, releaseDir, project.composeFile) : ''
+    if (mode === 'docker' && !composeFile) {
       throw new Error(`源环境版本目录中没有 Compose 文件（${project.composeFile || 'docker-compose.yml'}）`)
     }
     preview.dest.version = await readCurrentVersion(dstConn, dest.remotePath, mode)
     preview.needDeploy = preview.dest.version !== preview.source.version
+    // 版本已一致时不会打包，不必提醒
+    if (!info.package && preview.needDeploy) preview.warnings.push('该版本发布时未留存原始发布包，将重新打包服务器上的版本目录')
+    if (preview.needDeploy && composeFile) {
+      // 目标服务器必须预先具备、而发布流程不会创建的东西：缺外部网络服务启动必然失败，缺宿主机目录只会被建成空目录
+      const missing = await checkDestPrerequisites(dstConn, await readReleasePrerequisites(srcConn, releaseDir, composeFile))
+      for (const name of missing.networks) preview.problems.push(`目标服务器缺少编排声明的外部网络：${name}（服务启动会失败，请先在目标服务器创建）`)
+      for (const dir of missing.paths) preview.warnings.push(`目标服务器缺少编排挂载的宿主机目录：${dir}（发布时会被建成空目录，需要的内容请提前放到目标服务器）`)
+    }
     preview.dataSync = await inspectDataSync({
       srcConn, dstConn, project, source, dest, sameServer,
       srcDeployed: !!preview.source.version, dstDeployed: !!preview.dest.version,
+      composeText: composeFile ? await readRemoteText(srcConn, ssh.remoteJoin(releaseDir, composeFile)) : null,
     })
     if (preview.dataSync.available) {
       const a = preview.dataSync.source
       const b = preview.dataSync.dest
-      if (a.encoding !== b.encoding || a.collate !== b.collate) {
+      if (!preview.dataSync.fresh && (a.encoding !== b.encoding || a.collate !== b.collate)) {
         preview.warnings.push(`数据库字符集或排序规则不同（源 ${a.encoding}/${a.collate}，目标 ${b.encoding}/${b.collate}）`)
       }
       // 应用密钥各环境独立生成时，用密钥加密保存的数据换环境后无法解开；运行配置不随数据同步，必须提前说明
@@ -2079,6 +2174,7 @@ async function runPromotion(operation, { sourceTargetId, options = {} }) {
   let dstConn = null
   let localPackage = ''
   let remotePackage = ''
+  let remoteDump = ''
   let deployed = false
   let synced = false
 
@@ -2133,6 +2229,14 @@ async function runPromotion(operation, { sourceTargetId, options = {} }) {
     }
     const destVersion = await readCurrentVersion(dstConn, dest.remotePath, mode)
     const needDeploy = destVersion !== sourceVersion
+    if (needDeploy && mode === 'docker') {
+      // 目标服务器的前提在动服务器之前核对：缺外部网络时服务启动必然失败，不必等镜像构建完才发现
+      const missing = await checkDestPrerequisites(dstConn, await readReleasePrerequisites(srcConn, ssh.remoteJoin(source.remotePath, 'releases', sourceVersion), composeFile))
+      for (const dir of missing.paths) log('warn', `目标服务器缺少编排挂载的宿主机目录：${dir}（发布时会被建成空目录，需要的内容请提前放到目标服务器）`)
+      if (missing.networks.length) {
+        throw new Error(`目标服务器缺少编排声明的外部网络：${missing.networks.join('、')}（服务启动会失败，请先在目标服务器创建后再同步）`)
+      }
+    }
     record.version = sourceVersion
     record.releaseId = sourceVersion
     record.oldVersion = destVersion
@@ -2143,16 +2247,24 @@ async function runPromotion(operation, { sourceTargetId, options = {} }) {
     record.dataSynced = false
     let srcDb = null
     let dstDb = null
+    let preload = null
     if (syncData) {
-      const plan = await inspectDataSync({ srcConn, dstConn, project, source, dest, sameServer, dstDeployed: !!destVersion })
+      const plan = await inspectDataSync({
+        srcConn, dstConn, project, source, dest, sameServer, dstDeployed: !!destVersion,
+        composeText: composeFile ? await readRemoteText(srcConn, ssh.remoteJoin(source.remotePath, 'releases', sourceVersion, composeFile)) : null,
+      })
       if (!plan.available) throw new Error(`数据同步不可用：${plan.reason}`)
       srcDb = plan.source
       dstDb = plan.dest
+      // 全新目标：数据库随本次发布才会创建。把「先发版本、再灌数据」倒过来——
+      // 先把源库灌进去再启动应用，否则应用得先在空库上启动（很多应用空库根本起不来，或要跑漫长的初始化）
+      if (plan.fresh) preload = { db: plan.dest }
     }
     if (!needDeploy && !syncData) throw new Error(`目标环境已是该版本（${destVersion}），没有可同步的内容`)
     if (composeFile && composeFile !== String(project.composeFile || '').trim()) log('warn', `配置的 Compose 文件不在版本目录中，改用 ${composeFile}`)
     log('info', `源环境「${source.name}」当前版本 ${sourceVersion}（${releaseInfo.package ? '留存原始发布包' : '重新打包版本目录'}），目标环境「${dest.name}」当前版本 ${destVersion || '无'}`)
-    if (syncData) log('info', `数据同步：${srcDb.container}/${srcDb.name}（PostgreSQL ${srcDb.version}）→ ${dstDb.container}/${dstDb.name}（PostgreSQL ${dstDb.version}）`)
+    if (syncData && preload) log('info', `数据同步：${srcDb.container}/${srcDb.name}（PostgreSQL ${srcDb.version}）→ 全新目标，数据库服务 ${preload.db.service} 里的 ${preload.db.name}（应用首次启动前灌入）`)
+    else if (syncData) log('info', `数据同步：${srcDb.container}/${srcDb.name}（PostgreSQL ${srcDb.version}）→ ${dstDb.container}/${dstDb.name}（PostgreSQL ${dstDb.version}）`)
     log('success', needDeploy ? '环境检查通过' : '目标环境已是该版本，跳过版本同步')
     tracker.end('check', 'success', t0)
 
@@ -2207,6 +2319,22 @@ async function runPromotion(operation, { sourceTargetId, options = {} }) {
         if (remoteSha !== pack.sha256) throw new Error(`发布包传输校验失败（本机 ${pack.sha256.slice(0, 8)} / 目标 ${remoteSha.slice(0, 8)}）`)
         log('success', '发布包 SHA256 校验通过')
       }
+      // 全新目标 + 同步数据：先把源库导出到目标服务器，并备好服务器脚本——
+      // 部署脚本会在镜像构建之后、启动服务之前执行它，把数据库灌好再拉起应用
+      if (preload) {
+        log('info', `全新目标环境：先把【${source.name}】的数据库 ${srcDb.name} 灌入【${dest.name}】的数据库服务 ${preload.db.service}，再启动应用……`)
+        preload.srcCount = await countDatabaseRows(srcConn, srcDb)
+        preload.dumpFile = ssh.remoteJoin(dest.remotePath, 'uploads', `promote_${runId}.sql`)
+        remoteDump = preload.dumpFile
+        await exportDatabaseToDest({ srcConn, dstConn, srcDb, dumpFile: preload.dumpFile })
+        preload.guardName = `db_guard_${stamp}_${runId}.sql`
+        pack.dataSyncScript = ssh.remoteJoin(dest.remotePath, 'deployer', 'data-sync.sh')
+        await uploadTextFile(dstConn, buildPreloadScript({
+          home: dest.remotePath, release: ssh.remoteJoin(dest.remotePath, 'releases', sourceVersion), composeFile, db: preload.db,
+          dumpFile: preload.dumpFile, guardName: preload.guardName,
+        }), pack.dataSyncScript)
+        log('success', `源数据库已导出到目标服务器：${path.posix.basename(preload.dumpFile)}`)
+      }
       tracker.end('upload', 'success', t2)
 
       // ── 阶段 4~8：目标环境按常规发布流程切换版本 ─────────────────
@@ -2233,12 +2361,22 @@ async function runPromotion(operation, { sourceTargetId, options = {} }) {
       remotePackage = ''
       if (dest.openclaw && dest.openclaw.enabled && !resultBox.openclawSynced) throw new Error('服务器未确认 OpenClaw 同步完成，不能将本次同步视为成功')
       log('success', `版本已同步：${dest.name} 当前版本 ${sourceVersion}`)
+      if (preload) {
+        // 数据是部署脚本在应用首次启动前灌入的：脚本确认过才算完成
+        if (!resultBox.dataSynced) throw new Error('服务器未确认启动前的数据灌入完成，不能将数据同步视为成功')
+        synced = true
+        record.dataSynced = true
+        record.dataGuard = preload.guardName
+        remoteDump = ''
+        const dstCount = await countDatabaseRowsCompose(dstConn, { release: ssh.remoteJoin(dest.remotePath, 'releases', sourceVersion), composeFile, db: preload.db })
+        logRowCounts(log, preload.srcCount, dstCount)
+      }
     } else {
       for (const id of ['package', 'upload', 'backup', 'extract', 'build', 'start', 'health', 'openclaw']) tracker.end(id, 'skipped')
     }
 
-    // ── 阶段 9：数据同步（版本已在新环境启动后，再灌入同版本的数据库内容） ──
-    if (syncData) {
+    // ── 阶段 9：数据同步（已有运行版本的目标环境：新版本启动之后，再灌入同版本的数据库内容） ──
+    if (syncData && !preload) {
       tracker.begin('datasync')
       const tds = Date.now()
       try {
@@ -2255,13 +2393,16 @@ async function runPromotion(operation, { sourceTargetId, options = {} }) {
         if (deployed) log('warn', '版本已同步到目标环境；数据库保持同步前状态，可用保底备份核对')
         return finish('failed', `${deployed ? '版本已发布，' : ''}数据同步失败：${msg}`)
       }
-    } else {
+    } else if (tracker.state.datasync.status === 'waiting') {
+      // 全新目标的灌库由部署脚本在启动服务之前完成并已标记成功，这里不再覆盖
       tracker.end('datasync', 'skipped')
     }
     if (isCanceled()) return finish('canceled', '同步已取消')
     const parts = []
     if (deployed) parts.push(`版本 ${sourceVersion} 已发布到 ${dest.name}`)
-    if (synced) parts.push(`数据库 ${dstDb.name} 已同步到 ${dstDb.container}`)
+    if (synced) parts.push(preload
+      ? `数据库 ${preload.db.name} 已同步到 ${dest.name}（应用首次启动前灌入）`
+      : `数据库 ${dstDb.name} 已同步到 ${dstDb.container}`)
     log('success', `环境同步完成：${parts.join('，')}`)
     return finish('success', `环境同步完成：${parts.join('，')}`)
   } catch (err) {
@@ -2276,12 +2417,14 @@ async function runPromotion(operation, { sourceTargetId, options = {} }) {
     }
     return finish('failed', `${deployed ? '版本已发布，' : ''}${msg}`)
   } finally {
-    // 中转文件与未被部署脚本消费的发布包随手清理；用户取消时不碰服务器（脚本可能正在回滚）
+    // 中转文件与未被部署脚本消费的发布包、数据库导出随手清理；用户取消时不碰服务器（脚本可能正在回滚）
     if (localPackage) {
       try { fs.rmSync(localPackage, { force: true }) } catch { /* 本机临时文件清理失败不影响结果 */ }
     }
-    if (remotePackage && dstConn && !isCanceled()) {
-      try { await ssh.exec(dstConn, `rm -f ${quoteArg(remotePackage)}`) } catch { /* 服务器残留由部署脚本的历史包清理兜底 */ }
+    if (dstConn && !isCanceled()) {
+      for (const file of [remotePackage, remoteDump].filter(Boolean)) {
+        try { await ssh.exec(dstConn, `rm -f ${quoteArg(file)}`) } catch { /* 服务器残留由部署脚本的历史包清理兜底 */ }
+      }
     }
   }
 }
@@ -2294,21 +2437,65 @@ async function syncDatabaseData({ srcConn, dstConn, project, dest, srcDb, dstDb,
   const dumpName = `db_sync_${stamp}_${runId}.sql`
   const dumpFile = ssh.remoteJoin(dest.remotePath, 'backups', dumpName)
   const srcCount = await countDatabaseRows(srcConn, srcDb)
-  // 导出去掉属主与权限语句：目标库对象归目标库用户所有，不依赖源库的角色
+  await exportDatabaseToDest({ srcConn, dstConn, srcDb, dumpFile })
+  if (isCanceled()) throw new Error('同步已取消（目标数据库未改动）')
+  log('success', `源数据库已导出：${dumpName}`)
+  const guardName = await replaceDatabaseWithSql(dstConn, project, dest, dstDb, dumpFile, { stamp, runId, log })
+  if (!(await waitDatabaseReady(dstConn, dstDb))) log('warn', '目标数据库重启后未在 60 秒内就绪，跳过行数核对')
+
+  const dstCount = await countDatabaseRows(dstConn, dstDb)
+  logRowCounts(log, srcCount, dstCount)
+
+  const health = healthFor(project, dest)
+  if (health.enabled && health.url && !(await waitForHttpHealth(dstConn, health.url, health.timeout, health.interval))) {
+    throw new Error(`数据已灌入，但应用健康检查未通过：${health.url}（可用保底备份 ${guardName} 恢复）`)
+  }
+  log('success', `数据同步完成，目标数据库同步前的保底备份：${guardName}`)
+  return guardName
+}
+
+/** 逐表精确行数的核对结果写进日志：不一致只提醒（源环境在导出期间可能有写入） */
+function logRowCounts(log, srcCount, dstCount) {
+  if (srcCount && dstCount && srcCount.tables === dstCount.tables && srcCount.rows === dstCount.rows) {
+    log('success', `行数核对一致：${dstCount.tables} 张表 ${dstCount.rows} 行`)
+  } else if (srcCount && dstCount) {
+    log('warn', `行数核对不一致：源 ${srcCount.tables} 张表 ${srcCount.rows} 行，目标 ${dstCount.tables} 张表 ${dstCount.rows} 行（源环境在同步期间可能有写入，请核对）`)
+  }
+}
+
+/** 全新目标环境里数据库是按编排服务名操作的（容器随本次发布才创建，没有可用的容器名）：用 compose exec 做同样的行数统计 */
+async function countDatabaseRowsCompose(conn, { release, composeFile, db }) {
+  try {
+    const res = await ssh.exec(conn, `cd ${quoteArg(release)} && docker compose -f ${quoteArg(composeFile)} exec -T ${quoteArg(db.service)} psql -U ${quoteArg(db.user)} -d ${quoteArg(db.name)} -At -v ON_ERROR_STOP=1 -c ${quoteArg("SET statement_timeout = '120s'")} -c ${quoteArg(ROW_COUNT_SQL)}`)
+    const counts = (res.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter((line) => /^\d+$/.test(line))
+    if (res.code !== 0 || !counts.length) return null
+    return { tables: counts.length, rows: counts.reduce((sum, n) => sum + Number(n), 0) }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 把源环境的数据库导出到目标服务器上的某个文件（数据同步放 backups/db_sync_*.sql；
+ * 全新目标先灌数据时放 uploads/）。同一台服务器直接落盘，跨服务器经本机中转并两端核对 SHA256；
+ * 导出缺少结束标记即视为不完整并删除。此步不改动目标数据库。
+ * 导出去掉属主与权限语句：目标库对象归目标库用户所有，不依赖源库的角色。
+ */
+async function exportDatabaseToDest({ srcConn, dstConn, srcDb, dumpFile }) {
   const dump = postgresCommand('docker', srcDb, 'pg_dump', ['--no-owner', '--no-privileges', '-U', srcDb.user, '--', srcDb.name])
-  await ssh.mkdirp(dstConn, ssh.remoteJoin(dest.remotePath, 'backups'))
+  await ssh.mkdirp(dstConn, path.posix.dirname(dumpFile))
+  const exported = `源数据库导出失败：`
   if (srcConn === dstConn) {
     const res = await ssh.exec(dstConn, `bash -o pipefail -c ${quoteArg(`umask 077; ${dump} > ${quoteArg(dumpFile)} && chmod 600 ${quoteArg(dumpFile)} && echo __DUMP_OK__`)}`)
     if (res.code !== 0 || !/__DUMP_OK__/.test(res.stdout || '')) {
-      throw new Error(`源数据库导出失败：${(res.stderr || '').trim().slice(0, 300) || `退出码 ${res.code}`}（目标数据库未改动）`)
+      throw new Error(`${exported}${(res.stderr || '').trim().slice(0, 300) || `退出码 ${res.code}`}（目标数据库未改动）`)
     }
   } else {
-    // 跨服务器：导出内容经本机中转，两端 SHA256 一致才继续
-    const local = path.join(os.tmpdir(), `plm-env-sync-${runId}.sql`)
+    const local = path.join(os.tmpdir(), `plm-env-sync-${crypto.randomBytes(6).toString('hex')}.sql`)
     try {
       const got = await ssh.execToFile(srcConn, dump, local)
       if (got.code !== 0 || !got.bytes) {
-        throw new Error(`源数据库导出失败：${(got.stderr || '').trim().slice(0, 300) || `退出码 ${got.code}`}（目标数据库未改动）`)
+        throw new Error(`${exported}${(got.stderr || '').trim().slice(0, 300) || `退出码 ${got.code}`}（目标数据库未改动）`)
       }
       await ssh.upload(dstConn, local, dumpFile)
       const sum = await ssh.exec(dstConn, `sha256sum ${quoteArg(dumpFile)} | awk '{print $1}'`)
@@ -2322,24 +2509,83 @@ async function syncDatabaseData({ srcConn, dstConn, project, dest, srcDb, dstDb,
     await ssh.exec(dstConn, `rm -f ${quoteArg(dumpFile)}`)
     throw new Error('源数据库导出不完整（缺少结束标记），目标数据库未改动')
   }
-  if (isCanceled()) throw new Error('同步已取消（目标数据库未改动）')
-  log('success', `源数据库已导出：${dumpName}`)
-  const guardName = await replaceDatabaseWithSql(dstConn, project, dest, dstDb, dumpFile, { stamp, runId, log })
-  if (!(await waitDatabaseReady(dstConn, dstDb))) log('warn', '目标数据库重启后未在 60 秒内就绪，跳过行数核对')
+}
 
-  const dstCount = await countDatabaseRows(dstConn, dstDb)
-  if (srcCount && dstCount && srcCount.tables === dstCount.tables && srcCount.rows === dstCount.rows) {
-    log('success', `行数核对一致：${dstCount.tables} 张表 ${dstCount.rows} 行`)
-  } else if (srcCount && dstCount) {
-    log('warn', `行数核对不一致：源 ${srcCount.tables} 张表 ${srcCount.rows} 行，目标 ${dstCount.tables} 张表 ${dstCount.rows} 行（源环境在同步期间可能有写入，请核对）`)
+/**
+ * 全新目标环境的数据库参数：从源环境版本目录的编排里找唯一的 PostgreSQL 服务，取服务名与库账号。
+ * 服务名用来在应用首次启动前单独拉起数据库（docker compose exec 按服务名操作，不需要容器名）。
+ * 库账号在编排里写成变量引用时无法提前解析，退回目标环境手动配置的值；确定不了返回 null。
+ */
+function composeDatabase(composeText, fallback = {}) {
+  let doc
+  try { doc = parseYaml(composeText) } catch { return null }
+  const found = Object.entries((doc && doc.services) || {}).filter(([, service]) => databaseEngine(service && service.image) === 'postgres')
+  if (found.length !== 1) return null
+  const [service, spec] = found[0]
+  const env = {}
+  for (const item of [].concat(spec.environment || [])) {
+    if (typeof item === 'string' && item.includes('=')) {
+      const index = item.indexOf('=')
+      env[item.slice(0, index).trim()] = item.slice(index + 1).trim()
+    } else if (item && typeof item === 'object') {
+      Object.assign(env, item)
+    }
   }
+  const literal = (value, fallbackValue) => (typeof value === 'string' && value.trim() && !value.includes('${') ? value.trim() : fallbackValue)
+  const user = String(literal(env.POSTGRES_USER, fallback.user) || 'postgres')
+  const name = String(literal(env.POSTGRES_DB, fallback.name) || user)
+  if (!/^[a-zA-Z0-9_]+$/.test(service) || [user, name].some((value) => !value || /[\x00-\x1f\x7f'"\\]/.test(value))) return null
+  return { service, user, name, type: 'postgres', fresh: true }
+}
 
-  const health = healthFor(project, dest)
-  if (health.enabled && health.url && !(await waitForHttpHealth(dstConn, health.url, health.timeout, health.interval))) {
-    throw new Error(`数据已灌入，但应用健康检查未通过：${health.url}（可用保底备份 ${guardName} 恢复）`)
-  }
-  log('success', `数据同步完成，目标数据库同步前的保底备份：${guardName}`)
-  return guardName
+/**
+ * 全新目标环境「先灌数据再启动应用」的服务器脚本：部署脚本在镜像构建之后、docker compose up 之前执行它。
+ * 单独拉起数据库服务 → 等它可连接 → 目标库里若已有内容（如上次中断的残留）先保底备份 →
+ * 重建空库 → 灌入源库导出。应用第一次启动时数据库已就绪，不必在空库上先跑一遍初始化。
+ */
+function buildPreloadScript({ home, release, composeFile, db, dumpFile, guardName }) {
+  const compose = `docker compose -f ${quoteArg(composeFile)}`
+  const psql = (args) => `${compose} exec -T ${quoteArg(db.service)} psql -U ${quoteArg(db.user)} -v ON_ERROR_STOP=1 -q ${args}`
+  // 默认库本身可能是 postgres，维护连接不能连接即将删除的数据库；postgres 库只能原样灌入
+  const recreate = db.name !== 'postgres'
+  const maintenance = db.name === 'postgres' ? 'template1' : 'postgres'
+  return [
+    '#!/usr/bin/env bash',
+    'set -euo pipefail',
+    `cd ${quoteArg(release)}`,
+    'log() { echo "[数据] $*"; }',
+    `log "启动数据库服务 ${db.service}…"`,
+    `${compose} up -d ${quoteArg(db.service)} >/dev/null`,
+    'ready=0',
+    'for i in $(seq 1 90); do',
+    `  if ${compose} exec -T ${quoteArg(db.service)} pg_isready -U ${quoteArg(db.user)} >/dev/null 2>&1; then ready=1; break; fi`,
+    '  sleep 2',
+    'done',
+    '[ "$ready" = 1 ] || { echo "[ERROR] 数据库服务 180 秒内未就绪"; exit 1; }',
+    ...(recreate ? [
+      // 查询失败一律中止：目标库既然存在却查不了内容（如库已损坏），不能当成空库直接删
+      `exists=$(${psql(`-d ${quoteArg(maintenance)} -Atc "SELECT count(*) FROM pg_database WHERE datname = ${sqlLiteral(db.name)}"`)} </dev/null | tr -d '[:space:]') || { echo "[ERROR] 无法查询数据库服务 ${db.service}，目标数据库未改动"; exit 1; }`,
+      'if [ "${exists:-0}" != "0" ]; then',
+      `  tables=$(${psql(`-d ${quoteArg(db.name)} -Atc "SELECT count(*) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema')"`)} </dev/null | tr -d '[:space:]') || { echo "[ERROR] 目标库 ${db.name} 已存在但无法读取，为避免丢失数据已中止（未做任何改动）"; exit 1; }`,
+      '  if [ "${tables:-0}" != "0" ]; then',
+      `    mkdir -p ${quoteArg(`${home}/backups`)}`,
+      `    ${compose} exec -T ${quoteArg(db.service)} pg_dump -U ${quoteArg(db.user)} -- ${quoteArg(db.name)} > ${quoteArg(`${home}/backups/${guardName}`)}`,
+      '    log "目标库已有数据，已先保底备份：' + guardName + '"',
+      '  fi',
+      `  ${psql(`-d ${quoteArg(maintenance)} -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=${sqlLiteral(db.name)} AND pid <> pg_backend_pid();"`)} </dev/null`,
+      `  ${psql(`-d ${quoteArg(maintenance)} -c "DROP DATABASE ${sqlIdentifier(db.name)} WITH (FORCE);"`)} </dev/null`,
+      'fi',
+      `  ${psql(`-d ${quoteArg(maintenance)} -c "CREATE DATABASE ${sqlIdentifier(db.name)} OWNER ${sqlIdentifier(db.user)};"`)} </dev/null`,
+    ] : []),
+    'log "灌入源环境数据库……"',
+    `${psql(`-d ${quoteArg(db.name)}`)} < ${quoteArg(dumpFile)}`,
+    'rm -f ' + quoteArg(dumpFile),
+    // 刚灌入的库还没有查询计划统计信息（autovacuum 要过一阵才收集）：应用一启动就查，先刷新，头几分钟不至于走错执行计划
+    'log "刷新查询计划统计信息……"',
+    `  ${psql(`-d ${quoteArg(db.name)} -c "ANALYZE;"`)} </dev/null || log "统计信息刷新失败（不影响已灌入的数据）"`.trim(),
+    'log "数据库已就绪，接下来启动应用"',
+    '',
+  ].join('\n')
 }
 
 /** 容器重启后 PostgreSQL 需要几秒才接受连接：等到 pg_isready 通过或超时 */
@@ -2364,8 +2610,8 @@ async function waitForHttpHealth(conn, url, timeout, interval) {
 module.exports = {
   run, cancel, isBusy, testConnection, listReleases, rollback, promote, promotePreview,
   keepsReleasePackage, safeReleaseName, sameEndpoint, promoteEnvironments, readCurrentVersion, inspectSourceRelease,
-  findReleaseCompose, buildReleaseArchiveScript, databaseEngine, resolveSyncDatabase, inspectDataSync,
-  countDatabaseRows, replaceDatabaseWithSql,
+  findReleaseCompose, buildReleaseArchiveScript, databaseEngine, resolveSyncDatabase, inspectDataSync, composeDatabase, buildPreloadScript,
+  countDatabaseRows, replaceDatabaseWithSql, newStageTracker,
   listDbBackups, restoreDbBackup, assertDbBackupName,
   setEmitter, STAGES, resolveVersion, buildDeployArgs, preCheckLocal, releaseContentProblems, findReleaseCopy, runReleasePrepare,
   resolveCompose, resolveArtifact, sha256File, releaseDirNameOf, deployModeOf, runPackageCommand,

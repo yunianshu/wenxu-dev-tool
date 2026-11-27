@@ -110,6 +110,7 @@ const PG_DATABASES = ['envsync_src', 'envsync_dst', 'envsync_xdst']
 const CONTAINERS = {
   'test-db-1': ['envsync_src', '/srv/test/releases/rel'],
   'prod-db-1': ['envsync_dst', '/srv/prod/releases/rel'],
+  'dtest-db-1': ['envsync_src', '/srv/dtest/releases/rel'],
   'xsrc-db': ['envsync_src', '/srv/xsrc/releases/rel'],
   'xdst-db': ['envsync_xdst', '/srv/xprod/releases/rel'],
 }
@@ -126,9 +127,13 @@ for (const tool of ['psql', 'pg_dump', 'pg_isready']) {
 const wrapper = [
   `export PGWRAP=${shQuote(posix(pgWrap))}`,
   `export FIXTURE_FLOW=${shQuote(posix(flow))}`,
+  // 替身里的「已存在的 docker 网络」：以 FIXTURE_NETS 下是否有同名标记文件为准
+  `export FIXTURE_NETS=${shQuote(posix(path.join(tmpRoot, 'fixture-networks')))}`,
   'docker() {',
   '  case "$1" in',
-  '    compose) [ "$2" = version ] && return 0; case "$4" in config) return 0 ;; build|down|up) printf "%s\\n" "$4" >> "$FIXTURE_FLOW" ;; ps) printf "appcontainer\\n" ;; *) return 99 ;; esac; return 0 ;;',
+  // docker compose [-f <文件>] exec -T <服务> <命令…>：按服务名进容器执行，这里直接落到本机真实的 PostgreSQL 工具上
+  '    compose) [ "${2:-}" = version ] && return 0; if [ "${2:-}" = exec ] || { [ "${2:-}" = -f ] && [ "${4:-}" = exec ]; }; then shift; [ "${1:-}" = -f ] && shift 2; [ "${1:-}" = exec ] || return 94; [ "${2:-}" = -T ] || return 95; shift 3; case "$*" in "psql "*" -d ${FIXTURE_FAIL_DB:-__none__} "*) echo "psql: error: 模拟目标库无法读取" >&2; return 2 ;; esac; ( cd /; PATH="$PGWRAP:$PATH" "$@" ); return $?; fi; case "${4:-}" in config) return 0 ;; build|down|up) printf "%s\\n" "${4:-}" >> "$FIXTURE_FLOW" ;; ps) printf "appcontainer\\n" ;; *) return 99 ;; esac; return 0 ;;',
+  '    network) shift; [ "${1:-}" = inspect ] || return 96; [ -f "$FIXTURE_NETS/${2:-}" ] ;;',
   `    ps) printf '%s\\n' ${Object.entries(CONTAINERS).map(([name, [, dir]]) => shQuote(`${name}\tpostgres:16-alpine\t${dir}`)).join(' ')}; return 0 ;;`,
   '    inspect) case "$*" in *com.docker.compose.project*) printf "fixture-proj\\n" ;; *) printf "true\\n" ;; esac; return 0 ;;',
   '    restart) printf "restart\\n" >> "$FIXTURE_FLOW"; return 0 ;;',
@@ -163,7 +168,12 @@ require.cache[require.resolve('../electron/deploy/ssh-service')] = {
             fs.mkdirSync(path.dirname(dest), { recursive: true })
             const stream = fs.createWriteStream(dest)
             const end = stream.end.bind(stream)
-            stream.end = (...args) => { setTimeout(() => stream.emit('close'), 20); return end(...args) }
+            // 上传的服务器脚本（如启动前灌库的 data-sync.sh）里写的是逻辑远端路径，落盘时一并映射到本地
+            stream.end = (...args) => {
+              if (typeof args[0] === 'string') args[0] = localizeCommand(args[0])
+              setTimeout(() => stream.emit('close'), 20)
+              return end(...args)
+            }
             return stream
           },
           end: () => {},
@@ -183,10 +193,8 @@ require.cache[require.resolve('../electron/deploy/ssh-service')] = {
     },
     exec: async (_conn, command, onLine) => {
       const r = runBash(localizeCommand(command), { encoding: 'utf8' })
-      if (process.env.PROMOTE_DEBUG) {
-        console.error(`[exec ${r.status}] ${localizeCommand(command)}\n${r.stdout}${r.stderr}`)
-        fs.appendFileSync(path.join(os.tmpdir(), 'plm-probe', 'commands.txt'), `[exec ${r.status}] RAW=${JSON.stringify(command)}\nLOCAL=${localizeCommand(command)}\n${r.stdout}${r.stderr}\n`)
-      }
+      if (process.env.PROMOTE_DEBUG && r.stderr) console.error(`[stderr] ${command.slice(0, 80)}\n${r.stderr}`)
+      if (process.env.PROMOTE_DEBUG) console.error(`[exec ${r.status}] ${localizeCommand(command)}\n${r.stdout}${r.stderr}`)
       const out = `${r.stdout || ''}${r.stderr || ''}`
       if (onLine) for (const line of out.split(/\r?\n/)) if (line) onLine(`${line}\n`, 'stdout')
       return { code: r.status === null ? 1 : r.status, stdout: r.stdout || '', stderr: r.stderr || '' }
@@ -351,6 +359,8 @@ async function main() {
     assert.equal(dst.accounts, srcBefore.accounts, '目标库数据应与源库一致')
     assert.equal(dst.tags, srcBefore.tags)
     assert.equal(dst.sequence, srcBefore.sequence, '序列进度应一并同步')
+    // 刚灌入的库要带上查询计划统计信息：否则应用一启动就按缺省估算走执行计划
+    assert.equal(sql('envsync_dst', 'SELECT count(*) FROM pg_stat_user_tables WHERE last_analyze IS NULL'), '0', '灌库后应刷新查询计划统计信息')
   }
   step('脚本形态同机同步：原始发布包原样搬运、正式环境切到新版本、运行配置不变、数据库完全替换且行数核对一致')
 
@@ -420,8 +430,29 @@ async function main() {
   // ═══════════ 场景三：docker 形态，同一台服务器 ═══════════
   capture()
   const dockerDir = path.join(tmpRoot, 'proj-docker')
+  // 编排声明了一个外部网络和一个绝对路径的宿主机挂载：发布流程不会替目标服务器创建它们
+  const fixtureData = posix(path.join(tmpRoot, 'fixture-data'))
   write(path.join(dockerDir, 'VERSION'), '2.0.0\n')
-  write(path.join(dockerDir, 'docker-compose.yml'), 'services:\n  app:\n    image: busybox\n')
+  write(path.join(dockerDir, 'docker-compose.yml'), [
+    'services:',
+    '  app:',
+    '    image: busybox',
+    '    volumes:',
+    `      - ${fixtureData}:/data`,
+    '    networks:',
+    '      - default',
+    '      - fixture-shared',
+    // 编排里的数据库服务：全新目标环境同步数据时，应用首次启动前单独拉起它并灌入源库
+    '  pg:',
+    '    image: postgres:16-alpine',
+    '    environment:',
+    '      POSTGRES_USER: postgres',
+    '      POSTGRES_DB: envsync_fresh',
+    'networks:',
+    '  fixture-shared:',
+    '    external: true',
+    '',
+  ].join('\n'))
   write(path.join(dockerDir, 'app.js'), 'console.log("2.0.0")\n')
   // .backupignore 是 tar 排除模式（带尾斜杠的 cache/ 不生效），与既有代码备份行为一致
   write(path.join(dockerDir, '.backupignore'), 'cache\n')
@@ -437,11 +468,28 @@ async function main() {
   const dockerFirst = await deployService.run(dockerId, 'd1')
   assert.equal(dockerFirst.status, 'success', `docker 形态发布测试环境应成功:\n${logText()}`)
   assert.equal(fs.readFileSync(path.join(local('/srv/dtest'), 'releases/2.0.0/.env'), 'utf8'), 'ENV=dtest\n')
+  // ── 目标服务器前提：缺外部网络是阻塞项（服务启动必然失败），缺宿主机目录只是提醒 ──
+  const unready = await deployService.promotePreview(dockerId, { sourceTargetId: 'd1', destTargetId: 'd2' })
+  assert(unready.problems.some((problem) => /目标服务器缺少编排声明的外部网络：fixture-shared/.test(problem)), JSON.stringify(unready.problems))
+  assert(unready.warnings.some((warning) => warning.includes(`目标服务器缺少编排挂载的宿主机目录：${fixtureData}`)), JSON.stringify(unready.warnings))
+  capture()
+  const blocked = await deployService.promote(dockerId, { sourceTargetId: 'd1', destTargetId: 'd2', options: { expectedVersion: '2.0.0' } })
+  assert.equal(blocked.status, 'failed')
+  assert.match(blocked.message, /目标服务器缺少编排声明的外部网络：fixture-shared/)
+  assert.equal(blocked.stages.check.status, 'failed', '应在检查阶段拦下')
+  assert.equal(blocked.stages.package.status, 'waiting', '不得进入取包阶段')
+  assert(!fs.existsSync(path.join(local('/srv/dprod'), 'releases')), '前提缺失时不得改动目标服务器')
+  fs.mkdirSync(path.join(tmpRoot, 'fixture-data'))
+  write(path.join(tmpRoot, 'fixture-networks/fixture-shared'), '')
   const dockerPreview = await deployService.promotePreview(dockerId, { sourceTargetId: 'd1', destTargetId: 'd2' })
   assert.equal(dockerPreview.problems.length, 0, JSON.stringify(dockerPreview.problems))
+  assert(!dockerPreview.warnings.some((warning) => warning.startsWith('目标服务器缺少')), JSON.stringify(dockerPreview.warnings))
+  step('目标服务器前提检查：缺外部网络在检查阶段拦下且不动服务器，补齐后放行；缺宿主机目录只提醒')
   assert.equal(dockerPreview.source.package, 'kept')
-  assert.equal(dockerPreview.dataSync.available, false)
-  assert.match(dockerPreview.dataSync.reason, /未识别到数据库容器/)
+  // 目标尚未部署且没有现成的数据库容器：编排里有数据库服务，按「应用首次启动前灌入」给出数据同步
+  assert.equal(dockerPreview.dataSync.available, true, dockerPreview.dataSync.reason)
+  assert.equal(dockerPreview.dataSync.fresh, true)
+  assert.equal(dockerPreview.dataSync.dest.service, 'pg')
   capture()
   const dockerPromoted = await deployService.promote(dockerId, { sourceTargetId: 'd1', destTargetId: 'd2', options: { expectedVersion: '2.0.0' } })
   assert.equal(dockerPromoted.status, 'success', `docker 形态同步应成功:\n${logText()}`)
@@ -472,6 +520,90 @@ async function main() {
   assert(fs.existsSync(path.join(local('/srv/dprod'), 'releases/2.1.0/cache/junk.txt')), '发布包内容不受备份排除规则影响')
   assert(fs.readdirSync(path.join(local('/srv/dprod'), 'uploads')).every((name) => !name.startsWith('promote_')), '同步包不得残留')
   step('docker 形态无留存包：重新打成 tar 包发布，.env 软链不迁移，代码备份从 tar 包读取排除规则')
+  // 版本已一致时不会再打包，也就不必再提醒「将重新打包版本目录」
+  const settled = await deployService.promotePreview(dockerId, { sourceTargetId: 'd1', destTargetId: 'd2' })
+  assert.equal(settled.needDeploy, false)
+  assert(!settled.warnings.some((warning) => /未留存原始发布包/.test(warning)), JSON.stringify(settled.warnings))
+
+  // ═══════════ 场景三·二：全新目标环境 + 同步数据 → 先灌数据库，再启动应用 ═══════════
+  // PlmInsight 迁移到新服务器的真实情形：应用在空库上启动要先做漫长的初始化（甚至起不来），
+  // 数据必须在第一次启动之前就位。数据库服务随本次发布才创建，按编排里的服务名操作。
+  assert.deepEqual(
+    deployService.composeDatabase(['services:', '  postgres:', '    image: m.daocloud.io/docker.io/library/postgres:16-alpine', '    environment:', '      POSTGRES_DB: plm_bi', '      POSTGRES_USER: plm_bi', '      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}', '  web:', '    image: nginx:1.25-alpine', ''].join('\n')),
+    { service: 'postgres', user: 'plm_bi', name: 'plm_bi', type: 'postgres', fresh: true },
+    '应从编排里认出唯一的 PostgreSQL 服务及其库账号',
+  )
+  assert.equal(deployService.composeDatabase('services:\n  a:\n    image: postgres:16\n  b:\n    image: postgres:16\n'), null, '多个数据库服务时不能猜')
+  assert.equal(deployService.composeDatabase('services:\n  web:\n    image: nginx:1.25-alpine\n'), null, '没有数据库服务时不能猜')
+  const withFresh = deployProjects.list().find((p) => p.id === dockerId)
+  assert(deployProjects.save({ ...JSON.parse(JSON.stringify(withFresh)), targets: [...withFresh.targets.map((t) => ({ ...t })), target('d3', '全新环境', '/srv/fresh')] }).ok)
+  capture()
+  const freshPreview = await deployService.promotePreview(dockerId, { sourceTargetId: 'd1', destTargetId: 'd3' })
+  assert.equal(freshPreview.problems.length, 0, JSON.stringify(freshPreview.problems))
+  assert.equal(freshPreview.dest.version, '', '目标尚未部署')
+  assert.equal(freshPreview.dataSync.available, true, freshPreview.dataSync.reason)
+  assert.equal(freshPreview.dataSync.fresh, true, '全新目标应按「应用首次启动前灌入」处理')
+  assert.deepEqual([freshPreview.dataSync.dest.service, freshPreview.dataSync.dest.name, freshPreview.dataSync.dest.user], ['pg', 'envsync_fresh', 'postgres'])
+  const freshRun = await deployService.promote(dockerId, { sourceTargetId: 'd1', destTargetId: 'd3', options: { syncData: true, expectedVersion: '2.1.0' } })
+  assert.equal(freshRun.status, 'success', `全新目标环境同步应成功:\n${logText()}`)
+  assert.equal(freshRun.deployed, true)
+  assert.equal(freshRun.dataSynced, true)
+  for (const stage of ['upload', 'build', 'datasync', 'start', 'health']) assert.equal(freshRun.stages[stage].status, 'success', `阶段 ${stage}：${JSON.stringify(Object.fromEntries(Object.entries(freshRun.stages).map(([id, s]) => [id, s.status])))}`)
+  const text = logText()
+  assert(text.indexOf('灌入源环境数据库') > text.indexOf('镜像构建完成') && text.indexOf('灌入源环境数据库') < text.indexOf('Docker 服务已启动'), '数据库应在镜像构建之后、启动服务之前灌入')
+  assert(text.includes('行数核对一致'), '灌入后应核对行数')
+  assert(/数据库 envsync_fresh 已同步到 全新环境（应用首次启动前灌入）/.test(freshRun.message), freshRun.message)
+  assert.equal(fs.readFileSync(path.join(local('/srv/fresh'), 'current', 'app.js'), 'utf8'), 'console.log("2.1.0")\n', '全新环境应运行同步过去的版本')
+  if (pgBin) {
+    const [freshState, sourceState] = [state('envsync_fresh'), state('envsync_src')]
+    assert.deepEqual({ ...freshState, tables: freshState.tables.sort() }, { ...sourceState, tables: sourceState.tables.sort() }, '全新环境的数据库应与源库一致（表、数据、序列）')
+    assert.equal(sql('envsync_fresh', 'SELECT count(*) FROM pg_stat_user_tables WHERE last_analyze IS NULL'), '0', '应用启动前应已刷新查询计划统计信息')
+    assert(text.indexOf('刷新查询计划统计信息') < text.indexOf('数据库已就绪'), '统计信息应在应用启动之前刷新')
+  }
+  assert(fs.readdirSync(path.join(local('/srv/fresh'), 'uploads')).every((name) => !name.startsWith('promote_')), '数据库导出与同步包不得残留')
+  step('全新目标环境：先启动数据库服务灌入源库，再启动应用；数据与源库一致，导出文件不残留')
+
+  // ═══════════ 场景三·三：全新目标上的库已存在却读不了 ═══════════
+  // 查询失败不能当成「库里没内容」：那样会不做备份直接删库。这里中止，库里的数据原样保留
+  fs.rmSync(path.join(local('/srv/fresh'), 'current'), { force: true })
+  bashEnv.FIXTURE_FAIL_DB = 'envsync_fresh'
+  capture()
+  const unreadable = await deployService.promote(dockerId, { sourceTargetId: 'd1', destTargetId: 'd3', options: { syncData: true, expectedVersion: '2.1.0' } })
+  delete bashEnv.FIXTURE_FAIL_DB
+  assert.equal(unreadable.status, 'failed', `目标库读不了时同步应失败：${JSON.stringify({ status: unreadable.status, message: unreadable.message })}`)
+  assert.equal(unreadable.deployed, false)
+  assert(logText().includes('目标库 envsync_fresh 已存在但无法读取'), `应说明中止原因:\n${logText()}`)
+  assert(!fs.existsSync(path.join(local('/srv/fresh'), 'current')), '中止后目标环境不应处于已部署状态')
+  assert(!fs.existsSync(path.join(local('/srv/fresh'), 'backups')) || !fs.readdirSync(path.join(local('/srv/fresh'), 'backups')).some((name) => name.startsWith('db_guard_')), '尚未备份就不应走到删除那一步')
+  if (pgBin) {
+    const kept = state('envsync_fresh')
+    assert.deepEqual({ ...kept, tables: kept.tables.sort() }, { ...state('envsync_src'), tables: state('envsync_src').tables.sort() }, '中止时目标库必须原样保留')
+  }
+  step('全新目标的库已存在却读不了：中止同步，不做任何改动（不把查询失败当成空库去删）')
+
+  // ═══════════ 场景三·四：全新目标上留着上一次失败发布的半截数据 ═══════════
+  // 版本目录还在、current 不在（发布失败被撤回）、数据库卷里已有表：仍按全新目标处理，
+  // 灌库之前先把库里的内容保底备份，再整库换成源库的内容
+  if (pgBin) {
+    sql('envsync_fresh', 'CREATE TABLE leftover (id int); INSERT INTO leftover VALUES (1)')
+    sql('envsync_src', "INSERT INTO tags VALUES (9,'src-new')")
+  }
+  fs.rmSync(path.join(local('/srv/fresh'), 'current'), { force: true })
+  const retryPreview = await deployService.promotePreview(dockerId, { sourceTargetId: 'd1', destTargetId: 'd3' })
+  assert.equal(retryPreview.dest.version, '', 'current 不在时应按未部署处理')
+  assert.equal(retryPreview.dataSync.fresh, true, '仍应按「应用首次启动前灌入」处理')
+  capture()
+  const retry = await deployService.promote(dockerId, { sourceTargetId: 'd1', destTargetId: 'd3', options: { syncData: true, expectedVersion: '2.1.0' } })
+  assert.equal(retry.status, 'success', `全新目标留着半截数据时同步应成功:\n${logText()}`)
+  assert(logText().includes('目标库已有数据，已先保底备份'), `灌库前应保底备份目标库里已有的数据:\n${logText()}`)
+  const guards = fs.readdirSync(path.join(local('/srv/fresh'), 'backups')).filter((name) => /^db_guard_\w+\.sql$/.test(name))
+  assert.equal(guards.length, 1, `应生成一份保底备份：${fs.readdirSync(path.join(local('/srv/fresh'), 'backups')).join(' ')}`)
+  assert(fs.readFileSync(path.join(local('/srv/fresh'), 'backups', guards[0]), 'utf8').includes('CREATE TABLE public.leftover'), '保底备份应是灌库之前目标库里的内容')
+  if (pgBin) {
+    assert(!state('envsync_fresh').tables.includes('leftover'), '半截数据应被源库替换')
+    assert.deepEqual({ ...state('envsync_fresh'), tables: state('envsync_fresh').tables.sort() }, { ...state('envsync_src'), tables: state('envsync_src').tables.sort() }, '替换后新库应与源库一致')
+  }
+  step('全新目标留着上次失败发布的半截数据：灌库前保底备份，再整库替换为源库内容')
 
   // ═══════════ 场景四：跨服务器，发布包与数据库导出经本机中转 ═══════════
   capture()

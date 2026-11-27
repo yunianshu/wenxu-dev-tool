@@ -108,6 +108,8 @@ function address(target) {
   return `${host}:${Number(target.server.port) || 22} → ${target.remotePath}`
 }
 function dbText(db) {
+  // 全新目标环境：数据库容器随本次发布才创建，只给得出编排里的服务名与库名
+  if (db.fresh && !db.container) return `数据库服务 ${db.service} / ${db.name}（随本次发布创建）`
   return `${db.container} / ${db.name}（PostgreSQL ${db.version} · ${db.size}）`
 }
 
@@ -160,7 +162,8 @@ async function start() {
   const data = syncData.value && p.dataSync.available ? p.dataSync : null
   const lines = []
   if (p.needDeploy) lines.push(`将把【${source.name}】的版本 ${version} 发布到【${dest.name}】（${address(dest)}）。`)
-  if (data) lines.push(`将用【${source.name}】的数据库 ${data.source.name} 完全替换【${dest.name}】的数据库 ${data.dest.name}，目标库现有数据会先自动保底备份。`)
+  if (data && data.fresh) lines.push(`将先把【${source.name}】的数据库 ${data.source.name} 灌入【${dest.name}】的数据库 ${data.dest.name}，再启动应用；目标库如有数据会先自动保底备份。`)
+  else if (data) lines.push(`将用【${source.name}】的数据库 ${data.source.name} 完全替换【${dest.name}】的数据库 ${data.dest.name}，目标库现有数据会先自动保底备份。`)
   try {
     await ElMessageBox.confirm(lines.join(''), '确认环境同步', { type: data ? 'warning' : 'info', confirmButtonText: '开始同步', cancelButtonText: '取消' })
   } catch { return }
