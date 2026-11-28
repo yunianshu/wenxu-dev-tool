@@ -49,6 +49,7 @@ const SUITES = [
   'syntax-check-selftest.cjs',
   'deploy-version-guard-selftest.cjs',
   'deploy-release-guard-selftest.cjs',
+  'deploy-remote-dir-selftest.cjs',
   'deploy-packager-symlink-selftest.cjs',
   'deploy-package-shell-selftest.cjs',
   'deploy-package-workspace-selftest.cjs',

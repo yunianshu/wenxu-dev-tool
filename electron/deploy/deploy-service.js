@@ -1220,8 +1220,7 @@ async function runDeployment(operation) {
       }
     }
     log('info', '初始化远程目录结构…')
-    await ssh.mkdirp(conn, ssh.remoteJoin(remoteHome, 'uploads'))
-    await ssh.mkdirp(conn, ssh.remoteJoin(remoteHome, 'deployer'))
+    await ensureRemoteDirs(conn, target, [ssh.remoteJoin(remoteHome, 'uploads'), ssh.remoteJoin(remoteHome, 'deployer')])
 
     // 上传 deploy.sh（每次覆盖，保证与客户端版本一致）
     const scriptRemote = ssh.remoteJoin(remoteHome, 'deployer', 'deploy.sh')
@@ -1404,6 +1403,33 @@ async function runDeployment(operation) {
     try { if (dataPack && fs.existsSync(dataPack.zipPath)) fs.unlinkSync(dataPack.zipPath) } catch { /* 临时数据包清理失败不改变发布结果 */ }
     try { workspace.removeBuildWorkspace(buildWorkspace) } catch (e) { log('warn', `构建工作区清理失败：${e.message}`) }
   }
+}
+
+/**
+ * 建好远程目录，并确认登录账号能往里写。mkdirp 对「已存在」和「建不出来」拿到的是同一种失败、分不出来：
+ * 建不出来（环境选成了别的服务器而项目地址还是原服务器的、目录不属于登录账号）以前要到上传部署脚本时
+ * 才报一句 No such file。建完后探测一次，只有服务器明确回报目录缺失或不可写才中止，并指出卡在哪一级。
+ */
+async function ensureRemoteDirs(conn, target, dirs) {
+  for (const dir of dirs) await ssh.mkdirp(conn, dir)
+  // 可用的目录不输出；不可用的输出一行 __DIR_BAD__ <目录>|<最近的现存上级>|<归属>|<可写 w / 不可写 rw>
+  const probe = dirs.map((dir) => [
+    `if [ -d ${quoteArg(dir)} ] && [ -w ${quoteArg(dir)} ]; then :;`,
+    `else p=${quoteArg(dir)}; while [ "$p" != "/" ] && [ ! -d "$p" ]; do p=$(dirname "$p"); done;`,
+    'if [ -w "$p" ]; then w=w; else w=rw; fi;',
+    `printf '__DIR_BAD__ %s\\n' ${quoteArg(`${dir}|`)}"$p"'|'"$(stat -c %U "$p" 2>/dev/null)"'|'"$w"; fi`,
+  ].join(' ')).join('; ')
+  const bad = String((await ssh.exec(conn, probe)).stdout || '').split(/\r?\n/)
+    .map((line) => line.match(/^__DIR_BAD__ (.+)\|([^|]*)\|([^|]*)\|(w|rw)$/)).find(Boolean)
+  if (!bad) return
+  const [, dir, ancestor, ownerName, writable] = bad
+  const owner = ownerName || '未知'
+  const detail = ancestor === dir
+    ? `对 ${dir} 没有写权限（归属 ${owner}）`
+    : writable === 'w'
+      ? `无法创建 ${dir}（上级目录 ${ancestor} 可写，归属 ${owner}，但目录未能创建）`
+      : `无法创建 ${dir}（上级目录 ${ancestor} 归属 ${owner}，当前账号不可写）`
+  throw new Error(`部署目录不可用：${target.server?.username || ''}@${target.server?.host || ''} ${detail}；请核对该环境选择的部署服务器与项目地址`)
 }
 
 /** 上传内存文本到远端（用于 deploy.sh 等；asar 内文件需先读内容再写） */
@@ -1745,7 +1771,7 @@ async function runRollback(operation, version) {
   try {
     const conn = operation.conn = await connectProjectTarget(project, target)
     if (isCanceled()) return finish('canceled', '回滚已取消，尚未修改服务器')
-    await ssh.mkdirp(conn, ssh.remoteJoin(home, 'deployer'))
+    await ensureRemoteDirs(conn, target, [ssh.remoteJoin(home, 'deployer')])
     const scriptRemote = ssh.remoteJoin(home, 'deployer', 'deploy.sh')
     // 每次补传当前脚本，历史服务器也能使用新的失败恢复逻辑。
     await uploadTextFile(conn, readDeployScript(), scriptRemote)
@@ -2326,7 +2352,7 @@ async function runPromotion(operation, { sourceTargetId, options = {} }) {
       const ext = releaseInfo.package ? path.posix.basename(releaseInfo.package).slice(sourceVersion.length + 1) : 'tar.gz'
       const fileName = `promote_${runId}.${ext}`
       remotePackage = ssh.remoteJoin(dest.remotePath, 'uploads', fileName)
-      await ssh.mkdirp(dstConn, ssh.remoteJoin(dest.remotePath, 'uploads'))
+      await ensureRemoteDirs(dstConn, dest, [ssh.remoteJoin(dest.remotePath, 'uploads')])
       const uploadPercent = (done, total) => publish('deploy:progress', { kind: 'upload', percent: total ? Math.round((done / total) * 100) : 0 })
       if (sameServer) {
         log('info', releaseInfo.package ? '源环境与目标环境在同一台服务器，复制留存的原始发布包……' : '源环境与目标环境在同一台服务器，正在打包版本目录……')
@@ -2356,7 +2382,7 @@ async function runPromotion(operation, { sourceTargetId, options = {} }) {
       // ── 阶段 3：部署脚本与发布包就位 ────────────────────────────
       tracker.begin('upload')
       const t2 = Date.now()
-      await ssh.mkdirp(dstConn, ssh.remoteJoin(dest.remotePath, 'deployer'))
+      await ensureRemoteDirs(dstConn, dest, [ssh.remoteJoin(dest.remotePath, 'deployer')])
       const scriptRemote = ssh.remoteJoin(dest.remotePath, 'deployer', 'deploy.sh')
       log('info', '上传部署脚本……')
       await uploadTextFile(dstConn, readDeployScript(), scriptRemote)

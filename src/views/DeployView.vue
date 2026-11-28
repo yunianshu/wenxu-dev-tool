@@ -42,8 +42,10 @@
     <section class="deploy-target-bar">
       <div class="bar">
         <span class="bar-label">{{ quickMode ? '极简配置' : (form.deployMode === 'auto' ? '自动发布' : '部署环境') }}</span>
+        <!-- 多环境项目在任何配置方式下都要能看到并切换当前环境：下面的服务器下拉框改的就是当前环境，
+             极简配置下想发到另一台服务器时只能改当前环境的服务器（项目地址不会跟着变，环境就此错位） -->
         <el-select
-          v-if="form.deployMode !== 'auto' && !quickMode"
+          v-if="multiEnv || (form.deployMode !== 'auto' && !quickMode)"
           v-model="activeTargetId"
           placeholder="选择环境"
           class="environment-select"
@@ -164,6 +166,8 @@ let disposed = false
 
 /** 极简配置：派生配置由发布流程按项目生成 */
 const quickMode = computed(() => form.configMode === 'quick')
+/** 环境同步要求项目配两个以上环境，极简配置的项目也会有多环境 */
+const multiEnv = computed(() => form.targets.length > 1)
 const projectBusy = computed(() => deployRunFor(form.id).running)
 const deployBusy = computed(() => [...state.deploy.runs.values()].some((run) => run.running))
 

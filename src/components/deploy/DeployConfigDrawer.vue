@@ -34,6 +34,13 @@
           <el-button @click="browseLocal"><el-icon><Folder /></el-icon></el-button>
         </div>
         <template v-if="form.configMode === 'quick' && activeTarget">
+          <!-- 多环境：先指明在改哪个环境，下面的服务器与项目地址都跟着它走 -->
+          <div v-if="form.targets.length > 1" class="f-row">
+            <span class="f-label">部署环境</span>
+            <el-select :model-value="activeTargetId" style="flex: 1" @update:model-value="emit('update:activeTargetId', $event)">
+              <el-option v-for="t in form.targets" :key="t.id" :value="t.id" :label="t.name || '未命名环境'" />
+            </el-select>
+          </div>
           <div class="f-row">
             <span class="f-label">部署服务器</span>
             <el-select :model-value="activeTarget?.serverId" placeholder="选择服务器" clearable style="flex: 1" @change="selectServer">
@@ -124,7 +131,8 @@
               </template>
       </el-card>
 
-      <!-- 部署目标（多环境）：极简配置按单环境使用，多环境管理属于完整配置 -->
+      <!-- 部署目标（多环境）管理：极简配置不在这里增删环境；极简配置项目也可以有多个环境（如环境同步），
+           当前环境在顶栏与上方「部署环境」切换 -->
       <el-card v-if="form.configMode !== 'quick'" shadow="never" class="card">
         <template #header>
           <div class="card-header">
