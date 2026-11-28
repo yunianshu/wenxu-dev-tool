@@ -114,6 +114,8 @@
         <DeployHistoryTable
           ref="historyRef"
           :project-id="form.id"
+          :target-id="activeTarget?.id || ''"
+          :target-name="activeTarget?.name || ''"
           @rollback="onHistoryRollback"
         />
       </div>

@@ -152,7 +152,7 @@ contextBridge.exposeInMainWorld('gitReport', {
     ipcRenderer.invoke('deploy:promote', { projectId, sourceTargetId, destTargetId, options: toPlain(options), requestId }),
   deployHistoryList: (projectId) => ipcRenderer.invoke('deploy:history:list', projectId),
   deployHistoryReadLog: (logFile) => ipcRenderer.invoke('deploy:history:readLog', logFile),
-  deployHistoryClear: (projectId) => ipcRenderer.invoke('deploy:history:clear', projectId),
+  deployHistoryClear: (projectId, targetId) => ipcRenderer.invoke('deploy:history:clear', { projectId, targetId }),
   // 更新内容：生成/重算通俗中文说明；为某次发布打 Git 标签
   deployHistorySummarize: (recordId, refresh) =>
     ipcRenderer.invoke('deploy:history:summarize', { recordId, refresh: refresh === true }),

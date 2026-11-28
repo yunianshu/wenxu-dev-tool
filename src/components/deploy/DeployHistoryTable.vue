@@ -126,10 +126,19 @@ import { fmtTime, fmtDur } from './deploy-form'
 const props = defineProps({
   /** 当前项目 id（空串表示未保存的新项目，查询全部历史） */
   projectId: { type: String, default: '' },
+  /** 当前环境：有值时只显示该环境的发布历史，清空也只清这个环境 */
+  targetId: { type: String, default: '' },
+  targetName: { type: String, default: '' },
 })
 const emit = defineEmits(['rollback'])
 
-const history = ref([])
+const projectHistory = ref([])
+/** 当前环境；未保存的新项目查的是全部项目的历史，不按环境过滤 */
+const scopedTarget = () => (props.projectId && props.targetId ? props.targetId : '')
+/** 当前环境的记录。没有环境 id 的旧记录无法归属，各环境下都显示（与上次发布记录的取法一致） */
+const history = computed(() => scopedTarget()
+  ? projectHistory.value.filter((row) => !row.targetId || row.targetId === scopedTarget())
+  : projectHistory.value)
 const loading = ref(false)
 const loadError = ref('')
 const statusFilter = ref('')
@@ -193,10 +202,10 @@ async function loadHistory() {
   loadError.value = ''
   try {
     const rows = await window.gitReport.deployHistoryList(pid) || []
-    if (request === historyRequest && (props.projectId || undefined) === pid) history.value = Array.isArray(rows) ? rows : []
+    if (request === historyRequest && (props.projectId || undefined) === pid) projectHistory.value = Array.isArray(rows) ? rows : []
   } catch {
     if (request === historyRequest && (props.projectId || undefined) === pid) {
-      history.value = []
+      projectHistory.value = []
       loadError.value = '发布历史读取失败，请重试'
     }
   } finally {
@@ -222,7 +231,7 @@ function rollbackRecord(row) {
 // 项目切换时跟随刷新：props 由父组件重渲染异步更新，父层同步调用 reload 会读到旧 id，
 // 因此数据加载统一由本 watch 驱动（immediate 覆盖首载，此时 projectId 可能为空=查全部）
 watch(() => props.projectId, () => {
-  history.value = []
+  projectHistory.value = []
   statusFilter.value = ''
   page.value = 1
   changeRecordId.value = ''
@@ -231,6 +240,15 @@ watch(() => props.projectId, () => {
   dialogLog.value = ''
   loadHistory()
 }, { immediate: true, flush: 'sync' })
+
+// 切换环境：记录已经在本地，按环境重新过滤即可；页码回到第一页，开着的详情随之关掉
+watch(() => props.targetId, () => {
+  page.value = 1
+  changeRecordId.value = ''
+  changeDialog.value = false
+  logDialog.value = false
+  dialogLog.value = ''
+})
 
 // 发布成功后主进程在后台整理更新内容，完成后推送刷新（弹窗打开时也随之更新）
 onMounted(() => {
@@ -283,15 +301,17 @@ async function clearHistory() {
   const pid = props.projectId || undefined
   // projectId 为空 = 查询/清空全部项目的历史：确认文案必须如实说明作用域，防止误删
   const scopeAll = !props.projectId
+  // 只清表里显示的这个环境的记录，别的环境不受影响
+  const tid = scopedTarget()
   try {
     await ElMessageBox.confirm(
-      scopeAll ? '当前未选择具体项目：确认清空【全部项目】的发布历史？（服务器文件不受影响）' : '确认清空该项目的发布历史？（服务器文件不受影响）',
+      scopeAll ? '当前未选择具体项目：确认清空【全部项目】的发布历史？（服务器文件不受影响）' : `确认清空环境「${props.targetName || '未命名环境'}」的发布历史？（服务器文件不受影响）`,
       scopeAll ? '清空全部发布历史' : '清空历史',
       { type: 'warning' },
     )
   } catch { return }
-  if ((props.projectId || undefined) !== pid) return
-  await window.gitReport.deployHistoryClear(pid)
+  if ((props.projectId || undefined) !== pid || scopedTarget() !== tid) return
+  await window.gitReport.deployHistoryClear(pid, tid)
   if ((props.projectId || undefined) === pid) loadHistory()
 }
 

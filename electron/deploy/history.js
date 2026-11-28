@@ -97,10 +97,13 @@ function removeLogFiles(records) {
   }
 }
 
-function clear(projectId) {
+/** 清空历史。给了 targetId 时只清该环境的记录（发布历史按环境显示，清空的范围与显示的一致）；
+ *  没有环境 id 的旧记录无法归属、在各环境下都显示，随所清的环境一并清理。 */
+function clear(projectId, targetId) {
   const all = loadAll()
-  const removed = projectId ? all.filter((r) => r.projectId === projectId) : all
-  persist(projectId ? all.filter((r) => r.projectId !== projectId) : [])
+  const hit = (r) => (!projectId || r.projectId === projectId) && (!targetId || !r.targetId || r.targetId === targetId)
+  const removed = all.filter(hit)
+  persist(all.filter((r) => !hit(r)))
   removeLogFiles(removed) // 清空历史必须连日志文件一起清理，否则 deploy-logs 无限累积
   return { ok: true }
 }

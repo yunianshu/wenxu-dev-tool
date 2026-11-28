@@ -789,7 +789,7 @@ function registerIpc() {
     }
   })
   ipcMain.handle('deploy:history:readLog', (_e, logFile) => deployHistory.readLog(logFile))
-  ipcMain.handle('deploy:history:clear', (_e, projectId) => deployHistory.clear(projectId))
+  ipcMain.handle('deploy:history:clear', (_e, { projectId, targetId } = {}) => deployHistory.clear(projectId, targetId))
   // 更新内容：按提交记录生成通俗中文说明（AI 优先、失败退回本地整理）
   ipcMain.handle('deploy:history:summarize', async (_e, { recordId, refresh } = {}) => {
     try {
